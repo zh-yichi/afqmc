@@ -1,6 +1,6 @@
 # Auxiliary-Field Qauntum Monte Carlo
 
-A python package for Auxiliary-Field quantum Monte Carlo calculations.
+A python package for Auxiliary-Field quantum Monte Carlo calculations. Interfaced with pyscf.
 
 ## Usage
 
@@ -11,4 +11,9 @@ Requires:
 * jax, jaxlib 
 * pyscf
 
+## Installation
 
+```bash
+git clone git@github.com:zh-yichi/afqmc.git
+export PYTHONPATH=/path/to/your/afqmc:$PYTHONPATH
+```
