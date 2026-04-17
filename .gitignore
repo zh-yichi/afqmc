@@ -1,0 +1,11 @@
+# Python cache files
+__pycache__/
+*.pyc
+*FCIDUMP_chol*
+*.bin
+*.npz
+*.out*
+*_chol
+*.dat
+*.txt
+*.env

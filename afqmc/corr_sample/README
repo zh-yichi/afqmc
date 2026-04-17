@@ -1,0 +1,9 @@
+# to run correlated sampling
+# you need set up 2 close enough systems
+# check out examples in directory h2
+# first run "python init_mf.py"
+# this generates the files needed for correlated afqmc
+# then run "mpirun -n {nproc} python test_eql.py"
+# this takes the file from init_mf.py as input
+# and runs correlated sampling to a given number of 
+# propagation, and a given number of independen runs
