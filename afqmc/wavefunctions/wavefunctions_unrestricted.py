@@ -237,11 +237,11 @@ class wave_function_unrestricted(ABC):
         return [taua, taub]
     
     @partial(jit, static_argnums=0)
-    def _thouless(self, slater, t):
+    def _thouless(self, slater, tau):
         # calculate |psi'> = exp(t_ia a+ i)|psi>
         
         slater_up, slater_dn = slater
-        ta, tb = t
+        ta, tb = tau
         
         norb = self.norb
         nocc_a, nocc_b = self.nelec
@@ -259,6 +259,33 @@ class wave_function_unrestricted(ABC):
         slater_ta = exp_ta.T @ slater_up
         slater_tb = exp_tb.T @ slater_dn
         return [slater_ta, slater_tb]
+    
+    @partial(jit, static_argnums=(0,3))
+    def get_ccsd_walkers(self, prop_data, wave_data, prop):
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        
+        fieldy = random.normal(
+            subkey,
+            shape=(
+                prop.n_walkers,
+                wave_data['tau'][0].shape[0],
+            ),
+        )
+        # ytaus shape (nwalker, nocc, nvir)
+        ytaus_up = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][0], backend='jax')
+        ytaus_dn = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][1], backend='jax')
+
+        mo_t = [wave_data['mo_ta'], wave_data['mo_tb']]
+
+        def scan_body(carry, ytau):
+            ytau_up, ytau_dn = ytau
+            slater_up, slater_dn = self._thouless(mo_t, [ytau_up, ytau_dn])
+            return carry, (slater_up, slater_dn)
+
+        # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
+        _, (slaters_up, slaters_dn) = lax.scan(scan_body, None, (ytaus_up, ytaus_dn),)
+
+        return [slaters_up, slaters_dn], prop_data
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))

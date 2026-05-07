@@ -1,7 +1,7 @@
 import numpy as np
 from pyscf import lib, ao2mo
-from ad_afqmc.lno.cc import ccsd
-from ad_afqmc.lno.base import lno
+from afqmc.lno.cc import ccsd
+from afqmc.lno.base import lno
 
 def thouless_trans(t1):
     q, r = np.linalg.qr(t1)

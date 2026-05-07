@@ -3,8 +3,8 @@ import argparse
 import numpy as np
 from jax import random
 from jax import numpy as jnp
-from ad_afqmc import config
-from ad_afqmc.prop_unrestricted.mixed_wave import prep, sampling
+from afqmc import config
+from afqmc.prop_unrestricted.mixed_wave import prep, sampling
 from functools import partial
 print = partial(print, flush=True)
 

@@ -5,9 +5,9 @@ import jax
 from jax import random
 from jax import numpy as jnp
 from functools import partial
-from ad_afqmc import config
-from ad_afqmc.lno_afqmc import sampling
-from ad_afqmc.lno_afqmc import ulno_afqmc
+from afqmc import config
+from afqmc.lno_afqmc import sampling
+from afqmc.lno_afqmc import ulno_afqmc
 
 init_time = time.time()
 print = partial(print, flush=True)

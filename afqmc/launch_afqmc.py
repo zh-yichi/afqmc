@@ -20,23 +20,27 @@ def run_afqmc(options,
         gpu_flag = ""
 
     if script is None:
-        if  'pt' in options['trial']:
-            if '2' in options['trial']:
-                script='run_afqmc_pt2ccsd.py'
+        if options["free_projection"]:
+            if  'pt2' in options['trial']:
+                script='run_fpafqmc_pt2.py'
             else:
-                script='run_afqmc_ptccsd.py'
-        
-        elif 'sto' in options['trial']:
-            if '2' in options['trial']:
-                script='run_afqmc_stoccsd2.py'
-            else:
-                script='run_afqmc_stoccsd.py'
+                script = 'run_fpafqmc.py'
 
         else:
-            script='run_afqmc.py'
+            if  'pt' in options['trial']:
+                if '2' in options['trial']:
+                    script='run_afqmc_pt2ccsd.py'
+                else:
+                    script='run_afqmc_ptccsd.py'
+            
+            elif 'sto' in options['trial']:
+                if '2' in options['trial']:
+                    script='run_afqmc_stoccsd2.py'
+                else:
+                    script='run_afqmc_stoccsd.py'
 
-    if options["free_projection"]:
-        script = 'run_fpafqmc.py'
+            else:
+                script='run_afqmc.py'
 
     path = os.path.abspath(__file__)
     dir_path = os.path.dirname(path)

@@ -9,8 +9,7 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import jit, lax, random, vmap
 
-from ad_afqmc import linalg_utils, sr, wavefunctions
-from ad_afqmc.wavefunctions import wave_function
+from afqmc import linalg_utils, sr
 
 
 @dataclass
@@ -30,7 +29,7 @@ class propagator(ABC):
     @abstractmethod
     def init_prop_data(
         self,
-        trial: wave_function,
+        trial,
         wave_data: Any,
         ham_data: dict,
         init_walkers: Optional[Union[jax.Array, List]] = None,
@@ -100,7 +99,7 @@ class propagator(ABC):
     @partial(jit, static_argnums=(0, 1))
     def propagate(
         self,
-        trial: wave_function,
+        trial,
         ham_data: dict,
         prop_data: dict,
         fields: jax.Array,
@@ -168,7 +167,7 @@ class propagator(ABC):
 
     def propagate_free(
         self,
-        trial: wave_function,
+        trial,
         ham_data: dict,
         prop_data: dict,
         fields: jax.Array,
@@ -191,7 +190,7 @@ class propagator(ABC):
         )
 
     def _build_propagation_intermediates(
-        self, ham_data: dict, trial: wave_function, wave_data: dict
+        self, ham_data: dict, trial, wave_data: dict
     ) -> dict:
         """Build intermediates for propagation."""
         return ham_data
@@ -211,7 +210,7 @@ class propagator_restricted(propagator):
 
     def init_prop_data(
         self,
-        trial: wave_function,
+        trial,
         wave_data: dict,
         ham_data: dict,
         init_walkers: Optional[jax.Array] = None,
@@ -293,7 +292,7 @@ class propagator_restricted(propagator):
 
     @partial(jit, static_argnums=(0, 2))
     def _build_propagation_intermediates(
-        self, ham_data: dict, trial: wave_function, wave_data: dict
+        self, ham_data: dict, trial, wave_data: dict
     ) -> dict:
         rdm1 = wave_data["rdm1"]
         rdm1 = rdm1[0] + rdm1[1]
@@ -330,7 +329,7 @@ class propagator_restricted(propagator):
 class propagator_unrestricted(propagator_restricted):
     def init_prop_data(
         self,
-        trial: wave_function,
+        trial,
         wave_data: dict,
         ham_data: dict,
         init_walkers: Optional[Sequence] = None,
@@ -443,7 +442,7 @@ class propagator_unrestricted(propagator_restricted):
     @partial(jit, static_argnums=(0, 1))
     def propagate_free(
         self,
-        trial: wave_function,
+        trial,
         ham_data,
         prop_data: dict,
         fields: jax.Array,

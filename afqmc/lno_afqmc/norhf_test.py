@@ -1,12 +1,12 @@
 from jax import numpy as jnp
 from jax import vmap, jit, lax, random
 import jax
-from ad_afqmc.lno.base import lno
-from ad_afqmc.lno_afqmc import lno_maker, afqmc_maker, lnoafqmc_runner, data_maker
+from afqmc.lno.base import lno
+from afqmc.lno_afqmc import lno_maker, afqmc_maker, lnoafqmc_runner, data_maker
 import numpy as np
 from pyscf import lib, ao2mo
 from functools import partial
-from ad_afqmc import wavefunctions, propagation, sampling
+from afqmc import wavefunctions, propagation, sampling
 from typing import Tuple
 import os
 

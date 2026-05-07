@@ -272,63 +272,6 @@ class rhf(wave_function_restricted):
         e2_2 = -oe.contract('gpq,gqp->',lg,lg, backend="jax")
         e2 = e2_1 + e2_2
         return h0 + e1 + e2
-
-    # @partial(jit, static_argnums=0)
-    # def _calc_force_bias_restricted(
-    #     self, walker: Sequence, ham_data: dict, wave_data: dict
-    # ) -> jax.Array:
-    #     green_walker = self._calc_green(walker, wave_data)
-    #     fb = 2.0 * oe.contract("gij,ij->g", ham_data["rot_chol"], green_walker, 
-    #                            backend="jax")
-    #     return fb
-
-    # @partial(jit, static_argnums=0)
-    # def _calc_force_bias(
-    #     self,
-    #     walker_up: jax.Array,
-    #     walker_dn: jax.Array,
-    #     ham_data: dict,
-    #     wave_data: dict,
-    # ) -> jax.Array:
-    #     green_walker_up = self._calc_green(walker_up, wave_data)
-    #     green_walker_dn = self._calc_green(walker_dn, wave_data)
-    #     green_walker = green_walker_up + green_walker_dn
-    #     fb = oe.contract("gij,ij->g", ham_data["rot_chol"], green_walker, 
-    #                      backend="jax")
-    #     return fb
-
-    # @partial(jit, static_argnums=0)
-    # def _calc_energy_restricted(
-    #     self, walker: jax.Array, ham_data: dict, wave_data: dict
-    # ) -> jax.Array:
-    #     h0, rot_h1, rot_chol = ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"]
-    #     green_walker = self._calc_green(walker, wave_data)
-    #     ene1 = 2.0 * jnp.sum(green_walker * rot_h1)
-    #     f = oe.contract("gij,jk->gik", rot_chol, green_walker.T, backend="jax")
-    #     c = vmap(jnp.trace)(f)
-    #     exc = jnp.sum(vmap(lambda x: x * x.T)(f))
-    #     ene2 = 2.0 * jnp.sum(c * c) - exc
-    #     return h0 + ene1 + ene2
-
-    # @partial(jit, static_argnums=0)
-    # def _calc_energy(
-    #     self,
-    #     walker_up: jax.Array,
-    #     walker_dn: jax.Array,
-    #     ham_data: dict,
-    #     wave_data: dict,
-    # ) -> jax.Array:
-    #     h0, rot_h1, rot_chol = ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"]
-    #     ene0 = h0
-    #     green_walker_up = self._calc_green(walker_up, wave_data)
-    #     green_walker_dn = self._calc_green(walker_dn, wave_data)
-    #     green_walker = green_walker_up + green_walker_dn
-    #     ene1 = jnp.sum(green_walker * rot_h1)
-    #     f = oe.contract("gij,jk->gik", rot_chol, green_walker.T, backend="jax")
-    #     c = vmap(jnp.trace)(f)
-    #     exc = jnp.sum(vmap(lambda x: x * x.T)(f))
-    #     ene2 = jnp.sum(c * c) - exc
-    #     return ene2 + ene1 + ene0
     
     @partial(jit, static_argnums=0)
     def _calc_ecorr(self, walker: jax.Array, ham_data: dict, wave_data: dict):
@@ -360,7 +303,6 @@ class rhf(wave_function_restricted):
         eneo2ext = oe.contract('Gxy,Gyk,xk->',f,f,m, backend="jax")
         e_orb = eneo2Jt - eneo2ext
         return jnp.real(e_orb)
-
 
     @partial(jit, static_argnums=0)
     def _calc_energy_ref(self, walker, ham_data, trial_coeff):
@@ -1045,33 +987,6 @@ class ccsd_pt2_ad(rhf):
     norb: int
     nelec: Tuple[int, int]
     n_batch: int = 1
-
-    # @partial(jit, static_argnums=0)
-    # def _calc_force_bias_restricted(
-    #     self, walker: Sequence, ham_data: dict, wave_data: dict
-    # ) -> jax.Array:
-    #     nocc, norb = self.nelec[0], self.norb
-    #     rot_chol = ham_data["chol"].reshape(-1,norb,norb)[:,:nocc,:]
-    #     green_walker = (walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
-    #     fb = 2.0 * oe.contract("gij,ij->g", rot_chol, green_walker, 
-    #                            backend="jax")
-    #     return fb
-
-    # @partial(jit, static_argnums=0)
-    # def _calc_energy_restricted(
-    #     self, walker: jax.Array, ham_data: dict, wave_data: dict
-    # ):
-    #     nocc, norb = self.nelec[0], self.norb
-    #     h0 = ham_data["h0"]
-    #     rot_h1 = ham_data["h1"][0][:nocc,:] 
-    #     rot_chol = ham_data["chol"].reshape(-1,norb,norb)[:,:nocc,:]
-    #     green_walker = (walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
-    #     ene1 = 2.0 * jnp.sum(green_walker * rot_h1)
-    #     f = oe.contract("gip,jp->gij", rot_chol, green_walker, backend="jax")
-    #     c = vmap(jnp.trace)(f)
-    #     exc = jnp.sum(vmap(lambda x: x * x.T)(f))
-    #     ene2 = 2.0 * jnp.sum(c * c) - exc
-    #     return h0 + ene1 + ene2
 
     @partial(jit, static_argnums=0)
     def _calc_eorb_bar(self, walker, ham_data, wave_data):

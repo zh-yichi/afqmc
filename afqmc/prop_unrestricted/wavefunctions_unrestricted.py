@@ -274,6 +274,23 @@ class wave_function_unrestricted(ABC):
         slater_tb = exp_tb.T @ slater_dn
         return [slater_ta, slater_tb]
 
+    # @partial(jit, static_argnums=(0,3))
+    # def get_ccsd_walker(self, prop_data, wave_data, prop):
+    #     prop_data["key"], subkey = random.split(prop_data["key"])
+        
+    #     fieldx = random.normal(
+    #         subkey,
+    #         shape=(
+    #             prop.n_walkers,
+    #             wave_data['tau'][0].shape[0],
+    #         ),
+    #     )
+    #     # xtaus shape (nwalker, nocc, nvir)
+    #     xtaus_up = oe.contract("wg,gia->wia", fieldx, wave_data['tau'][0], backend='jax')
+    #     xtaus_dn = oe.contract("wg,gia->wia", fieldx, wave_data['tau'][1], backend='jax')
+
+    #     return [xtaus_up, xtaus_dn], prop_data
+
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 

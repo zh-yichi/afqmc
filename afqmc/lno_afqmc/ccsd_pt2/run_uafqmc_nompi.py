@@ -5,9 +5,9 @@ import jax
 from jax import random
 from jax import numpy as jnp
 from functools import partial
-from ad_afqmc import config
-from ad_afqmc.lno_afqmc import sampling
-from ad_afqmc.lno_afqmc import ulno_afqmc
+from afqmc import config
+from afqmc.lno_afqmc import sampling
+from afqmc.lno_afqmc import ulno_afqmc
 
 init_time = time.time()
 print = partial(print, flush=True)
@@ -109,7 +109,7 @@ n_killed = 0
 
 for n in range(sampler.n_blocks):
     prop_data, (wt, e0, eorb, t2eorb, t2orb, e0bar, t1olp) = \
-        sampler.block_sample_sr(prop_data, ham_data, prop, trial, wave_data)
+        sampler.block_sample(prop_data, ham_data, prop, trial, wave_data)
     
     wt_sp[n] = wt
     e0_sp[n] = e0
