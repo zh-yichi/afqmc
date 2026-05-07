@@ -818,9 +818,16 @@ def r_prep_afqmc_run(
         e0t1orb = 2 * oe.contract('gik,ik,gjj->',lt1, wave_data['prjlo'], lt1, backend='jax') \
                     - oe.contract('gij,gjk,ik->',lt1, lt1, wave_data['prjlo'], backend='jax')
         ham_data['e0t1orb'] = e0t1orb
-        trial = lno_wavefunctions.ccsd_pt2(norb, nelec_sp, n_batch = options["n_batch"])
-        if "fast" in options["trial"]:
-            trial = lno_wavefunctions.ccsd_pt2_fast(norb, nelec_sp, n_batch = options["n_batch"])
+        trial = lno_wavefunctions.ccsd_pt2(norb, nelec_sp, 
+                                           n_batch = options["n_batch"],
+                                           nchol_chunk=options["nchol_chunk"], 
+                                           mix_precision=options["mix_precision"],
+                                           )
+        # if "chunk" in options["trial"]:
+        #     trial = lno_wavefunctions.ccsd_pt2_chunk(norb, nelec_sp, 
+        #                                              n_batch = options["n_batch"],
+        #                                              nchol_chunk=options["nchol_chunk"], 
+        #                                              mix_precision=options["mix_precision"],)
         if "ad" in options["trial"]:
             trial = lno_wavefunctions.ccsd_pt2_ad(norb, nelec_sp, n_batch = options["n_batch"])
         
@@ -1048,14 +1055,14 @@ def prep_afqmc_run(
     with open(option_file, "rb") as f:
             options = pickle.load(f)
 
-    if "u" not in options["trial"]:
+    if options["walker_type"] == "rhf":
         return r_prep_afqmc_run(
             option_file,
             mo_file,
             amp_file,
             chol_file,
             )
-    elif "u" in options["trial"]:
+    elif options["walker_type"] == "uhf":
         return u_prep_afqmc_run(
             option_file,
             mo_file,
