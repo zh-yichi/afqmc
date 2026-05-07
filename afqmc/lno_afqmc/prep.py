@@ -753,6 +753,7 @@ def r_prep_afqmc_run(
     options['use_gpu'] = options.get("use_gpu", True)
     options['mix_precision'] = options.get("mix_precision", True)
     options["nchol_chunk"] = options.get("nchol_chunk", 100)
+    options["max_error"] = options.get("max_error", 1e-4)    
 
     with h5py.File(chol_file, "r") as fh5:
         [nelec, nmo, nchol] = fh5["header"]
