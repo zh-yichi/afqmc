@@ -415,16 +415,16 @@ def run_lnoafqmc(options, option_file='options.bin'):
     )
 
 def run_afqmc(mf,
-              options,
-              frag_lolist,
               lo_coeff = None, 
               lo_coeff_file = 'lo_coeff.npz',
+              frag_lolist = None,
               nfrozen = 0,
-              thresh = 1e-6, 
-              chol_cut = 1e-5,
+              thresh = 1e-6,
+              qmc_options = {}, 
+              chol_cut = 1e-5, 
+              target_sto_error = 1e-3, 
               run_frg_list = None, 
               atom_group = None,
-              emp2_tot = None,
               ):
     
     if lo_coeff is None:
@@ -432,16 +432,18 @@ def run_afqmc(mf,
             lo_coeff = np.load(lo_coeff_file)["lo_coeff"]
         except:
             raise ValueError(
-                f"lo_coeff was not provided and could not be loaded "
-                f"from file '{lo_coeff_file}'"
-                )
+                f"lo_coeff was not provided and could not be loaded from '{lo_coeff_file}'")
+    
+    if frag_lolist is None:
+        print("Fragment list not found. Asign every LO to a fragment.")
+        frag_lolist = frag_lolist = [[i] for i in range(lo_coeff.shape[1])]
     
     mlno = lnoccsd.LNOCCSD(mf, lo_coeff, frag_lolist, frozen=nfrozen).set(verbose=3)
     mlno.lno_thresh = [thresh*10, thresh]
     # mlno.lo_proj_thresh = 1e-10
     # mlno.lo_proj_thresh_active = 0.1
     lno_thresh = mlno.lno_thresh
-    lno_type = ['1h','1h'] # if lno_type is None else lno_type
+    lno_type = ['1h','1h']
     eris = mlno.ao2mo()
 
     nfrag = len(frag_lolist)
@@ -453,12 +455,13 @@ def run_afqmc(mf,
     lno_pct_occ = [None, None]
     lno_norb = [[None,None]] * nfrag
 
-    seeds = random.randint(random.PRNGKey(options["seed"]),
+    seeds = random.randint(random.PRNGKey(qmc_options["seed"]),
                            shape=(nfrag,), 
                            minval=0, 
                            maxval=100*nfrag
                            )
-    options["max_error"] = options["max_error"] / np.sqrt(nfrag)
+    
+    qmc_options["max_error"] = target_sto_error / np.sqrt(nfrag)
 
     las_center = [None]*nfrag
     las_size = np.zeros(nfrag, dtype='int32')
@@ -480,8 +483,11 @@ def run_afqmc(mf,
             print(f"Center Atom {atom_msg}")
 
         orbloc = lo_coeff[:,loidx]
-        lno_param = [{'thresh': lno_thresh[i], 'pct_occ': lno_pct_occ[i],
-                        'norb': lno_norb[ifrag][i]} for i in [0,1]]
+        lno_param = [{
+            'thresh': lno_thresh[i], 
+            'pct_occ': lno_pct_occ[i],
+            'norb': lno_norb[ifrag][i]
+            } for i in [0,1]]
         
         ao_message, ao_max = prep.ao_comp(mf, orbloc)
 
@@ -527,7 +533,7 @@ def run_afqmc(mf,
         # <lno_actocc|orbloc> <orbloc|lno_actocc>
         prjlo = uocc_loc @ uocc_loc.T.conj()
 
-        options["seed"] = seeds[ifrag]
+        qmc_options["seed"] = seeds[ifrag]
         prep.prep_afqmc_integral(
             mf,
             lno_coeff,
@@ -535,11 +541,11 @@ def run_afqmc(mf,
             t2,
             lno_frozen,
             prjlo,
-            options,
+            qmc_options,
             chol_cut=chol_cut
             )
         
-        run_lnoafqmc(options)
+        run_lnoafqmc(qmc_options)
         outfile = f'fragment.out{run_frg_list[ifrag]+1}'
         os.system(f'mv afqmc.out {outfile}')
         with open(outfile, "r") as f:
@@ -558,7 +564,8 @@ def run_afqmc(mf,
         with open(outfile, 'a') as f:
             f.write('\n')
             f.write(f'{header:=^{width}}\n')
-            f.write("\t Center Atom " + atom_msg + "\n")
+            if atom_group:
+                f.write("\t Center Atom " + atom_msg + "\n")
             f.write("\t" + ao_message + "\n")
             f.write('-' * width + '\n')
             f.write(f'\t LNO-Active Space electrons: {nactocc} | orbitals: {nactocc+nactvir} \n')
@@ -640,6 +647,6 @@ def run_afqmc(mf,
 
         f.write(f'LNO Threshold:          ({lno_thresh[0]:.2e}, {lno_thresh[1]:.2e})\n')
         f.write(f'MAX. Orbitals:          {las_max}\n')
-        f.write(f'MP2 Correction:         {emp2_tot - e_mp2:12.8f}\n')
+        # f.write(f'MP2 Correction:         {emp2_tot - e_mp2:12.8f}\n')
 
     return None

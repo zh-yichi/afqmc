@@ -729,6 +729,24 @@ def prep_afqmc_integral(
         raise NotImplementedError('Only Support Restricted and Unrestricted Now!')
         # return None
 
+def auto_qmc_options(options={}):
+
+    options["dt"] = options.get("dt", 0.005)
+    options["n_walkers"] = options.get("n_walkers", 50)
+    options["n_prop_steps"] = options.get("n_prop_steps", 50)
+    options["n_eql"] = options.get("n_eql", 80)
+    options["n_blocks"] = options.get("n_blocks", 500)
+    options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
+    options["walker_type"] = options.get("walker_type", "rhf")
+    options["trial"] = options.get("trial", "rhf")
+    options["n_batch"] = options.get("n_batch", 1)
+    options['use_gpu'] = options.get("use_gpu", True)
+    options['mix_precision'] = options.get("mix_precision", True)
+    options["nchol_chunk"] = options.get("nchol_chunk", 100)
+    options["max_error"] = options.get("max_error", 1e-4)
+    options["n_exp_terms"] = options.get("n_exp_terms",6)
+    
+    return options
 
 def r_prep_afqmc_run(
         option_file="options.bin",
@@ -740,20 +758,7 @@ def r_prep_afqmc_run(
     with open(option_file, "rb") as f:
             options = pickle.load(f)
 
-    options["dt"] = options.get("dt", 0.005)
-    options["n_exp_terms"] = options.get("n_exp_terms",6)
-    options["n_walkers"] = options.get("n_walkers", 50)
-    options["n_prop_steps"] = options.get("n_prop_steps", 50)
-    options["n_blocks"] = options.get("n_blocks", 500)
-    options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
-    options["n_eql"] = options.get("n_eql", 80)
-    options["walker_type"] = options.get("walker_type", "rhf")
-    options["trial"] = options.get("trial", "rhf")
-    options["n_batch"] = options.get("n_batch", 1)
-    options['use_gpu'] = options.get("use_gpu", True)
-    options['mix_precision'] = options.get("mix_precision", True)
-    options["nchol_chunk"] = options.get("nchol_chunk", 100)
-    options["max_error"] = options.get("max_error", 1e-4)    
+    options = auto_qmc_options(options)   
 
     with h5py.File(chol_file, "r") as fh5:
         [nelec, nmo, nchol] = fh5["header"]
