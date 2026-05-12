@@ -729,7 +729,7 @@ def prep_afqmc_integral(
         raise NotImplementedError('Only Support Restricted and Unrestricted Now!')
         # return None
 
-def auto_qmc_options(options={}):
+def auto_qmc_options(options={}, spin_type="restricted"):
 
     options["dt"] = options.get("dt", 0.005)
     options["n_walkers"] = options.get("n_walkers", 50)
@@ -737,28 +737,33 @@ def auto_qmc_options(options={}):
     options["n_eql"] = options.get("n_eql", 80)
     options["n_blocks"] = options.get("n_blocks", 500)
     options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
-    options["walker_type"] = options.get("walker_type", "rhf")
-    options["trial"] = options.get("trial", "rhf")
     options["n_batch"] = options.get("n_batch", 1)
     options['use_gpu'] = options.get("use_gpu", True)
     options['mix_precision'] = options.get("mix_precision", True)
     options["nchol_chunk"] = options.get("nchol_chunk", 100)
     options["max_error"] = options.get("max_error", 1e-4)
     options["n_exp_terms"] = options.get("n_exp_terms",6)
+
+    if spin_type == "restricted":
+        options["walker_type"] = options.get("walker_type", "rhf")
+        options["trial"] = options.get("trial", "rhf")
+    elif spin_type == "unrestricted":
+        options["walker_type"] = options.get("walker_type", "uhf")
+        options["trial"] = options.get("trial", "uhf")
     
     return options
 
 def r_prep_afqmc_run(
-        option_file="options.bin",
+        options,
         mo_file="mo_coeff.npz",
         amp_file="amplitudes.npz",
         chol_file="FCIDUMP_chol"
         ):
 
-    with open(option_file, "rb") as f:
-            options = pickle.load(f)
+    # with open(option_file, "rb") as f:
+    #         options = pickle.load(f)
 
-    options = auto_qmc_options(options)   
+    # options = auto_qmc_options(options)   
 
     with h5py.File(chol_file, "r") as fh5:
         [nelec, nmo, nchol] = fh5["header"]
@@ -865,14 +870,14 @@ def r_prep_afqmc_run(
     return ham_data, prop, trial, wave_data, sampler, options
 
 def u_prep_afqmc_run(
-        option_file="options.bin",
+        options,
         mo_file="mo_coeff.npz",
         amp_file="amplitudes.npz",
         chol_file="FCIDUMP_chol"
         ):
 
-    with open(option_file, "rb") as f:
-        options = pickle.load(f)
+    # with open(option_file, "rb") as f:
+    #     options = pickle.load(f)
 
     options["dt"] = options.get("dt", 0.005)
     options["n_exp_terms"] = options.get("n_exp_terms", 6)
@@ -992,33 +997,27 @@ def u_prep_afqmc_run(
             wave_data["t2ba"] = oe.contract('jbia,ik->kajb', t2ab, prjb, backend='jax')
             wave_data["t2bb"] = oe.contract('iajb,ik->kajb', t2bb, prjb, backend='jax')
         elif "alpha" in options["trial"]:
-            trial = ulno_wavefunctions.uccsd_pt2_alpha(norb, nelec, n_batch = options["n_batch"])
+            trial = ulno_wavefunctions.uccsd_pt2_alpha(norb, nelec, 
+                                                       n_batch = options["n_batch"], 
+                                                       nchol_chunk = options["nchol_chunk"],
+                                                       mix_precision = options['mix_precision']
+                                                       )
             wave_data["t2aa"] = oe.contract('iajb,ik->kajb', t2aa, prja, backend='jax')
             wave_data["t2ab"] = oe.contract('iajb,ik->kajb', t2ab, prja, backend='jax')
-            if "chunk" in options["trial"]:
-                trial = ulno_wavefunctions.uccsd_pt2_alpha_chunk(norb, 
-                                                                 nelec, 
-                                                                 n_batch = options["n_batch"], 
-                                                                 nchol_chunk = options["nchol_chunk"],
-                                                                 mix_precision = options['mix_precision'],
-                                                                 )
-            if "fast" in options["trial"]:
-                trial = ulno_wavefunctions.uccsd_pt2_alpha_fast(norb, nelec, n_batch = options["n_batch"])
         elif "beta" in options["trial"]:
-            trial = ulno_wavefunctions.uccsd_pt2_beta(norb, nelec, n_batch = options["n_batch"])
+            trial = ulno_wavefunctions.uccsd_pt2_beta(norb, nelec, 
+                                                      n_batch = options["n_batch"], 
+                                                      nchol_chunk = options["nchol_chunk"],
+                                                      mix_precision = options['mix_precision']
+                                                      )
             wave_data["t2ba"] = oe.contract('jbia,ik->kajb', t2ab, prjb, backend='jax')
             wave_data["t2bb"] = oe.contract('iajb,ik->kajb', t2bb, prjb, backend='jax')
-            if "chunk" in options["trial"]:
-                trial = ulno_wavefunctions.uccsd_pt2_beta_chunk(norb, 
-                                                                nelec, 
-                                                                n_batch = options["n_batch"], 
-                                                                nchol_chunk = options["nchol_chunk"],
-                                                                mix_precision = options['mix_precision']
-                                                                )
-            if "fast" in options["trial"]:
-                trial = ulno_wavefunctions.uccsd_pt2_beta_fast(norb, nelec, n_batch = options["n_batch"])
         else:
-            trial = ulno_wavefunctions.uccsd_pt2(norb, nelec, n_batch = options["n_batch"])
+            trial = ulno_wavefunctions.uccsd_pt2(norb, nelec, 
+                                                 n_batch = options["n_batch"],
+                                                 nchol_chunk=options["nchol_chunk"], 
+                                                 mix_precision=options["mix_precision"],
+                                                 )
             wave_data["t2aa"] = oe.contract('iajb,ik->kajb', t2aa, prja, backend='jax')
             wave_data["t2ab"] = oe.contract('iajb,ik->kajb', t2ab, prja, backend='jax')
             wave_data["t2ba"] = oe.contract('jbia,ik->kajb', t2ab, prjb, backend='jax')
@@ -1060,17 +1059,25 @@ def prep_afqmc_run(
 
     with open(option_file, "rb") as f:
             options = pickle.load(f)
+    
+    if "u" not in options["walker_type"]:
+        spin_type = "restricted"
+    elif "u" in options["walker_type"]:
+        spin_type = "unrestricted"
 
-    if options["walker_type"] == "rhf":
+    options = auto_qmc_options(options, spin_type)
+
+    if spin_type =="restricted":
         return r_prep_afqmc_run(
-            option_file,
+            options,
             mo_file,
             amp_file,
             chol_file,
             )
-    elif options["walker_type"] == "uhf":
+    
+    elif spin_type == "unrestricted":
         return u_prep_afqmc_run(
-            option_file,
+            options,
             mo_file,
             amp_file,
             chol_file,

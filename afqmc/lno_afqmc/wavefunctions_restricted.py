@@ -36,7 +36,7 @@ class wave_function_restricted(ABC):
         n_batch: Number of batches used in scan.
     """
 
-    norb: Union[int, Tuple[int, int]]
+    norb: Tuple[int, int]
     nelec: Tuple[int, int]
     n_batch: int = 1
 

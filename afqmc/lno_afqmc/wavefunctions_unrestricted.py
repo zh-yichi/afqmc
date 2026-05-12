@@ -201,6 +201,9 @@ class wave_function_unrestricted(ABC):
 class uhf(wave_function_unrestricted):
     """Class for the unrestricted Hartree-Fock wave function.
     """
+    norb: Tuple[int, int]
+    nelec: Tuple[int, int]
+    n_batch: int = 1
 
     def _calc_rdm1(self, wave_data: dict):
         dm_up = jnp.array(wave_data["mo_coeff"][0] @ wave_data["mo_coeff"][0].T.conj())
@@ -339,10 +342,6 @@ class uhf(wave_function_unrestricted):
 @dataclass
 class uccsd_pt_ad(uhf):
 
-    norb: Tuple[int, int]
-    nelec: Tuple[int, int]
-    n_batch: int = 1
-
     @partial(jit, static_argnums=0)
     def _t_orb(self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict) -> complex:
         '''
@@ -468,10 +467,6 @@ class uccsd_pt_ad(uhf):
 
 @dataclass
 class uccsd_pt(uhf):
-
-    norb: Tuple[int, int]
-    nelec: Tuple[int, int]
-    n_batch: int = 1
 
     @partial(jit, static_argnums=(0)) 
     def _calc_eorb_pt(
