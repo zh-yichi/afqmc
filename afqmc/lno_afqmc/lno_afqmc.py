@@ -93,7 +93,7 @@ def run_afqmc(mf,
         run_frg_list = range(nfrag)
     
     frag_lolist = [frag_lolist[i] for i in run_frg_list]
-    # nfrag = len(frag_lolist)
+
     lno_pct_occ = [None, None]
     lno_norb = [[None,None]] * nfrag
 
@@ -119,7 +119,7 @@ def run_afqmc(mf,
     for ifrag, loidx in enumerate(frag_lolist):
         print("\n")
         width = 80
-        msg = f" RUNNING LNO-FRAGMENT {run_frg_list[ifrag]+1}/{nfrag} "
+        msg = f" {spin_type} LNO-FRAGMENT {run_frg_list[ifrag]+1}/{nfrag} "
         print(msg.center(width, '='))
         if atom_group is not None:
             atom_msg = f"{atom_group[ifrag]}"
@@ -162,15 +162,15 @@ def run_afqmc(mf,
         if spin_type == "unrestricted":
             if uocc_loc[0].size > 0 and uocc_loc[1].size == 0:
                 lno_elec_type = 'alpha'
-                spin_idx = 0
             elif uocc_loc[0].size == 0 and uocc_loc[1].size > 0:
                 lno_elec_type = 'beta'
-                spin_idx = 1
             else:
                 lno_elec_type = 'mixed'
-                spin_idx = 0
             print(f'LNO-Frgament Spin Type = {lno_elec_type}')
-            ao_message, ao_max = prep.ao_comp(mf, orbloc[spin_idx]) # TODO: make it general
+            ao_message_a, ao_max_a = prep.ao_comp(mf, orbloc[0])
+            ao_message_b, ao_max_b = prep.ao_comp(mf, orbloc[1])
+            ao_message = ao_message_a + "\n" + ao_message_b
+            ao_max = ao_max_a + ao_max_b
         else:
             ao_message, ao_max = prep.ao_comp(mf, orbloc)
 
