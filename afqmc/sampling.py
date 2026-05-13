@@ -1,11 +1,7 @@
 from dataclasses import dataclass
 from functools import partial
-# from typing import Tuple
-# import jax
 import jax.numpy as jnp
 from jax import jit, lax, random
-# from afqmc.propagation import propagator
-# from afqmc import linalg_utils
 import numpy as np
 
 @dataclass
