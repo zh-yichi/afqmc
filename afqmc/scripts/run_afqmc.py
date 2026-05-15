@@ -47,12 +47,10 @@ print(f"{'inv_T':>5s}  {'energy':>10s}  {'runTime':>8s}")
 print(f"{0.:5.2f}  {e_init:10.6f}  {time.time() - init_time:8.2f}")
 
 sampler_eq = sampling.sampler(
-    n_prop_steps=50, 
-    n_ene_blocks=1, 
-    n_sr_blocks=1, 
+    n_prop_steps=50,
     n_chol = sampler.n_chol
     )
-block_time = prop.dt * sampler_eq.n_prop_steps * sampler_eq.n_ene_blocks * sampler_eq.n_sr_blocks
+block_time = prop.dt * sampler_eq.n_prop_steps
 
 for n in range(1,options["n_eql"]+1):
     prop_data, (wt, e) \

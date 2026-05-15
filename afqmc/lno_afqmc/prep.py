@@ -793,6 +793,8 @@ def r_prep_afqmc_run(
     wave_data['prjlo'] = jnp.array(np.load(mo_file)["prjlo"])
     mo_coeff = jnp.array(np.eye(nmo))
 
+    options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
+
     if options["trial"] == "rhf":
         trial = lno_wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
         wave_data["mo_coeff"] = mo_coeff[:, : nelec_sp[0]]
@@ -930,6 +932,8 @@ def u_prep_afqmc_run(
             mo_coeff_a[:, : nelec[0]],
             mo_coeff_b[:, : nelec[1]],
             ]
+    
+    options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
 
     if options["trial"] == "uhf":
         trial = ulno_wavefunctions.uhf(norb, nelec, n_batch=options["n_batch"])

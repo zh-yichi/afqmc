@@ -176,12 +176,13 @@ def _prep_afqmc(options=None,
     options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
     options["n_eql"] = options.get("n_eql", 1)
     options["walker_type"] = options.get("walker_type", "rhf")
-    options["symmetry"] = options.get("symmetry", False)
     options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
     options["free_projection"] = options.get("free_projection", False)
     options["n_batch"] = options.get("n_batch", 1)
     options["max_error"] = options.get("max_error", 1e-3)
+    options["nchol_chunk"] = options.get("nchol_chunk", 100)
+    options["mix_precision"] = options.get("mix_precision", True)
 
     if 'u' not in options['trial']:
         spin_type = 'restricted'
@@ -226,6 +227,8 @@ def _prep_afqmc(options=None,
         nchol = chol[0].shape[0]
         ham_data["chol"] = jnp.array([chol[0].reshape(chol[0].shape[0], -1),
                                       chol[1].reshape(chol[1].shape[0], -1)])
+
+    options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
 
     wave_data = {}
     mo_coeff = jnp.array([np.eye(norb),np.eye(norb)])
@@ -286,7 +289,11 @@ def _prep_afqmc(options=None,
             trial = wavefunctions_restricted.ccd_pt(norb, nelec_sp, n_batch=options["n_batch"])
 
         elif options["trial"] == "ccsd_pt2":
-            trial = wavefunctions_restricted.ccsd_pt2(norb, nelec_sp, n_batch=options["n_batch"])
+            trial = wavefunctions_restricted.ccsd_pt2(norb, nelec_sp, 
+                                                      n_batch=options["n_batch"],
+                                                      nchol_chunk=options["nchol_chunk"], 
+                                                      mix_precision=options["mix_precision"],
+                                                      )
             nocc = nelec_sp[0]
             amplitudes = np.load(amp_file)
             t1 = jnp.array(amplitudes["t1"])
@@ -419,7 +426,11 @@ def _prep_afqmc(options=None,
 
         elif "uccsd_pt2" in options["trial"]:
             trial = wavefunctions_unrestricted.uccsd_pt2(
-                norb, nelec_sp, n_batch = options["n_batch"])
+                norb, nelec_sp, 
+                n_batch=options["n_batch"],
+                nchol_chunk=options["nchol_chunk"],
+                mix_precision=options["mix_precision"],
+                )
             noccA, noccB = trial.nelec[0], trial.nelec[1]
             wave_data["mo_coeff"] = [
                 mo_coeff[0][:, : noccA],

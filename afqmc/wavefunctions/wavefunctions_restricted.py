@@ -252,12 +252,10 @@ class rhf(wave_function_restricted):
     Attributes:
         norb: Number of orbitals.
         nelec: Number of electrons of each spin.
-        n_opt_iter: Number of optimization scf iterations.
     """
 
     norb: int
     nelec: Tuple[int, int]
-    n_opt_iter: int = 30
     n_batch: int = 1
 
     def __post_init__(self):
@@ -268,14 +266,6 @@ class rhf(wave_function_restricted):
     @partial(jit, static_argnums=0)
     def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
         return jnp.linalg.det(wave_data["mo_coeff"].T.conj() @ walker) ** 2
-
-    # @partial(jit, static_argnums=0)
-    # def _calc_overlap(
-    #     self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict
-    # ) -> jax.Array:
-    #     return jnp.linalg.det(
-    #         wave_data["mo_coeff"].T.conj() @ walker_up
-    #     ) * jnp.linalg.det(wave_data["mo_coeff"].T.conj() @ walker_dn)
 
     @partial(jit, static_argnums=0)
     def _calc_green(self, walker: jax.Array, wave_data: dict) -> jax.Array:
@@ -783,104 +773,6 @@ class cid(wave_function_restricted):
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
 
-@dataclass
-class cisd_faster(cisd):
-    """A manual implementation of the CISD wave function.
-
-    Faster than cisd, but the energy function builds some large intermediates, O(XMN),
-    so memory usage is high.
-    """
-
-    norb: int
-    nelec: Tuple[int, int]
-    n_batch: int = 1
-
-    @partial(jit, static_argnums=0)
-    def _calc_energy_restricted(
-        self, walker: jax.Array, ham_data: dict, wave_data: dict
-    ) -> complex:
-        ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
-        nocc = self.nelec[0]
-        green = (walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
-        green_occ = green[:, nocc:].copy()
-        greenp = jnp.vstack((green_occ, -jnp.eye(self.norb - nocc)))
-        chol = ham_data["chol"].reshape(-1, self.norb, self.norb)
-        rot_chol = chol[:, : self.nelec[0], :]
-        h1 = (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
-        hg = oe.contract("pj,pj->", h1[:nocc, :], green, backend="jax")
-
-        # 0 body energy
-        e0 = ham_data["h0"]
-
-        # 1 body energy
-        # ref
-        e1_0 = 2 * hg
-
-        # single excitations
-        ci1g = oe.contract("pt,pt->", ci1, green_occ, backend="jax")
-        e1_1_1 = 4 * ci1g * hg
-        gpci1 = greenp @ ci1.T
-        ci1_green = gpci1 @ green
-        e1_1_2 = -2 *oe.contract("ij,ij->", h1, ci1_green, backend="jax")
-        e1_1 = e1_1_1 + e1_1_2
-
-        # double excitations
-        ci2g_c = oe.contract("ptqu,pt->qu", ci2, green_occ, backend="jax")
-        ci2g_e = oe.contract("ptqu,pu->qt", ci2, green_occ, backend="jax")
-        ci2_green_c = (greenp @ ci2g_c.T) @ green
-        ci2_green_e = (greenp @ ci2g_e.T) @ green
-        ci2_green = 2 * ci2_green_c - ci2_green_e
-        ci2g = 2 * ci2g_c - ci2g_e
-        gci2g = oe.contract("qu,qu->", ci2g, green_occ, backend="jax")
-        e1_2_1 = 2 * hg * gci2g
-        e1_2_2 = -2 * oe.contract("ij,ij->", h1, ci2_green, backend="jax")
-        e1_2 = e1_2_1 + e1_2_2
-        e1 = e1_0 + e1_1 + e1_2
-
-        # two body energy
-        # ref
-        lg = oe.contract("gpj,pj->g", rot_chol, green, backend="jax")
-        lg1 = oe.contract("gpj,qj->gpq", rot_chol, green, backend="jax")
-        e2_0_1 = 2 * lg @ lg
-        e2_0_2 = -jnp.sum(vmap(lambda x: x * x.T)(lg1))
-        e2_0 = e2_0_1 + e2_0_2
-
-        # single excitations
-        e2_1_1 = 2 * e2_0 * ci1g
-        lci1g = oe.contract("gij,ij->g", chol, ci1_green, backend="jax")
-        e2_1_2 = -2 * (lci1g @ lg)
-        gl = oe.contract("pj,gji->gpi", green, chol, backend="jax")
-        ci1g1 = ci1 @ green_occ.T
-        e2_1_3_1 = oe.contract("gpq,gqr,rp->", lg1, lg1, ci1g1, backend="jax")
-        lci1g = oe.contract("gip,qi->gpq", ham_data["lci1"], green, backend="jax")
-        e2_1_3_2 = -oe.contract("gpq,gqp->", lci1g, lg1, backend="jax")
-        e2_1_3 = e2_1_3_1 + e2_1_3_2
-        e2_1 = e2_1_1 + 2 * (e2_1_2 + e2_1_3)
-
-        # double excitations
-        e2_2_1 = e2_0 * gci2g
-        lci2g = oe.contract("gij,ij->g", chol, ci2_green, backend="jax")
-        e2_2_2_1 = -lci2g @ lg
-        lci2_green = oe.contract("gpi,ji->gpj", rot_chol, ci2_green, backend="jax")
-        e2_2_2_2 = 0.5 * oe.contract("gpi,gpi->", gl, lci2_green, backend="jax")
-        e2_2_2 = 4 * (e2_2_2_1 + e2_2_2_2)
-        glgp = oe.contract("gpi,it->gpt", gl, greenp, backend="jax")
-        l2ci2_1 = oe.contract("gpt,gqu,ptqu->g", glgp, glgp, ci2, backend="jax")
-        l2ci2_2 = oe.contract("gpu,gqt,ptqu->g", glgp, glgp, ci2, backend="jax")
-        e2_2_3 = 2 * l2ci2_1.sum() - l2ci2_2.sum()
-        e2_2 = e2_2_1 + e2_2_2 + e2_2_3
-        e2 = e2_0 + e2_1 + e2_2
-
-        # overlap
-        overlap_1 = 2 * ci1g
-        overlap_2 = gci2g
-        overlap = 1.0 + overlap_1 + overlap_2
-        return (e1 + e2) / overlap + e0
-     
-
-    def __hash__(self):
-        return hash(tuple(self.__dict__.values()))
-
 
 @dataclass
 class ccsd_pt(rhf):
@@ -1170,6 +1062,8 @@ class ccsd_pt2(rhf):
     norb: int
     nelec: Tuple[int, int]
     n_batch: int = 1
+    nchol_chunk: int = 100
+    mix_precision: bool = True
 
     @partial(jit, static_argnums=0)
     def thouless_trans(self, t1):
@@ -1226,24 +1120,66 @@ class ccsd_pt2(rhf):
         lt2g = oe.contract("gij,ij->g", chol, t2_green, backend="jax")
         e2_2_2_1 = -lt2g @ lg
 
+        naux = chol.shape[0]
+        nchol_chunk = self.nchol_chunk
+        nchunks = (naux + nchol_chunk - 1) // nchol_chunk
+        pad = nchunks * nchol_chunk - naux
+        chol = jnp.pad(chol, ((0, pad), (0, 0), (0, 0)))
+        chol_chunks = chol.reshape(nchunks, nchol_chunk, self.norb, self.norb)
+
         def scanned_fun(carry, x):
-            chol_i = x
+            chol_c = x  # (nchol_chunk, norb, norb)
             # e2_0
-            lg_i = oe.contract("pr,qr->pq", chol_i, green, backend="jax")
-            e2_0_1_i = (2*jnp.trace(lg_i))**2 / 2.0
-            e2_0_2_i = - oe.contract('pq,qp->',lg_i,lg_i, backend="jax")
-            carry[0] += e2_0_1_i + e2_0_2_i
+            lg_c = oe.contract("gpr,qr->gpq", chol_c, green, backend="jax")
+            tr_c = oe.contract("gpp->g", lg_c, backend="jax")
+            e2_0_1_c = jnp.sum((2 * tr_c) ** 2) / 2.0
+            e2_0_2_c = -oe.contract("gpq,gqp->", lg_c, lg_c, backend="jax")
+            carry[0] += e2_0_1_c + e2_0_2_c
             # e2_2
-            gl_i = oe.contract("pr,rq->pq",green,chol_i,backend="jax")
-            lt2_green_i = oe.contract("pr,qr->pq",chol_i,t2_green,backend="jax")
-            carry[1] += 0.5 * oe.contract("pq,pq->",gl_i,lt2_green_i,backend="jax")
-            glgp_i = oe.contract("iq,qa->ia", gl_i[:nocc,:],greenp,backend="jax")
-            l2t2_1 = oe.contract("ia,jb,iajb->",glgp_i,glgp_i,t2,backend="jax")
-            l2t2_2 = oe.contract("ib,ja,iajb->",glgp_i,glgp_i,t2,backend="jax")
-            carry[2] += 2 * l2t2_1 - l2t2_2
+            gl_c = oe.contract("pr,grq->gpq", green, chol_c, backend="jax")
+            lt2_green_c = oe.contract("gpr,qr->gpq", chol_c, t2_green, backend="jax")
+            carry[1] += 0.5 * oe.contract("gpq,gpq->", gl_c, lt2_green_c, backend="jax")
+            glgp_c = oe.contract(
+                "giq,qa->gia", gl_c[:, :nocc, :], greenp, backend="jax"
+            )
+            if self.mix_precision:
+                glgp_c_mp = glgp_c.astype(jnp.complex64)
+                t2_mp = t2.astype(jnp.float32)
+            else:                
+                glgp_c_mp = glgp_c
+                t2_mp = t2
+            l2t2_1 = oe.contract("gia,gjb,iajb->", 
+                                 glgp_c_mp, glgp_c_mp, t2_mp, 
+                                 backend="jax")
+            l2t2_2 = oe.contract("gib,gja,iajb->", 
+                                 glgp_c_mp, glgp_c_mp, t2_mp, 
+                                 backend="jax")
+            carry[2] += (2 * l2t2_1 - l2t2_2).astype(jnp.complex128)
             return carry, 0.0
 
-        [e2_0, e2_2_2_2, e2_2_3], _ = lax.scan(scanned_fun, [0.0,0.0,0.0], chol)
+        [e2_0, e2_2_2_2, e2_2_3], _ = lax.scan(
+            scanned_fun, [0.0, 0.0, 0.0], chol_chunks
+        )
+
+        # def scanned_fun(carry, x):
+        #     chol_i = x
+        #     # e2_0
+        #     lg_i = oe.contract("pr,qr->pq", chol_i, green, backend="jax")
+        #     e2_0_1_i = (2*jnp.trace(lg_i))**2 / 2.0
+        #     e2_0_2_i = - oe.contract('pq,qp->',lg_i,lg_i, backend="jax")
+        #     carry[0] += e2_0_1_i + e2_0_2_i
+        #     # e2_2
+        #     gl_i = oe.contract("pr,rq->pq",green,chol_i,backend="jax")
+        #     lt2_green_i = oe.contract("pr,qr->pq",chol_i,t2_green,backend="jax")
+        #     carry[1] += 0.5 * oe.contract("pq,pq->",gl_i,lt2_green_i,backend="jax")
+        #     glgp_i = oe.contract("iq,qa->ia", gl_i[:nocc,:],greenp,backend="jax")
+        #     l2t2_1 = oe.contract("ia,jb,iajb->",glgp_i,glgp_i,t2,backend="jax")
+        #     l2t2_2 = oe.contract("ib,ja,iajb->",glgp_i,glgp_i,t2,backend="jax")
+        #     carry[2] += 2 * l2t2_1 - l2t2_2
+        #     return carry, 0.0
+
+        # [e2_0, e2_2_2_2, e2_2_3], _ = lax.scan(scanned_fun, [0.0,0.0,0.0], chol)
+
         e2_2_1 = e2_0 * gt2g
         e2_2_2 = 4 * (e2_2_2_1 + e2_2_2_2)
         e2_2 = e2_2_1 + e2_2_2 + e2_2_3
