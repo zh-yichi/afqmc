@@ -82,7 +82,7 @@ def get_rveff_gpu(mf, dm):
     vk = jnp.zeros(dm.shape)
     # print('Building JK matrix')
     for i,cderi in enumerate(mf.with_df.loop()):
-        print(f'DF loop {i} number of DF vectors {cderi.shape[0]}')
+        # print(f'DF loop {i} number of DF vectors {cderi.shape[0]}')
         cderi = jnp.array(lib.unpack_tril(cderi, axis=-1))
         # cderi = jnp.array(cderi)
         # cderi_dm = oe.contract('gik,kj->gij', cderi, dm, backend='jax')

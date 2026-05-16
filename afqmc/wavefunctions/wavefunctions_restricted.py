@@ -257,6 +257,7 @@ class rhf(wave_function_restricted):
     norb: int
     nelec: Tuple[int, int]
     n_batch: int = 1
+    nchol_chunk: int = 100
 
     def __post_init__(self):
         assert (
@@ -304,25 +305,60 @@ class rhf(wave_function_restricted):
                          backend="jax")
         return fb
 
+    # @partial(jit, static_argnums=0)
+    # def _calc_energy_restricted(
+    #     self, walker: jax.Array, ham_data: dict, wave_data: dict
+    # ) -> jax.Array:
+    #     h0, rot_h1, rot_chol = ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"]
+    #     # green_walker = self._calc_green(walker, wave_data)
+    #     # ene1 = 2.0 * jnp.sum(green_walker * rot_h1)
+    #     # f = oe.contract("gij,jk->gik", rot_chol, green_walker.T, backend="jax")
+    #     # c = vmap(jnp.trace)(f)
+    #     # exc = jnp.sum(vmap(lambda x: x * x.T)(f))
+    #     # ene2 = 2.0 * jnp.sum(c * c) - exc
+    #     # return h0 + ene1 + ene2
+    #     green = self._calc_green(walker, wave_data)
+    #     hg = oe.contract("pq,pq->", rot_h1, green, backend="jax")
+    #     e1 = 2 * hg
+    #     lg = oe.contract("gpr,qr->gpq", rot_chol, green, backend="jax")
+    #     e2_1 = 2 * jnp.sum(oe.contract('gpp->g', lg, backend="jax")**2)
+    #     e2_2 = -oe.contract('gpq,gqp->',lg,lg, backend="jax")
+    #     e2 = e2_1 + e2_2
+    #     return h0 + e1 + e2
+
     @partial(jit, static_argnums=0)
     def _calc_energy_restricted(
-        self, walker: jax.Array, ham_data: dict, wave_data: dict
-    ) -> jax.Array:
-        h0, rot_h1, rot_chol = ham_data["h0"], ham_data["rot_h1"], ham_data["rot_chol"]
-        # green_walker = self._calc_green(walker, wave_data)
-        # ene1 = 2.0 * jnp.sum(green_walker * rot_h1)
-        # f = oe.contract("gij,jk->gik", rot_chol, green_walker.T, backend="jax")
-        # c = vmap(jnp.trace)(f)
-        # exc = jnp.sum(vmap(lambda x: x * x.T)(f))
-        # ene2 = 2.0 * jnp.sum(c * c) - exc
-        # return h0 + ene1 + ene2
+        self, 
+        walker: jax.Array, 
+        ham_data: dict, 
+        wave_data: dict
+        ):
+        nocc, norb = self.nelec[0], self.norb
+        h0 = ham_data["h0"]
+        rot_h1 = ham_data["h1"][0][:nocc,:]
+        rot_chol = ham_data["chol"].reshape(-1,norb,norb)[:,:nocc,:]
         green = self._calc_green(walker, wave_data)
         hg = oe.contract("pq,pq->", rot_h1, green, backend="jax")
         e1 = 2 * hg
-        lg = oe.contract("gpr,qr->gpq", rot_chol, green, backend="jax")
-        e2_1 = 2 * jnp.sum(oe.contract('gpp->g', lg, backend="jax")**2)
-        e2_2 = -oe.contract('gpq,gqp->',lg,lg, backend="jax")
-        e2 = e2_1 + e2_2
+
+        naux = rot_chol.shape[0]
+        nchol_chunk = self.nchol_chunk
+        nchunks = (naux + nchol_chunk - 1) // nchol_chunk
+        pad = nchunks * nchol_chunk - naux
+        rot_chol = jnp.pad(rot_chol, ((0, pad), (0, 0), (0, 0)))
+        rot_chol_chunks = rot_chol.reshape(nchunks, nchol_chunk, nocc, norb)
+
+        def scanned_fun(carry, x):
+            chol_c = x  # (nchol_chunk, nocc, norb)
+            lg_c = oe.contract("gpr,qr->gpq", chol_c, green, backend="jax")
+            tr_c = oe.contract("gpp->g", lg_c, backend="jax")
+            e2_1_c = 2 * jnp.sum(tr_c ** 2)
+            e2_2_c = -oe.contract("gpq,gqp->", lg_c, lg_c, backend="jax")
+            carry += e2_1_c + e2_2_c
+            return carry, 0.0
+
+        e2, _ = lax.scan(scanned_fun, 0.0, rot_chol_chunks)
+
         return h0 + e1 + e2
 
     # @partial(jit, static_argnums=0)

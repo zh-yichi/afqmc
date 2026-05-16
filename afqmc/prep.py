@@ -235,7 +235,9 @@ def _prep_afqmc(options=None,
 
     if spin_type == "restricted":
         if options["trial"] == "rhf":
-            trial = wavefunctions_restricted.rhf(norb, nelec_sp, n_batch=options["n_batch"])
+            trial = wavefunctions_restricted.rhf(norb, nelec_sp, 
+                                                 n_batch=options["n_batch"],
+                                                 nchol_chunk=options["nchol_chunk"], )
             wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
         elif "cisd" in options["trial"]:
@@ -247,11 +249,16 @@ def _prep_afqmc(options=None,
                 trial_wave_data = {"ci1": t1, "ci2": ci2, 
                                 "mo_coeff": mo_coeff[0][:, : nelec_sp[0]]}
                 wave_data.update(trial_wave_data)
-                trial = wavefunctions_restricted.cisd(norb, nelec_sp, n_batch=options["n_batch"])
+                trial = wavefunctions_restricted.cisd(norb, nelec_sp, 
+                                                      n_batch=options["n_batch"]
+                                                      )
                 if "pt" in options["trial"]:
-                    trial = wavefunctions_restricted.cisd_pt(norb, nelec_sp, n_batch=options["n_batch"])
+                    trial = wavefunctions_restricted.cisd_pt(norb, nelec_sp, 
+                                                             n_batch=options["n_batch"],
+                                                             )
                 if "hf" in options["trial"]:
-                    trial = wavefunctions_restricted.cisd_hf(norb, nelec_sp, n_batch=options["n_batch"])
+                    trial = wavefunctions_restricted.cisd_hf(norb, nelec_sp, 
+                                                             n_batch=options["n_batch"])
                 if "/" in options["trial"]:
                     guide_wave = wavefunctions_restricted.cisd(norb, nelec_sp, n_batch=options["n_batch"])
                     trial_wave = wavefunctions_restricted.rhf(norb, nelec_sp, n_batch=options["n_batch"])
@@ -352,7 +359,8 @@ def _prep_afqmc(options=None,
     
     elif spin_type == "unrestricted":
         if options["trial"] == "uhf":
-            trial = wavefunctions_unrestricted.uhf(norb, nelec_sp, n_batch=options["n_batch"])
+            trial = wavefunctions_unrestricted.uhf(norb, nelec_sp, 
+                                                   n_batch=options["n_batch"])
             wave_data["mo_coeff"] = [
                 mo_coeff[0][:, : nelec_sp[0]],
                 mo_coeff[1][:, : nelec_sp[1]],

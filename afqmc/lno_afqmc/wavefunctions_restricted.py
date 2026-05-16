@@ -267,99 +267,149 @@ class rhf(wave_function_restricted):
         green = self._calc_green(walker, wave_data)
         hg = oe.contract("pq,pq->", rot_h1, green, backend="jax")
         e1 = 2 * hg
-
-        # lg = oe.contract("gpr,qr->gpq", rot_chol, green, backend="jax")
-        # e2_1 = 2 * jnp.sum(oe.contract('gpp->g', lg, backend="jax")**2)
-        # e2_2 = -oe.contract('gpq,gqp->',lg,lg, backend="jax")
-
-        naux = rot_chol.shape[0]
-        nchol_chunk = self.nchol_chunk
-        nchunks = (naux + nchol_chunk - 1) // nchol_chunk
-        pad = nchunks * nchol_chunk - naux
-        rot_chol = jnp.pad(rot_chol, ((0, pad), (0, 0), (0, 0)))
-        rot_chol_chunks = rot_chol.reshape(nchunks, nchol_chunk, nocc, norb)
-
-        def scanned_fun(carry, x):
-            chol_c = x  # (nchol_chunk, nocc, norb)
-            lg_c = oe.contract("gpr,qr->gpq", chol_c, green, backend="jax")
-            tr_c = oe.contract("gpp->g", lg_c, backend="jax")
-            e2_1_c = 2 * jnp.sum(tr_c ** 2)
-            e2_2_c = -oe.contract("gpq,gqp->", lg_c, lg_c, backend="jax")
-            carry += e2_1_c + e2_2_c
-            return carry, 0.0
-
-        e2, _ = lax.scan(scanned_fun, 0.0, rot_chol_chunks)
-
+        lg = oe.contract("gpr,qr->gpq", rot_chol, green, backend="jax")
+        e2_1 = 2 * jnp.sum(oe.contract('gpp->g', lg, backend="jax")**2)
+        e2_2 = -oe.contract('gpq,gqp->',lg,lg, backend="jax")
+        e2 = e2_1 + e2_2
         return h0 + e1 + e2
+
+    # @partial(jit, static_argnums=0)
+    # def _calc_energy_restricted(
+    #     self, 
+    #     walker: jax.Array, 
+    #     ham_data: dict, 
+    #     wave_data: dict
+    #     ):
+    #     nocc, norb = self.nelec[0], self.norb
+    #     h0 = ham_data["h0"]
+    #     rot_h1 = ham_data["h1"][0][:nocc,:]
+    #     rot_chol = ham_data["chol"].reshape(-1,norb,norb)[:,:nocc,:]
+    #     green = self._calc_green(walker, wave_data)
+    #     hg = oe.contract("pq,pq->", rot_h1, green, backend="jax")
+    #     e1 = 2 * hg
+
+    #     lg = oe.contract("gpr,qr->gpq", rot_chol, green, backend="jax")
+    #     e2_1 = 2 * jnp.sum(oe.contract('gpp->g', lg, backend="jax")**2)
+    #     e2_2 = -oe.contract('gpq,gqp->',lg,lg, backend="jax")
+    #     e2 = e2_1 + e2_1
+
+    #     # naux = rot_chol.shape[0]
+    #     # nchol_chunk = self.nchol_chunk
+    #     # nchunks = (naux + nchol_chunk - 1) // nchol_chunk
+    #     # pad = nchunks * nchol_chunk - naux
+    #     # rot_chol = jnp.pad(rot_chol, ((0, pad), (0, 0), (0, 0)))
+    #     # rot_chol_chunks = rot_chol.reshape(nchunks, nchol_chunk, nocc, norb)
+
+    #     # def scanned_fun(carry, x):
+    #     #     chol_c = x  # (nchol_chunk, nocc, norb)
+    #     #     lg_c = oe.contract("gpr,qr->gpq", chol_c, green, backend="jax")
+    #     #     tr_c = oe.contract("gpp->g", lg_c, backend="jax")
+    #     #     e2_1_c = 2 * jnp.sum(tr_c ** 2)
+    #     #     e2_2_c = -oe.contract("gpq,gqp->", lg_c, lg_c, backend="jax")
+    #     #     carry += e2_1_c + e2_2_c
+    #     #     return carry, 0.0
+
+    #     # e2, _ = lax.scan(scanned_fun, 0.0, rot_chol_chunks)
+
+    #     return h0 + e1 + e2
     
+    # @partial(jit, static_argnums=0)
+    # def _calc_ecorr(self, walker: jax.Array, ham_data: dict, wave_data: dict):
+    #     '''hf correlation energy'''
+    #     # <HF|H-E0|walker>/<HF|walker>
+    #     rot_h1 = ham_data['rot_h1']
+    #     nocc = rot_h1.shape[0]
+    #     rot_chol_ov = ham_data['rot_chol'][:, :nocc, nocc:]
+    #     green_ov = self._calc_green(walker, wave_data)[:nocc, nocc:]
+
+    #     # lg = oe.contract('gia,ja->gij', rot_chol_ov, green_walker_ov, backend="jax")
+    #     # trlg = oe.contract('gii->g', lg, backend="jax")
+    #     # e1 = oe.contract('g,g->', trlg, trlg, backend="jax") * 2 
+    #     # e2 = oe.contract('gij,gji->', lg, lg, backend="jax")
+    #     # e_corr = e1 - e2
+
+    #     naux = rot_chol_ov.shape[0]
+    #     nchol_chunk = self.nchol_chunk
+    #     nchunks = (naux + nchol_chunk - 1) // nchol_chunk
+    #     pad = nchunks * nchol_chunk - naux
+    #     rot_chol_ov = jnp.pad(rot_chol_ov, ((0, pad), (0, 0), (0, 0)))
+    #     rot_chol_chunks = rot_chol_ov.reshape(nchunks, nchol_chunk, nocc, -1)
+
+    #     def scanned_fun(carry, x):
+    #         chol_c = x  # (nchol_chunk, nocc, nvir)
+    #         lg_c = oe.contract('gia,ja->gij', chol_c, green_ov, backend="jax")
+    #         trlg_c = oe.contract('gii->g', lg_c, backend="jax")
+    #         e1_c = oe.contract('g,g->', trlg_c, trlg_c, backend="jax") * 2
+    #         e2_c = oe.contract('gij,gji->', lg_c, lg_c, backend="jax")
+    #         carry += e1_c - e2_c
+    #         return carry, 0.0
+
+    #     e_corr, _ = lax.scan(scanned_fun, 0.0, rot_chol_chunks)
+    #     return jnp.real(e_corr)
+    
+    # @partial(jit, static_argnums=0)
+    # def _calc_eorb(self, walker: jax.Array, ham_data: dict, wave_data: dict):
+    #     '''hf orbital correlation energy'''
+    #     # <HF|H_i|walker>/<HF|walker>
+    #     rot_h1 = ham_data['rot_h1']
+    #     prj = wave_data["prjlo"]
+    #     nocc = rot_h1.shape[0]
+    #     rot_chol_ov = ham_data['rot_chol'][:, :nocc, nocc:]
+    #     green_ov = self._calc_green(walker, wave_data)[:nocc, nocc:]
+
+    #     # lg = oe.contract('gia,ja->gij', rot_chol[:,:nocc,nocc:], green_walker[:nocc,nocc:], backend="jax")
+    #     # trlg = oe.contract('gii->g', lg, backend="jax")
+    #     # e1 = oe.contract('gik,ik,g->',lg, prj, trlg, backend="jax")*2 
+    #     # e2 = oe.contract('gij,gjk,ik->',lg, lg, prj, backend="jax")
+    #     # eorb = e1 - e2
+
+    #     naux = rot_chol_ov.shape[0]
+    #     nchol_chunk = self.nchol_chunk
+    #     nchunks = (naux + nchol_chunk - 1) // nchol_chunk
+    #     pad = nchunks * nchol_chunk - naux
+    #     rot_chol_ov = jnp.pad(rot_chol_ov, ((0, pad), (0, 0), (0, 0)))
+    #     rot_chol_chunks = rot_chol_ov.reshape(nchunks, nchol_chunk, nocc, -1)
+
+    #     def scanned_fun(carry, x):
+    #         chol_c = x  # (nchol_chunk, nocc, nvir)
+    #         lg_c = oe.contract('gia,ja->gij', chol_c, green_ov, backend="jax")
+    #         trlg_c = oe.contract('gii->g', lg_c, backend="jax")
+    #         e1_c = oe.contract('gik,ik,g->', lg_c, prj, trlg_c, backend="jax") * 2
+    #         e2_c = oe.contract('gij,gjk,ik->', lg_c, lg_c, prj, backend="jax")
+    #         carry += e1_c - e2_c
+    #         return carry, 0.0
+
+    #     eorb, _ = lax.scan(scanned_fun, 0.0, rot_chol_chunks)
+
+    #     return jnp.real(eorb)
+
     @partial(jit, static_argnums=0)
     def _calc_ecorr(self, walker: jax.Array, ham_data: dict, wave_data: dict):
         '''hf correlation energy'''
         # <HF|H-E0|walker>/<HF|walker>
-        rot_h1 = ham_data['rot_h1']
+        rot_h1, rot_chol = ham_data['rot_h1'], ham_data['rot_chol']
         nocc = rot_h1.shape[0]
-        rot_chol_ov = ham_data['rot_chol'][:, :nocc, nocc:]
-        green_ov = self._calc_green(walker, wave_data)[:nocc, nocc:]
-
-        # lg = oe.contract('gia,ja->gij', rot_chol_ov, green_walker_ov, backend="jax")
-        # trlg = oe.contract('gii->g', lg, backend="jax")
-        # e1 = oe.contract('g,g->', trlg, trlg, backend="jax") * 2 
-        # e2 = oe.contract('gij,gji->', lg, lg, backend="jax")
-        # e_corr = e1 - e2
-
-        naux = rot_chol_ov.shape[0]
-        nchol_chunk = self.nchol_chunk
-        nchunks = (naux + nchol_chunk - 1) // nchol_chunk
-        pad = nchunks * nchol_chunk - naux
-        rot_chol_ov = jnp.pad(rot_chol_ov, ((0, pad), (0, 0), (0, 0)))
-        rot_chol_chunks = rot_chol_ov.reshape(nchunks, nchol_chunk, nocc, -1)
-
-        def scanned_fun(carry, x):
-            chol_c = x  # (nchol_chunk, nocc, nvir)
-            lg_c = oe.contract('gia,ja->gij', chol_c, green_ov, backend="jax")
-            trlg_c = oe.contract('gii->g', lg_c, backend="jax")
-            e1_c = oe.contract('g,g->', trlg_c, trlg_c, backend="jax") * 2
-            e2_c = oe.contract('gij,gji->', lg_c, lg_c, backend="jax")
-            carry += e1_c - e2_c
-            return carry, 0.0
-
-        e_corr, _ = lax.scan(scanned_fun, 0.0, rot_chol_chunks)
+        green_walker = self._calc_green(walker, wave_data)
+        lg = oe.contract('gia,ja->gij', rot_chol[:,:nocc,nocc:], green_walker[:nocc,nocc:], backend="jax")
+        trlg = oe.contract('gii->g', lg, backend="jax")
+        e1 = oe.contract('g,g->', trlg, trlg, backend="jax") * 2 
+        e2 = oe.contract('gij,gji->', lg, lg, backend="jax")
+        e_corr = e1 - e2
         return jnp.real(e_corr)
     
     @partial(jit, static_argnums=0)
     def _calc_eorb(self, walker: jax.Array, ham_data: dict, wave_data: dict):
         '''hf orbital correlation energy'''
         # <HF|H_i|walker>/<HF|walker>
-        rot_h1 = ham_data['rot_h1']
+        rot_h1, rot_chol = ham_data['rot_h1'], ham_data['rot_chol']
         prj = wave_data["prjlo"]
         nocc = rot_h1.shape[0]
-        rot_chol_ov = ham_data['rot_chol'][:, :nocc, nocc:]
-        green_ov = self._calc_green(walker, wave_data)[:nocc, nocc:]
-
-        # lg = oe.contract('gia,ja->gij', rot_chol[:,:nocc,nocc:], green_walker[:nocc,nocc:], backend="jax")
-        # trlg = oe.contract('gii->g', lg, backend="jax")
-        # e1 = oe.contract('gik,ik,g->',lg, prj, trlg, backend="jax")*2 
-        # e2 = oe.contract('gij,gjk,ik->',lg, lg, prj, backend="jax")
-        # eorb = e1 - e2
-
-        naux = rot_chol_ov.shape[0]
-        nchol_chunk = self.nchol_chunk
-        nchunks = (naux + nchol_chunk - 1) // nchol_chunk
-        pad = nchunks * nchol_chunk - naux
-        rot_chol_ov = jnp.pad(rot_chol_ov, ((0, pad), (0, 0), (0, 0)))
-        rot_chol_chunks = rot_chol_ov.reshape(nchunks, nchol_chunk, nocc, -1)
-
-        def scanned_fun(carry, x):
-            chol_c = x  # (nchol_chunk, nocc, nvir)
-            lg_c = oe.contract('gia,ja->gij', chol_c, green_ov, backend="jax")
-            trlg_c = oe.contract('gii->g', lg_c, backend="jax")
-            e1_c = oe.contract('gik,ik,g->', lg_c, prj, trlg_c, backend="jax") * 2
-            e2_c = oe.contract('gij,gjk,ik->', lg_c, lg_c, prj, backend="jax")
-            carry += e1_c - e2_c
-            return carry, 0.0
-
-        eorb, _ = lax.scan(scanned_fun, 0.0, rot_chol_chunks)
-
+        green_walker = self._calc_green(walker, wave_data)
+        lg = oe.contract('gia,ja->gij', rot_chol[:,:nocc,nocc:], green_walker[:nocc,nocc:], backend="jax")
+        trlg = oe.contract('gii->g', lg, backend="jax")
+        e1 = oe.contract('gik,ik,g->',lg, prj, trlg, backend="jax")*2 
+        e2 = oe.contract('gij,gjk,ik->',lg, lg, prj, backend="jax")
+        eorb = e1 - e2
         return jnp.real(eorb)
 
     # @partial(jit, static_argnums=0)
@@ -1292,9 +1342,34 @@ class ccsd_pt2(rhf):
             return carry, 0.0
 
         e2, _ = lax.scan(scanned_fun, 0.0, rot_chol_chunks)
-
         e_corr = e0 + e1 + e2
+
         return e_corr
+
+    # @partial(jit, static_argnums=0)
+    # def _calc_eorb_bar(self, walker, ham_data, wave_data):
+    #     '''
+    #     calculate the correlation energy of the Hamiltonian
+    #     transformed by exp(T1^dagger):
+    #     ecorr_bar = <psi_0|H_bar|walker_bar>/<psi_0|walker_bar>
+    #     |walker_bar> = exp(T1^dagger) |walker>
+    #     H_bar = exp(T1^dagger) H exp(-T1^dagger)
+    #     |psi_0> is the mean-field solution of H
+    #     '''
+    #     nocc, norb = self.nelec[0], self.norb
+    #     prjlo = wave_data['prjlo']
+    #     e0 = ham_data['e0t1orb'] # <psi_0|H_bar|psi_0>
+    #     rot_fock = ham_data['fock_bar'][:nocc,:]
+    #     rot_chol = ham_data['chol_bar'].reshape(-1,norb,norb)[:,:nocc,:]
+
+    #     gf = self._calc_green(walker, wave_data) #(walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
+    #     e1 = oe.contract('ia,ia->',gf[:nocc,nocc:], rot_fock[:nocc,nocc:], backend="jax") * 2
+    #     lg = oe.contract('gia,ka->gik', rot_chol[:,:nocc,nocc:], gf[:nocc,nocc:], backend="jax")
+    #     e2 = oe.contract('gik,ik,gjj->', lg, prjlo, lg, backend="jax")*2 \
+    #         - oe.contract('gij,gjk,ik->',lg, lg, prjlo, backend="jax")
+    #     e_corr = e0 + e1 + e2
+
+    #     return e_corr
 
     @partial(jit, static_argnums=0)
     def _t2eorb_tc(self, walker, ham_data, wave_data):
