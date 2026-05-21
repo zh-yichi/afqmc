@@ -9,7 +9,7 @@ import numpy as np
 from jax import jit, jvp, lax, vmap, random
 import opt_einsum as oe
 
-class wave_function_unrestricted(ABC):
+class uwfn(ABC):
     """Base class for wave functions. Contains methods for wave function measurements.
 
     The measurement methods support two types of walker batches:
@@ -37,8 +37,8 @@ class wave_function_unrestricted(ABC):
 
     norb: int
     nelec: Tuple[int, int]
+    nchol_chunk: int
     n_batch: int = 1
-
 
     def calc_overlap(self, walkers: list, wave_data: dict) -> jax.Array:
         n_walkers = walkers[0].shape[0]
@@ -292,7 +292,7 @@ class wave_function_unrestricted(ABC):
 
 
 @dataclass
-class uhf(wave_function_unrestricted):
+class uhf(uwfn):
     """Class for the unrestricted Hartree-Fock wave function.
 
     The corresponding wave_data contains "mo_coeff", a list of two jax.Arrays of shape (norb, nelec[sigma]).
@@ -441,7 +441,7 @@ class uhf(wave_function_unrestricted):
 
 
 @dataclass
-class ucisd(wave_function_unrestricted):
+class ucisd(uwfn):
     """A manual implementation of the UCISD wave function."""
 
     norb: int
@@ -731,8 +731,8 @@ class ucisd(wave_function_unrestricted):
 
 
 @dataclass
-class uccsd_pt(uhf):
-    """A manual implementation of the UCCSD_PT wave function."""
+class uptccsd(uhf):
+    """A manual implementation of the Spin-Unrestricted ptCCSD wave function."""
 
     norb: int
     nelec: Tuple[int, int]
@@ -976,137 +976,14 @@ class uccsd_pt(uhf):
 
 
 @dataclass
-class uccsd_pt2(uhf):
-    """Tensor contraction form of the UCCSD_PT2 (exact T1) trial wave function."""
+class upt2ccsd(uhf):
+    """Tensor contraction form of the Spin-Unrestricted pt2CCSD (exact T1) trial wave function."""
 
     norb: int
     nelec: Tuple[int, int]
     n_batch: int = 1
     nchol_chunk: int = 100
     mix_precision: bool = True
-
-    def hs_op(self, wave_data: dict): # t2aa, t2ab, t2bb) -> dict:
-        # adapted from Yann
-
-        nOa, nOb = self.nelec
-        n = self.norb
-        nVa, nVb = (n - nOa, n - nOb)
-
-        # Number of excitations
-        nex_a = nOa * nVa
-        nex_b = nOb * nVb
-
-        t2aa = wave_data['t2aa']
-        t2ab = wave_data["t2ab"]
-        t2bb = wave_data["t2bb"]
-
-        assert n == nOb + nVb
-        assert t2aa.shape == (nOa, nOa, nVa, nVa)
-        assert t2ab.shape == (nOa, nOb, nVa, nVb)
-        assert t2bb.shape == (nOb, nOb, nVb, nVb)
-
-        # t2(i,j,a,b) -> t2(ai,bj)
-        t2aa = jnp.einsum("ijab->aibj", t2aa)
-        t2ab = jnp.einsum("ijab->aibj", t2ab)
-        t2bb = jnp.einsum("ijab->aibj", t2bb)
-
-        t2aa = t2aa.reshape(nex_a, nex_a)
-        t2ab = t2ab.reshape(nex_a, nex_b)
-        t2bb = t2bb.reshape(nex_b, nex_b)
-
-        # Symmetric t2 =
-        # t2aa/2 t2ab
-        # t2ab^T t2bb
-        t2 = np.zeros((nex_a + nex_b, nex_a + nex_b))
-        t2[:nex_a, :nex_a] = 0.5 * t2aa
-        t2[nex_a:, :nex_a] = t2ab.T
-        t2[:nex_a, nex_a:] = t2ab
-        t2[nex_a:, nex_a:] = 0.5 * t2bb
-
-        # t2 = LL^T
-        e_val, e_vec = jnp.linalg.eigh(t2)
-        L = e_vec @ jnp.diag(np.sqrt(e_val + 0.0j))
-        assert abs(jnp.linalg.norm(t2 - L @ L.T)) < 1e-12
-
-        # alpha/beta operators for HS
-        # Summation on the left to have a list of operators
-        La = L[:nex_a, :]
-        Lb = L[nex_a:, :]
-        La = La.T.reshape(nex_a + nex_b, nVa, nOa)
-        Lb = Lb.T.reshape(nex_a + nex_b, nVb, nOb)
-
-        # wave_data["T2_La"] = La
-        # wave_data["T2_Lb"] = Lb
-
-        return [La, Lb]
-    
-    @partial(jax.jit, static_argnums=(0, 2))
-    def get_stocc(self, wave_data: dict, nslater: int):
-        # adapted from Yann
-
-        nOa, nOb = self.nelec
-        # nVa, nVb = self.nvirt
-        n = self.norb
-        # nVa, nVb = (n - nOa, n - nOb)
-
-        # nex_a = nOa * nVa
-        # nex_b = nOb * nVb
-
-        t1a = wave_data["t1a"]
-        t1b = wave_data["t1b"]
-
-        Ca_occ, Ca_vir = jnp.split(wave_data["mo_coeff"][0], [nOa], axis=1)
-        Cb_occ, Cb_vir = jnp.split(wave_data["mo_coeff"][1], [nOb], axis=1)
-
-        # e^T1
-        e_t1a = t1a.T + 0.0j
-        e_t1b = t1b.T + 0.0j
-
-        ops_a = jnp.array([e_t1a] * nslater)
-        ops_b = jnp.array([e_t1b] * nslater)
-
-        # La = wave_data["T2_La"]
-        # Lb = wave_data["T2_Lb"]
-        La, Lb = self.hs_op(wave_data)
-
-        wave_data["key"], subkey = random.split(wave_data["key"])
-        fields = random.normal(
-            subkey,
-            shape=(
-                nslater,
-                La.shape[0],
-            ),
-        )
-
-        # e^{T1+T2}
-        ops_a = ops_a + jnp.einsum("wg,gai->wai", fields, La)
-        ops_b = ops_b + jnp.einsum("wg,gai->wai", fields, Lb)
-
-        # Initial determinants
-        rdm1 = self.get_rdm1(wave_data)
-        natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, :nOa]
-        natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, :nOb]
-
-        stocc_a = jnp.array([natorbs_up + 0.0j] * nslater)
-        stocc_b = jnp.array([natorbs_dn + 0.0j] * nslater)
-
-        id_a = jnp.array([np.identity(n) + 0.0j] * nslater)
-        id_b = jnp.array([np.identity(n) + 0.0j] * nslater)
-
-        # e^{T1+T2} \ket{\phi}
-        stocc_a = (
-            id_a + jnp.einsum("pa,wai,iq -> wpq", Ca_vir, ops_a, Ca_occ.T)
-        ) @ stocc_a
-        stocc_b = (
-            id_b + jnp.einsum("pa,wai,iq -> wpq", Cb_vir, ops_b, Cb_occ.T)
-        ) @ stocc_b
-
-        stocc_a = jnp.array(stocc_a)
-        stocc_b = jnp.array(stocc_b)
-
-        # stocc = UHFWalkers([walkers_a, walkers_b])
-        return [stocc_a, stocc_b]
-    
 
     @partial(jit, static_argnums=0)
     def thouless_trans(self, t1):
@@ -1347,8 +1224,8 @@ class uccsd_pt2(uhf):
     
 
 @dataclass
-class uccsd_pt2_eff(uccsd_pt2):
-    """Tensor contraction form of the UCCSD_PT2 (exact T1) trial wave function."""
+class upt2ccsd_eff(upt2ccsd):
+    """Tensor contraction form of the Spin-Unrestricted CCSD (exact T1) trial wave function."""
 
     norb: int
     nelec: Tuple[int, int]
@@ -1539,7 +1416,7 @@ class uccsd_pt2_eff(uccsd_pt2):
 
 
 @dataclass
-class uccsd_pt_ad(uhf):
+class uptccsd_ad(uhf):
     """differential form of the CCSD_PT wave function."""
 
     norb: int
@@ -1663,7 +1540,7 @@ class uccsd_pt_ad(uhf):
 
 
 @dataclass
-class uccsd_pt2_ad(uhf):
+class upt2ccsd_ad(uhf):
     """differential form of the CCSD_PT2 (exact T1) wave function."""
 
     norb: int

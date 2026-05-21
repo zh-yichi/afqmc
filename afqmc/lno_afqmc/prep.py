@@ -8,9 +8,6 @@ from jax import numpy as jnp
 from jax import scipy as jsp
 import opt_einsum as oe
 
-import os
-os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
-
 import h5py, pickle, time
 import numpy as np
 from pyscf import lib

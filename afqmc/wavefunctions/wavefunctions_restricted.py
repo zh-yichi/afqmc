@@ -10,7 +10,7 @@ from jax import random, jit, jvp, lax, vmap
 import opt_einsum as oe
 
 
-class wave_function_restricted(ABC):
+class rwfn(ABC):
     """Base class for wave functions. Contains methods for wave function measurements.
 
     The measurement methods support two types of walker batches:
@@ -40,7 +40,6 @@ class wave_function_restricted(ABC):
     nelec: Tuple[int, int]
     n_batch: int = 1
 
-    # @calc_overlap.register
     def calc_overlap(self, walkers: jax.Array, wave_data: dict) -> jax.Array:
         n_walkers = walkers.shape[0]
         batch_size = n_walkers // self.n_batch
@@ -241,7 +240,7 @@ class wave_function_restricted(ABC):
 
 # we assume afqmc is performed in the rhf orbital basis
 @dataclass
-class rhf(wave_function_restricted):
+class rhf(rwfn):
     """Class for the restricted Hartree-Fock wave function.
 
     The corresponding wave_data should contain "mo_coeff", a jax.Array of shape (norb, nelec).
@@ -409,7 +408,7 @@ class rhf(wave_function_restricted):
         return hash(tuple(self.__dict__.values()))
 
 
-class mixed(wave_function_restricted):
+class mixed(rwfn):
 
     def __init__(self, guide, trial):
         self._guide = guide
@@ -455,7 +454,7 @@ class mixed(wave_function_restricted):
 
 
 @dataclass
-class cisd(wave_function_restricted):
+class cisd(rwfn):
     """A manual implementation of the CISD wave function."""
 
     norb: int
@@ -651,7 +650,7 @@ class cisd(wave_function_restricted):
         return hash(tuple(self.__dict__.values()))
     
 @dataclass
-class cid(wave_function_restricted):
+class cid(rwfn):
     """A manual implementation of the CISD wave function."""
 
     norb: int
@@ -811,8 +810,8 @@ class cid(wave_function_restricted):
 
 
 @dataclass
-class ccsd_pt(rhf):
-    """A manual implementation of the CCSD_PT wave function."""
+class ptccsd(rhf):
+    """A manual implementation of the ptCCSD wave function."""
 
     norb: int
     nelec: Tuple[int, int]
@@ -988,7 +987,7 @@ class ccsd_pt(rhf):
         return hash(tuple(self.__dict__.values()))
     
 @dataclass
-class ccd_pt(rhf):
+class ptccd(rhf):
 
     @partial(jit, static_argnums=0)
     def _calc_green(self, walker: jax.Array, wave_data: dict) -> jax.Array:
@@ -1092,8 +1091,8 @@ class ccd_pt(rhf):
         return hash(tuple(self.__dict__.values()))
     
 @dataclass
-class ccsd_pt2(rhf):
-    """Tensor contraction form of the CCSD_PT2 (exact T1) trial wave function."""
+class pt2ccsd(rhf):
+    """Tensor contraction form of the pt2CCSD (exact T1) trial wave function."""
 
     norb: int
     nelec: Tuple[int, int]
@@ -1242,8 +1241,8 @@ class ccsd_pt2(rhf):
         return hash(tuple(self.__dict__.values()))
 
 @dataclass
-class ccsd_pt_ad(rhf):
-    """differential form of the CCSD_PT wave function."""
+class ptccsd_ad(rhf):
+    """differential form of the ptCCSD wave function."""
 
     norb: int
     nelec: Tuple[int, int]
@@ -1363,7 +1362,7 @@ class ccsd_pt_ad(rhf):
 
 
 @dataclass
-class ccsd_pt2_ad(rhf):
+class pt2ccsd_ad(rhf):
 
     norb: int
     nelec: Tuple[int, int]
