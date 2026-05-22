@@ -55,11 +55,8 @@ def setup_jax():
         # if you need to share the GPU with another process.
         # os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
     else:
-        os.environ["XLA_FLAGS"] = (
-            "--xla_force_host_platform_device_count=1 "
-            "--xla_cpu_multi_thread_eigen=false "
-            "--intra_op_parallelism_threads=1"
-        )
+        # CPU: only real XLA flags here.
+        os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
     # --- Now it's safe to import and configure JAX ---
     from jax import config
@@ -89,13 +86,13 @@ def setup_jax():
     print(f"Device kind:  {devices[0].device_kind}")
     print(f"Platform:     {devices[0].platform}")
     # Memory stats (works on CUDA backends)
-    try:
-        stats = devices[0].memory_stats()
-        gb = 1024**3
-        print(f"Memory:       {stats['bytes_in_use']/gb:.2f} GB in use | "
-              f"{stats['bytes_limit']/gb:.2f} GB limit")
-    except Exception as e:
-        print(f"memory_stats unavailable: {e}")
+    # try:
+    #     stats = devices[0].memory_stats()
+    #     gb = 1024**3
+    #     print(f"Memory:       {stats['bytes_in_use']/gb:.2f} GB in use | "
+    #           f"{stats['bytes_limit']/gb:.2f} GB limit")
+    # except Exception as e:
+    #     print(f"memory_stats unavailable: {e}")
 
     if use_gpu and not backend_ok:
         print("WARNING: GPU was requested/detected but JAX did not initialize "
