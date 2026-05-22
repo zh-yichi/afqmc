@@ -1,54 +1,57 @@
 import time
 
 import numpy as np
-from jax import random
-from jax import numpy as jnp
+# from jax import random
+# from jax import numpy as jnp
 
 from afqmc import config, prep, sampling
 
 from functools import partial
 
 print = partial(print, flush=True)
-
-txt_width = 110
-print(f"{' AFQMC Sampling Started ':-^{txt_width}}")
-
 init_time = time.time()
 
+# print("\nAFQMC Started")
+prep.print_start()
 config.setup_jax()
 
-ham_data, ham, prop, trial, wave_data, sampler, options = (prep._prep_afqmc())
+ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
-init_walkers = None
-trial_rdm1 = trial.get_rdm1(wave_data)
+# init_walkers = None
+# trial_rdm1 = trial.get_rdm1(wave_data)
 if "rdm1" not in wave_data:
-    wave_data["rdm1"] = trial_rdm1
+    wave_data["rdm1"] = trial.get_rdm1(wave_data)
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 h0 = ham_data['h0']
 
-prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers)
-if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
-    raise ValueError(
-        "Initial overlaps are zero. Pass walkers with non-zero overlap."
-    )
+# prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers=None)
+# if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
+#     raise ValueError(
+#         "Initial overlaps are zero. Pass walkers with non-zero overlap."
+#     )
 
-prop_data["key"] = random.PRNGKey(options["seed"])
-prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-prop_data["n_killed_walkers"] = 0
+# prop_data["key"] = random.PRNGKey(options["seed"])
+# # prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+# prop_data["n_killed_walkers"] = 0
 
-t1, t2, e0, e1 = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
-ept_sp = h0 + e0/t1 + e1/t1 - t2 * e0 / t1**2
-ept = jnp.real(jnp.sum(ept_sp) / prop.n_walkers)
+# t1, t2, e0, e1 = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
+# ept_sp = h0 + e0/t1 + e1/t1 - t2 * e0 / t1**2
+# ept = jnp.real(jnp.sum(ept_sp) / prop.n_walkers)
 
-prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
-print(f'initial AFQMC/pt2CCSD Energy is {ept:.6f}')
+# prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+# print(f'initial AFQMC/pt2CCSD Energy is {ept:.6f}')
+
+prop_data = prep.init_ccsd_prop_data(
+    wave_data, ham_data, prop, trial,
+    options["n_walkers"], options["walker_type"], options["seed"],
+)
 
 init_e = prop_data["e_estimate"]
 init_w = np.sum(prop_data["weights"])
 
-print(f'Propagating with {options["n_walkers"]} walkers')
-print(f"{' Equilibration ':-^{txt_width}}")
+print("\nEquilibration")
+
 print(f"{'inv_T':>5s}  "
       f"{'weight':>12s}  {'killW':>5s}  "
       f"{'energy':>12s}  {'runTime':>8s}")
@@ -74,7 +77,8 @@ for n in range(1, neql_block+1):
               f"{wt:12.6f}  {nkill:5d}  "
               f"{e:12.6f}  {time.time() - init_time:8.2f}")
 
-print(f"{' Sampling Blocks ':-^{txt_width}}")
+print("\nSampling")
+
 print(f"{'blocks':>6s}  "
       f"{'weight':>12s}  {'killW':>5s}  "
       f"{'E_Guide':>12s}  {'error':>8s}  "
@@ -146,7 +150,7 @@ for n in range(sampler.n_blocks):
         if ept_err < 0.75 * options["max_error"] and n > 100:
             break
 
-print(f"{' Post Propagation ':-^{txt_width}}")
+print("\nPost Propagation Process")
 nsamples = n + 1
 print(f'Total number of samples {nsamples}')
 wt_sp = wt_sp[:nsamples]
@@ -184,7 +188,7 @@ print(f"Raw Trial/Guide overlap ratio:          {t1.real:.6f} ± {t1_err:.6f}")
 print(f"Raw AFQMC/pt2CCSD energy (covariance): {ept:.6f} ± {ept_cov_err:.6f}")
 print(f"Raw AFQMC/pt2CCSD energy (dir sample): {ept:.6f} ± {ept_sp_err:.6f}")
 
-print(f"{' Clean Obeservation ':-^{txt_width}}")
+print("\nRemove Outliers")
 
 def filter_outliers(ept_sp, zeta=10):
 
@@ -230,10 +234,9 @@ print(f"Clean AFQMC/pt2CCSD overlap ratio:        {t1.real:.6f} ± {t1_err:.6f}"
 print(f"Clean AFQMC/pt2CCSD energy (covariance): {ept:.6f} ± {ept_cov_err:.6f}")
 print(f"Clean AFQMC/ptCCSD energy (dir sample):  {ept:.6f} ± {ept_sp_err:.6f}")
 
-print(f"{' Blocking Analysis ':-^{txt_width}}")
+print("\nBlocking Analysis")
 
 t1_err = sampler.blocking_analysis(wt_clean, t1_clean.real, min_nblocks=40, final=True)
-
 ept_err = sampler.pt2blocking_analysis(
     wt_clean, t1_clean, t2_clean, e0_clean, e1_clean, h0, min_nblocks=40
     )
@@ -242,4 +245,4 @@ print(f"Final AFQMC/pt2CCSD overlap ratio: {t1.real:.6f} ± {t1_err:.6f}")
 # print(f"Final AFQMC/pt2CCSD energy: {eg:.6f} ± {eg_err:.6f}")
 print(f"Final AFQMC/pt2CCSD energy: {ept:.6f} ± {ept_err:.6f}")
 print(f"Total run time: {time.time() - init_time:.2f}")
-print(f"{' AFQMC Sampling Finished ':-^{txt_width}}")
+print(f"\nAFQMC Sampling Finished\n")

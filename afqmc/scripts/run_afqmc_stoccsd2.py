@@ -14,17 +14,9 @@ init_time = time.time()
 txt_width = 130
 print(f"{' AFQMC Sampling Started ':-^{txt_width}}")
 
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("--use_gpu", action="store_true")
-#     args = parser.parse_args()
-
-#     if args.use_gpu:
-#         config.afqmc_config["use_gpu"] = True
-
 config.setup_jax()
 
-ham_data, ham, prop, trial, wave_data, sampler, options = (prep._prep_afqmc())
+ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
 print(f"Sampler is {sampler}")
 print(f"Propagator is {prop}")

@@ -1,62 +1,31 @@
-import numpy as np
-from jax import random
-from jax import numpy as jnp
-from functools import partial
-from afqmc import config
-from afqmc import prep, sampling
 import time
-# import argparse
+import numpy as np
+from functools import partial
+from afqmc import config, prep, sampling
 
-# import jax
-# jax.config.update("jax_enable_x64", True)
-
-init_time = time.time()
 print = partial(print, flush=True)
-txt_width = 90
-print(f"{' AFQMC Sampling Started ':-^{txt_width}}")
+init_time = time.time()
 
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("--use_gpu", action="store_true")
-#     args = parser.parse_args()
-
-#     if args.use_gpu:
-#         config.afqmc_config["use_gpu"] = True
-        
+prep.print_start()
 config.setup_jax()
 
-ham_data, ham, prop, trial, wave_data, sampler, options = (prep._prep_afqmc())
+ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
-seed = options["seed"]
-init_walkers = None
-trial_rdm1 = trial.get_rdm1(wave_data)
 if "rdm1" not in wave_data:
-    wave_data["rdm1"] = trial_rdm1
+    wave_data["rdm1"] = trial.get_rdm1(wave_data)
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 h0 = ham_data['h0']
 
-prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers)
-if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
-    raise ValueError(
-        "Initial overlaps are zero. Pass walkers with non-zero overlap."
-    )
-prop_data["key"] = random.PRNGKey(options["seed"])
-
-prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-prop_data["n_killed_walkers"] = 0 
-
-t, e0, et = trial.calc_energy_pt(prop_data['walkers'], ham_data, wave_data)
-ept_init = jnp.real(e0 + et - t*(e0-h0))[0]
+prop_data = prep.init_ccsd_prop_data(
+    wave_data, ham_data, prop, trial,
+    options["n_walkers"], options["walker_type"], options["seed"],
+)
 
 init_e = prop_data["e_estimate"]
 init_w = np.sum(prop_data["weights"])
-prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
 
-print(f'# Propagating with {options["n_walkers"]} walkers')
-print(f'# initial AFQMC/ptCCSD Energy is {ept_init:.6f}')
-
-print(f"{' Equilibration ':-^{txt_width}}")
+print("\nEquilibration")
 print(f"{'inv_T':>5s}  "
       f"{'weight':>12s}  {'killW':>5s}  "
       f"{'energy':>12s}  {'runTime':>8s}")
@@ -81,7 +50,8 @@ for n in range(1,options["n_eql"]+1):
               f"{wt:12.6f}  {nkill:5d}  "
               f"{e:12.6f}  {time.time() - init_time:8.2f}")
 
-print(f"{' Sampling Blocks ':-^{txt_width}}")
+print("\nSampling")
+
 print(f"{'blocks':>6s}  "
       f"{'weight':>12s}  {'killW':>5s}  "
       f"{'E_Guide':>12s}  {'error':>8s}  "
@@ -133,7 +103,7 @@ for n in range(sampler.n_blocks):
         if ept_err < 0.75 * options["max_error"] and n > 100:
             break
 
-print(f"{' Post Propagation ':-^{txt_width}}")
+print("\nPost Propagation Process")
 nsamples = np.count_nonzero(wt_sp)
 print(f'Total number of samples {nsamples}')
 wt_sp = wt_sp[:nsamples]
@@ -157,7 +127,8 @@ ept_sp_err = np.std(ept_sp) / np.sqrt(nsamples)
 print(f"Raw AFQMC/ptCCSD energy (covariance): {ept:.6f} +/- {ept_cov_err:.6f}")
 print(f"Raw AFQMC/ptCCSD energy (dir sample): {ept:.6f} +/- {ept_sp_err:.6f}")
 
-print(f"{' Clean Obeservation ':-^{txt_width}}")
+print("\nRemove Outliers")
+
 def filter_outliers(ept_sp, zeta=10):
 
     median = np.median(ept_sp)
@@ -197,19 +168,19 @@ ept_sp_err = np.std(ept_clean) / np.sqrt(nclean)
 print(f"Clean AFQMC/ptCCSD energy (covariance): {ept:.6f} +/- {ept_cov_err:.6f}")
 print(f"Clean AFQMC/ptCCSD energy (dir sample): {ept:.6f} +/- {ept_sp_err:.6f}")
 
-print(f"{' Blocking Analysis ':-^{txt_width}}")
+print("\nBlocking Analysis")
 
 plateau_value = sampler.ptblocking_analysis(
     wt_clean, 
     t_clean, 
     e0_clean, 
-    et_clean, 
-    h0, 
+    et_clean,
+    h0,
     min_nblocks=20
     )
 
 print(f"Final AFQMC/pt2CCSD energy: {ept:.6f} ± {plateau_value:.6f}")
 print(f"Total run time: {time.time() - init_time:.2f}")
 
-print(f"{' AFQMC Sampling Finished ':-^{txt_width}}")
+print(f"\nAFQMC Sampling Finished\n")
 

@@ -1,199 +1,351 @@
 import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
 
-import pickle
-# from typing import Optional, Union
 import h5py
+import pickle
+
 import numpy as np
+
+import opt_einsum as oe
 import jax.numpy as jnp
-
-# import opt_einsum as oe
-
-# from pyscf import mcscf, scf
-# from pyscf.cc.ccsd import CCSD
-# from pyscf.cc.uccsd import UCCSD
+from jax import scipy as jsp
+from jax import jit, lax, random, vmap
 
 from afqmc import hamiltonian, cholesky
 from afqmc import propagation, sampling, fp_sampling
 from afqmc.wavefunctions import wavefunctions_restricted
 from afqmc.wavefunctions import wavefunctions_unrestricted
+
 from functools import partial
 print = partial(print, flush=True)
 
-# def prep_afqmc(
-#     mf_or_cc: Union[scf.rhf.RHF, scf.uhf.UHF, CCSD, UCCSD],
-#     basis_coeff: Optional[np.ndarray] = None,
-#     norb_frozen: int = 0,
-#     chol_cut: float = 1e-5,
-#     amp_file = "amplitudes.npz",
-#     chol_file = "FCIDUMP_chol"
-# ):
+def init_walkers_1rdm(
+        trial,
+        wave_data: dict, 
+        n_walkers: int, 
+        restricted: bool = False
+        ):
+    """Initialize walkers by rdm1 natural orbitals.
 
-#     print("Preparing AFQMC calculation")
+    Args:
+        trial: trial wavefunction object
+        wave_data: The trial wave function data.
+        n_walkers: The number of walkers.
+        restricted: Whether the walkers should be restricted.
 
-#     if isinstance(mf_or_cc, (CCSD, UCCSD)):
-#         mf = mf_or_cc._scf
-#         cc = mf_or_cc
-#         if cc.frozen is not None:
-#             norb_frozen = cc.frozen
-#         if isinstance(cc, UCCSD):
-#             # spin_type = 'unrestricted'
-#             t1a = np.array(cc.t1[0])
-#             t1b = np.array(cc.t1[1])
-#             t2aa, t2ab, t2bb = cc.t2
-#             t2aa = (t2aa - t2aa.transpose(0, 1, 3, 2)) / 2
-#             t2bb = (t2bb - t2bb.transpose(0, 1, 3, 2)) / 2
-#             t2aa = t2aa.transpose(0, 2, 1, 3)
-#             t2bb = t2bb.transpose(0, 2, 1, 3)
-#             t2ab = t2ab.transpose(0, 2, 1, 3)
-#             np.savez(
-#                 amp_file,
-#                 t1a=t1a,
-#                 t1b=t1b,
-#                 t2aa=t2aa,
-#                 t2ab=t2ab,
-#                 t2bb=t2bb,
-#             )
-#         elif isinstance(cc, CCSD):
-#             # spin_type = 'restricted'
-#             t2 = cc.t2
-#             t2 = t2.transpose(0, 2, 1, 3)
-#             t1 = np.array(cc.t1)
-#             np.savez(amp_file, t1=t1, t2=t2)
-#     else:
-#         mf = mf_or_cc
-
-#     if isinstance(mf, scf.rhf.RHF):
-#         spin_type = 'restricted'
-#     elif isinstance(mf, scf.uhf.UHF):
-#         spin_type = 'unrestricted'
-
-#     mol = mf.mol
-#     nao = mf.mol.nao
-
-#     if basis_coeff is None:
-#         basis_coeff = mf.mo_coeff
-
-#     print("Calculating Cholesky integrals")
+    Returns:
+        walkers: The initial walkers.
+            If restricted, a single jax.Array of shape (nwalkers, norb, nelec[0]).
+            If unrestricted, a list of two jax.Arrays each of shape (nwalkers, norb, nelec[sigma]).
+    """
+    rdm1 = trial.get_rdm1(wave_data)
+    natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : trial.nelec[0]]
+    natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : trial.nelec[1]]
     
-#     if getattr(mf, "with_df", None) is not None:
-#         print('Find Density Fit Teonsers in MF object')
-#         print('Integrals will be built by DF Tensors')
-#         useDF = True
-#     else:
-#         useDF = False
+    if restricted:
+        if trial.nelec[0] == trial.nelec[1]:
+            det_overlap = np.linalg.det(
+                natorbs_up[:, : trial.nelec[0]].T @ natorbs_dn[:, : trial.nelec[1]]
+            )
+            if (
+                np.abs(det_overlap) > 1e-3
+            ):  # probably should scale this threshold with number of electrons
+                return jnp.array([natorbs_up + 0.0j] * n_walkers)
+            else:
+                overlaps = np.array(
+                    [
+                        natorbs_up[:, i].T @ natorbs_dn[:, i]
+                        for i in range(trial.nelec[0])
+                    ]
+                )
+                new_vecs = natorbs_up[:, : trial.nelec[0]] + np.einsum(
+                    "ij,j->ij", natorbs_dn[:, : trial.nelec[1]], np.sign(overlaps)
+                )
+                new_vecs = np.linalg.qr(new_vecs)[0]
+                det_overlap = np.linalg.det(
+                    new_vecs.T @ natorbs_up[:, : trial.nelec[0]]
+                ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : trial.nelec[1]])
+                if np.abs(det_overlap) > 1e-3:
+                    return jnp.array([new_vecs + 0.0j] * n_walkers)
+                else:
+                    raise ValueError(
+                        "Cannot find a set of RHF orbitals with good trial overlap."
+                    )
+        else:
+            # bring the dn orbital projection onto up space to the front
+            dn_proj = natorbs_up.T.conj() @ natorbs_dn
+            proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
+            orbs = natorbs_up @ proj_orbs
+            return jnp.array([orbs + 0.0j] * n_walkers)
+    else:
+        return [
+            jnp.array([natorbs_up + 0.0j] * n_walkers),
+            jnp.array([natorbs_dn + 0.0j] * n_walkers),
+        ]
 
-#     if spin_type == 'restricted':
+#### restricted ####
+def decompose_rt2(t2, thresh=1e-8):
+    # adapted from Yann
 
-#         # mc = mcscf.CASSCF(
-#         #     mf, nao - norb_frozen, mol.nelectron - 2 * norb_frozen
-#         # )
-#         # nelec = mc.nelecas
-#         # mc.mo_coeff = basis_coeff
-#         # h1e, enuc = mc.get_h1eff()
-#         # _, chol, _, _ = \
-#         #     pyscf_interface.generate_integrals(
-#         #     mol, mf.get_hcore(), basis_coeff, chol_cut, DFbas=DFbas)
+    # nO = self.nelec[0]
+    # nV = self.norb - nO
 
-#         nbasis = nao - norb_frozen
-#         nocc = int(np.count_nonzero(mf.mo_occ))
-#         nelec = [nocc - norb_frozen, nocc - norb_frozen]
-#         h1e, enuc = integral.h1e_ras(mf, basis_coeff, nbasis, norb_frozen, useDF)
-#         chol_ao = cholesky.cholesky_by_mol(mol, max_error=chol_cut, cmax=10)
-#         chol_ao = jnp.array(chol_ao.reshape((-1, nao, nao)))
-#         chol = cholesky.cderi2mo_gpu(chol_ao, basis_coeff)
-#         chol = cholesky.unpack_symmetric(chol, nao)
-#         chol = chol[:, norb_frozen:, norb_frozen:]
-#         # print("Finished calculating Cholesky integrals")
-#         # print("Size of the correlation space:")
-#         # print(f"Number of electrons: {nelec}")
-#         # print(f"Number of basis functions: {nbasis}")
-#         # print(f"Number of Cholesky vectors: {chol.shape[0]}")
-#         v0 = 0.5 * oe.contract("gpr,gqr->pq", chol, chol, backend="jax")
-#         h1e_mod = h1e - v0
-#         chol = chol.reshape((chol.shape[0], -1))
-            
-#     elif spin_type == 'unrestricted':
-#         # mc = mcscf.UCASSCF(
-#         #     mf, nao - norb_frozen,
-#         #     mol.nelectron - 2 * norb_frozen)
-#         # nelec = mc.nelecas
-#         # mc.mo_coeff = mf.mo_coeff
-#         # h1e, enuc = mc.get_h1eff()
-#         # nbasis = mc.ncas
+    nocc, nvir, _, _ = t2.shape
+    npair = nocc * nvir
 
-#         # _, chol_a, _, _ = pyscf_interface.generate_integrals(
-#         #     mol, mf.get_hcore(), mf.mo_coeff[0], chol_cut, DFbas=DFbas
-#         # )
-
-#         ncore = np.array([norb_frozen, norb_frozen], dtype = np.int32)
-#         nocc = np.array([np.count_nonzero(mf.mo_occ[0]),
-#                          np.count_nonzero(mf.mo_occ[1])],
-#                          dtype = np.int32)
-#         nelec = nocc - norb_frozen
-#         ncas = nao - ncore
-#         nbasis = ncas[0]
-#         h1e, enuc = integral.h1e_uas(mf, basis_coeff, ncas, ncore, useDF)
-
-#         chol_ao = cholesky.cholesky_by_mol(mol, max_error=chol_cut, cmax=10)
-#         chol_ao = jnp.array(chol_ao.reshape((-1, nao, nao)))
-#         chol_a = cholesky.cderi2mo_gpu(chol_ao, basis_coeff[0])
-#         chol_b = cholesky.cderi2mo_gpu(chol_ao, basis_coeff[1])
-#         chol_a = cholesky.unpack_symmetric(chol_a, nao)
-#         chol_b = cholesky.unpack_symmetric(chol_b, nao)
-#         print(f"Alpha Cholesky shape: {chol_a.shape} ")
-#         print(f" Beta Cholesky shape: {chol_b.shape} ")
-
-#         # nao = mf.mol.nao
-#         # chol_a = chol_a.reshape((-1, nao, nao))
-#         # s1e = mf.get_ovlp()
-#         # a2b = mf.mo_coeff[1].T @ s1e @ mf.mo_coeff[0]
-#         # chol_b = jnp.einsum('pr,grs,sq->gpq',a2b,chol_a,a2b.T)
-#         # chol_b = chol_b.reshape((-1, nao, nao))
-        
-#         # froze orbitals
-#         chol_a = chol_a[:, ncore[0]:, ncore[0]:]
-#         chol_b = chol_b[:, ncore[1]:, ncore[1]:]
-#         v0_a = 0.5 * oe.contract("gpr,gqr->pq", chol_a, chol_a, backend="jax")
-#         v0_b = 0.5 * oe.contract("gpr,gqr->pq", chol_b, chol_b, backend="jax")
-#         h1e = jnp.array(h1e)
-#         h1e_mod = jnp.array(h1e - jnp.array([v0_a,v0_b]))
-#         chol = jnp.array([chol_a.reshape(chol_a.shape[0], -1), chol_b.reshape(chol_b.shape[0], -1)])
-
-#     print("Finished calculating Cholesky integrals")
-#     print("Size of the correlation space:")
-#     print(f"Number of electrons: {nelec}")
-#     print(f"Number of basis functions: {nbasis}")
-#     print(f"Number of Cholesky vectors: {chol.shape[-2]} {chol.shape}")
-
-#     write_integral(
-#         enuc,
-#         h1e,
-#         h1e_mod,
-#         chol,
-#         sum(nelec),
-#         nbasis,
-#         ms=mol.spin,
-#         filename=chol_file,
-#     )
-
-# def write_integral(enuc, hcore, hcore_mod, chol,
-#                    nelec, nmo, ms, 
-#                    filename="FCIDUMP_chol",):
+    # assert t2.shape == (nO, nV, nO, nV)
     
-#     with h5py.File(filename, "w") as fh5:
-#         fh5["header"] = np.array([nelec, nmo, ms, chol.shape[-1]])
-#         fh5["hcore"] = hcore.flatten()
-#         fh5["hcore_mod"] = hcore_mod.flatten()
-#         fh5["chol"] = chol.flatten()
-#         fh5["energy_core"] = enuc
+    t2 = t2.reshape(npair, npair)
+    e_val, e_vec = jnp.linalg.eigh(t2)
 
-# print = partial(print, flush=True)
+    # Keep only important modes
+    mask = jnp.abs(e_val) > thresh
+    e_val_trunc = e_val[mask]
+    e_vec_trunc = e_vec[:, mask]
 
-def _prep_afqmc(options=None,
-                option_file="options.bin",
-                amp_file="amplitudes.npz",
-                chol_file="FCIDUMP_chol"):
+    tau = e_vec_trunc @ jnp.diag(jnp.sqrt(e_val_trunc + 0.0j))
+    
+    err = jnp.linalg.norm(t2 - tau @ tau.T)
+    assert err < 10 * thresh
+
+    # print(f'Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
+    # print(f'cutoff = {thresh:.2e} | error = {err:.2e}')
+    # print(f'number of T2 decomposition vectors {len(e_val_trunc)}')
+
+    tau = tau.T.reshape(-1, nocc, nvir)
+
+    return tau
+
+@jit
+def rthouless(init_slater, t):
+    '''
+    restricted thouless transformation
+    |psi'> = exp(t_ia a+ i)|psi>
+    use the block form of t, no need to apply full exp(t)
+    equivalent to the function below
+    '''
+    # norb, nocc = self.norb, self.nelec[0]
+    # nvir = norb - nocc
+    nocc, nvir = t.shape
+    norb = nocc + nvir
+    assert init_slater.shape == (norb, nocc)
+    t_full = jnp.eye(norb, dtype=jnp.complex128)
+    exp_t = t_full.at[:nocc, nocc:].set(t)
+    return exp_t.T @ init_slater
+
+@jit
+def rthouless_full(init_slater, t):
+    '''
+    restricted thouless transformation
+    |psi'> = exp(t_ia a+ i)|psi>
+    apply full exp(t)
+    equivalent to the function above
+    '''
+    nocc, nvir = t.shape
+    norb = nocc + nvir
+    assert init_slater.shape == (norb, nocc)
+    t_full = jnp.zeros((norb, norb), dtype=jnp.complex128)
+    t_full = t_full.at[:nocc, nocc:].set(t)
+    exp_t = jsp.linalg.expm(t_full)
+    return exp_t.T @ init_slater
+
+@partial(jit, static_argnames=("n_walkers"))
+def get_rccsd_walkers(prop_data, wave_data, n_walkers):
+    prop_data["key"], subkey = random.split(prop_data["key"])
+    
+    fieldy = random.normal(
+        subkey,
+        shape=(
+            n_walkers,
+            wave_data['tau'].shape[0],
+        ),
+    )
+    # ytaus shape (nwalker, nocc, nvir)
+    ytaus = oe.contract("wg,gia->wia", fieldy, wave_data['tau'], backend='jax')
+
+    slaters = vmap(lambda y: rthouless(wave_data['mo_t'], y))(ytaus)
+
+    # mo_t = wave_data['mo_t']
+
+    # def scan_body(carry, ytau):
+    #     # ytau_up, ytau_dn = ytau
+    #     slater = rthouless(wave_data['mo_t'], ytau)
+    #     return carry, slater
+
+    # # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
+    # _, slaters = lax.scan(scan_body, None, ytaus)
+
+    return slaters, prop_data
+
+
+def decompose_ut2(t2, thresh=1e-8):
+    # adapted from Yann
+    # norb = trial.norb
+    # nocca, noccb = trial.nelec
+    # nvira, nvirb = (norb - nocca, norb - noccb)
+
+    t2aa, t2ab, t2bb = t2
+    nocca, nvira, noccb, nvirb = t2ab.shape
+    # Number of excitation pairs
+    npaira = nocca * nvira
+    npairb = noccb * nvirb
+
+    assert t2aa.shape == (nocca, nvira, nocca, nvira)
+    # assert t2ab.shape == (nocca, nvira, noccb, nvirb)
+    assert t2bb.shape == (noccb, nvirb, noccb, nvirb)
+
+    # print('Decomposing Unrestricted T2 amplitudes')
+
+    t2aa = t2aa.reshape(npaira, npaira)
+    t2ab = t2ab.reshape(npaira, npairb)
+    t2bb = t2bb.reshape(npairb, npairb)
+
+    # Symmetric full t2 
+    # [[ t2aa/2  t2ab   ]]
+    # [[ t2ab^T  t2bb/2 ]]
+    t2full = np.zeros((npaira + npairb, npaira + npairb))
+    t2full[:npaira, :npaira] = 0.5 * t2aa
+    t2full[npaira:, :npaira] = t2ab.T
+    t2full[:npaira, npaira:] = t2ab
+    t2full[npaira:, npaira:] = 0.5 * t2bb
+    t2full = jnp.array(t2full)
+
+    # t2 = LL^T
+    e_val, e_vec = jnp.linalg.eigh(t2full)
+
+    # Keep only important modes
+    mask = jnp.abs(e_val) > thresh
+    e_val_trunc = e_val[mask]
+    e_vec_trunc = e_vec[:, mask]
+    
+    tau = e_vec_trunc @ jnp.diag(np.sqrt(e_val_trunc + 0.0j))
+    err = jnp.linalg.norm(t2full - tau @ tau.T)
+    assert err < 10 * thresh
+    # print(f'Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
+    # print(f'SVD cutoff = {thresh:.2e} | error = {err:.2e}')
+    # print(f'number of T2 decomposition vectors {len(e_val_trunc)}')
+
+    # alpha/beta operators for HS
+    # Summation on the left to have a list of operators
+    taua = tau.T[:,:npaira]
+    taub = tau.T[:, npaira:]
+    taua = taua.reshape(-1, nocca, nvira)
+    taub = taub.reshape(-1, noccb, nvirb)
+
+    return [taua, taub]
+
+@jit
+def uthouless(slater, tau):
+    # calculate |psi'> = exp(t_ia a+ i)|psi>
+    
+    slater_a, slater_b = slater
+    ta, tb = tau
+    nocc_a, nvir_a = ta.shape
+    nocc_b, nvir_b = tb.shape
+    
+    norb_a = nocc_a + nvir_a
+    norb_b = nocc_b + nvir_b
+    
+    assert norb_a == norb_b
+    norb = norb_a
+    
+    assert slater_a.shape == (norb, nocc_a)
+    assert slater_b.shape == (norb, nocc_b)
+
+    ta_full = jnp.eye(norb, dtype=jnp.complex128)
+    tb_full = jnp.eye(norb, dtype=jnp.complex128)
+    exp_ta = ta_full.at[:nocc_a, nocc_a:].set(ta)
+    exp_tb = tb_full.at[:nocc_b, nocc_b:].set(tb)
+
+    slater_ta = exp_ta.T @ slater_a
+    slater_tb = exp_tb.T @ slater_b
+
+    return [slater_ta, slater_tb]
+
+@partial(jit, static_argnames=("n_walkers"))
+def get_uccsd_walkers(prop_data, wave_data, n_walkers):
+    prop_data["key"], subkey = random.split(prop_data["key"])
+    
+    fieldy = random.normal(
+        subkey,
+        shape=(
+            n_walkers,
+            wave_data['tau'][0].shape[0],
+        ),
+    )
+    # ytaus shape (nwalker, nocc, nvir)
+    ytaus_up = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][0], backend='jax')
+    ytaus_dn = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][1], backend='jax')
+
+    mo_t = (wave_data["mo_ta"], wave_data["mo_tb"])
+    
+    slaters_up, slaters_dn = vmap(
+        lambda yu, yd: uthouless(mo_t, (yu, yd)))(ytaus_up, ytaus_dn)
+
+    # mo_t = [wave_data['mo_ta'], wave_data['mo_tb']]
+
+    # def scan_body(carry, ytau):
+    #     ytau_up, ytau_dn = ytau
+    #     slater_up, slater_dn = uthouless(mo_t, [ytau_up, ytau_dn])
+    #     return carry, (slater_up, slater_dn)
+
+    # # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
+    # _, (slaters_up, slaters_dn) = lax.scan(scan_body, None, (ytaus_up, ytaus_dn),)
+
+    return [slaters_up, slaters_dn], prop_data
+
+
+def get_ccsd_walkers(prop_data, wave_data, n_walkers, walker_type):
+    if walker_type == "rhf":
+        if "tau" not in wave_data:
+            wave_data["tau"] = decompose_rt2(wave_data["t2"])
+        return get_rccsd_walkers(prop_data, wave_data, n_walkers)
+    elif walker_type == "uhf":
+        if "tau" not in wave_data:
+            wave_data["tau"] = decompose_ut2([wave_data["t2aa"],
+                                              wave_data["t2ab"],
+                                              wave_data["t2bb"]])
+        return get_uccsd_walkers(prop_data, wave_data, n_walkers)
+    else:
+        raise ValueError(f"unsupport CCSD initial walker_type: {walker_type}")
+
+# def init_walkers(trial, prop_data, wave_data, n_walkers, walker_type):
+
+
+# @partial(jit, static_argnames=("prop", "trial", "n_walkers", "walker_type", "seed"))
+def init_ccsd_prop_data(wave_data, ham_data, prop, trial,
+                        n_walkers, walker_type, seed):
+    prop_data = {}
+    prop_data["weights"] = jnp.ones(prop.n_walkers)
+    prop_data["key"] = random.PRNGKey(seed)
+    
+    print("\nInitalize QMC walkers by stochastic CCSD")
+    init_walkers, prop_data = get_ccsd_walkers(
+        prop_data, wave_data, n_walkers, walker_type)
+    prop_data["walkers"] = init_walkers
+
+    h0 = ham_data["h0"]
+    t1s, t2s, e0s, e1s = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
+    olps = trial.calc_overlap(prop_data["walkers"], wave_data)
+    prop_data["overlaps"] = olps
+
+    olp = jnp.sum(olps)
+    t1 = jnp.sum(olps * t1s) / olp
+    t2 = jnp.sum(olps * t2s) / olp
+    e0 = jnp.sum(olps * e0s) / olp
+    e1 = jnp.sum(olps * e1s) / olp
+
+    energy = jnp.real(h0 + e0 / t1 + e1 / t1 - t2 * e0 / t1**2)
+
+    prop_data["e_estimate"] = energy
+    prop_data["pop_control_ene_shift"] = energy
+
+    return prop_data
+
+def init_afqmc(options=None,
+               option_file="options.bin",
+               amp_file="amplitudes.npz",
+               chol_file="FCIDUMP_chol"):
     
     if options is None:
         try:
@@ -202,7 +354,7 @@ def _prep_afqmc(options=None,
         except:
             options = {}
 
-    options["dt"] = options.get("dt", 0.01)
+    options["dt"] = options.get("dt", 0.005)
     options["n_exp_terms"] = options.get("n_exp_terms",6)
     options["n_walkers"] = options.get("n_walkers", 50)
     options["n_prop_steps"] = options.get("n_prop_steps", 50)
@@ -219,7 +371,7 @@ def _prep_afqmc(options=None,
     options["max_memory"] = options.get("max_memory", 2000) # MB
     options["mix_precision"] = options.get("mix_precision", True)
 
-    print("Load system from Integral File")
+    print("\nLoad system from Integral File")
 
     with h5py.File(chol_file, "r") as fh5:
         [nelec, norb, ms] = fh5["header"]
@@ -234,7 +386,7 @@ def _prep_afqmc(options=None,
 
     assert spin_type in ["restricted", "unrestricted"]
 
-    print(f"AFQMC Object Spin type: {spin_type}")
+    # print(f"AFQMC Object Spin type: {spin_type}")
 
     if spin_type == 'restricted':
         h1 = jnp.array(h1).reshape(norb, norb)
@@ -269,7 +421,6 @@ def _prep_afqmc(options=None,
         ham_data["chol"] = jnp.array([chol[0].reshape(chol[0].shape[0], -1),
                                       chol[1].reshape(chol[1].shape[0], -1)])
 
-    # options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
     options["nchol_chunk"] = cholesky.chunk_chol(chol, options["nchol_chunk"], 
                                                  options["max_memory"]/options["n_walkers"])
 
@@ -432,7 +583,7 @@ def _prep_afqmc(options=None,
                 mo_t = trial._thouless(mo, [t1a, t1b])
                 wave_data['mo_ta'] = mo_t[0]
                 wave_data['mo_tb'] = mo_t[1]
-                wave_data['tau'] = trial.decompose_t2([t2aa,t2ab,t2bb])
+                # wave_data['tau'] = trial.decompose_t2([t2aa,t2ab,t2bb])
             except:
                 raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
 
@@ -495,7 +646,7 @@ def _prep_afqmc(options=None,
             wave_data["t2aa"] = t2aa
             wave_data["t2bb"] = t2bb
             wave_data["t2ab"] = t2ab
-            wave_data['tau'] = trial.decompose_t2([t2aa,t2ab,t2bb])
+            # wave_data['tau'] = trial.decompose_t2([t2aa,t2ab,t2bb])
             if "ad" in options["trial"]:
                 trial = wavefunctions_unrestricted.upt2ccsd_ad(
                     norb, nelec_sp, n_batch=options["n_batch"])
@@ -609,11 +760,32 @@ def _prep_afqmc(options=None,
                     nchol,
                     )
 
-    print(f"Number of electrons: {nelec_sp} | 2xSpin: {ms}")
-    print(f"Number of orbitals: {norb}| Number of Chol: {nchol}")
+    print("\nQMC System")
+    print(f"Number of electrons: {nelec_sp}")
+    print(f"Spin Multiplicity:   {ms}")
+    print(f"Number of orbitals:  {norb}")
+    print(f"Number of Chol:      {nchol}")
 
+    print("\nQMC Parameters")
     for op in options:
         if options[op] is not None:
-            print(f"{op}: {options[op]}")
+            print(f"{str(op):<20s}: {str(options[op]):>20s}")
 
     return ham_data, ham, prop, trial, wave_data, sampler, options
+
+
+def print_start():
+    banner = r"""
+    ________                     _____                    
+    ___  __ \___  __________________(_)_____________ _    
+    __  /_/ /  / / /_  __ \_  __ \_  /__  __ \_  __ `/    
+    _  _, _// /_/ /_  / / /  / / /  / _  / / /  /_/ /     
+    /_/ |_| \__,_/ /_/ /_//_/ /_//_/  /_/ /_/_\__, /      
+                                             /____/       
+    _____________________________  ___________            
+    ___    |__  ____/_  __ \__   |/  /_  ____/            
+    __  /| |_  /_   _  / / /_  /|_/ /_  /                 
+    _  ___ |  __/   / /_/ /_  /  / / / /___               
+    /_/  |_/_/      \___\_\/_/  /_/  \____/               
+"""
+    print(banner)

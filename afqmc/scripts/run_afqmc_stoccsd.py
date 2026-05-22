@@ -1,5 +1,5 @@
 import time
-# import argparse
+
 import numpy as np
 from jax import random
 from jax import numpy as jnp
@@ -12,20 +12,9 @@ print = partial(print, flush=True)
 
 init_time = time.time()
 
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("--use_gpu", action="store_true")
-#     args = parser.parse_args()
-
-#     if args.use_gpu:
-#         config.afqmc_config["use_gpu"] = True
-
 config.setup_jax()
 
-ham_data, ham, prop, trial, wave_data, sampler, options = (prep._prep_afqmc())
-
-print(f'Sampler: {sampler}')
-print(f'Trial: {trial}')
+ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
 init_walkers = None
 trial_rdm1 = trial.get_rdm1(wave_data)

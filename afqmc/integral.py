@@ -217,7 +217,7 @@ def prep_integral(
     chol_file = "FCIDUMP_chol"
 ):
 
-    print("Preparing AFQMC calculation")
+    print("\nPreparing AFQMC calculation")
 
     if isinstance(mf_or_cc, (CCSD, UCCSD)):
         mf = mf_or_cc._scf
@@ -317,8 +317,8 @@ def prep_integral(
 
     print("Finished calculating Cholesky integrals")
     print("Size of the correlation space:")
-    print(f"Number of electrons: {nelec}")
-    print(f"Number of basis functions: {nbasis}")
+    print(f"Number of electrons:        {nelec}")
+    print(f"Number of basis functions:  {nbasis}")
     print(f"Number of Cholesky vectors: {chol.shape[-2]}")
 
     write_integral(

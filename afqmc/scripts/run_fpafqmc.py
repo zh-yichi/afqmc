@@ -22,19 +22,11 @@ def error_estimate(w_trj, e_trj):
 
     return e_mean, e_err
 
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("--use_gpu", action="store_true")
-#     args = parser.parse_args()
-
-#     if args.use_gpu:
-#         config.afqmc_config["use_gpu"] = True
-
 config.setup_jax()
 
 print = partial(print, flush=True)
 
-ham_data, ham, prop, trial, wave_data, sampler, options = (prep._prep_afqmc())
+ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
 print(f"Trial is {trial}")
 print(f"Propagator is {prop}")

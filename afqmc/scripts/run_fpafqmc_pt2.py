@@ -9,33 +9,6 @@ from functools import partial
 
 print = partial(print, flush=True)
 
-# def error_estimate_cov(h0, wt_trj, t1_trj, t2_trj, e0_trj, e1_trj):
-#     neql, ntrj = wt_trj.shape
-#     wt_mean = np.mean(wt_trj, axis=1)
-#     t1_mean = np.mean(wt_trj * t1_trj, axis=1) / wt_mean
-#     t2_mean = np.mean(wt_trj * t2_trj, axis=1) / wt_mean
-#     e0_mean = np.mean(wt_trj * e0_trj, axis=1) / wt_mean
-#     e1_mean = np.mean(wt_trj * e1_trj, axis=1) / wt_mean
-#     ept_mean = np.real(h0 + e0_mean / t1_mean + e1_mean / t1_mean - t2_mean * e0_mean / t1_mean**2)
-
-#     if ntrj == 1:
-#         ept_err = None
-        
-#     elif ntrj > 1:
-#         ept_err = np.zeros_like(ept_mean)
-#         for i in range(neql):
-#             t1, t2, e0, e1 = t1_mean[i], t2_mean[i], e0_mean[i], e1_mean[i]
-#             t1_sp, t2_sp, e0_sp, e1_sp = t1_trj[i,:], t2_trj[i,:], e0_trj[i,:], e1_trj[i,:]
-#             # (pE/pt1,pE/pt2,pE/pe0,pE/pe1)
-#             dE = np.array([-1/t1**2 * (e0+e1) + 2/t1**3 * t2 * e0,
-#                         -1/t1**2 * e0,
-#                             1/t1 - 1/t1**2 * t2,
-#                             1/t1])
-#             cov_te0e1 = np.cov([t1_sp, t2_sp, e0_sp, e1_sp])
-#             ept_err[i] = (np.sqrt(dE @ cov_te0e1 @ dE) / np.sqrt((neql))).real
-
-#     return ept_mean, ept_err
-
 def error_estimate(h0, wt_trj, t1_trj, t2_trj, e0_trj, e1_trj):
     neql, ntrj = wt_trj.shape
     wt_mean = np.mean(wt_trj, axis=1)
@@ -55,19 +28,11 @@ def error_estimate(h0, wt_trj, t1_trj, t2_trj, e0_trj, e1_trj):
 
     return ept_mean, ept_err
 
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("--use_gpu", action="store_true")
-#     args = parser.parse_args()
-
-#     if args.use_gpu:
-#         config.afqmc_config["use_gpu"] = True
-
 config.setup_jax()
 
 print = partial(print, flush=True)
 
-ham_data, ham, prop, trial, wave_data, sampler, options = (prep._prep_afqmc())
+ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
 print(f"Trial is {trial}")
 print(f"Propagator is {prop}")
@@ -82,18 +47,11 @@ if "rdm1" not in wave_data:
 
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
-# prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers = None)
-
-# if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
-#     raise ValueError(
-#         "Initial overlaps are zero. Pass walkers with non-zero overlap."
-#     )
 
 seeds = random.randint(random.PRNGKey(options["seed"]), 
                        shape=(sampler.n_trj,),
                        minval=0, 
                        maxval=100*sampler.n_trj)
-# prop_data["key"] = random.PRNGKey(options["seed"])
 
 @partial(jit, static_argnames=("prop", "trial"))
 def init_prop_data(wave_data, ham_data, prop, trial, seed):
