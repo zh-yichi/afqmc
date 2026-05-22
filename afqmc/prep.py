@@ -13,7 +13,7 @@ import jax.numpy as jnp
 # from pyscf.cc.ccsd import CCSD
 # from pyscf.cc.uccsd import UCCSD
 
-from afqmc import hamiltonian
+from afqmc import hamiltonian, cholesky
 from afqmc import propagation, sampling, fp_sampling
 from afqmc.wavefunctions import wavefunctions_restricted
 from afqmc.wavefunctions import wavefunctions_unrestricted
@@ -216,6 +216,7 @@ def _prep_afqmc(options=None,
     options["n_batch"] = options.get("n_batch", 1)
     options["max_error"] = options.get("max_error", 1e-3)
     options["nchol_chunk"] = options.get("nchol_chunk", 100)
+    options["max_memory"] = options.get("max_memory", 2000) # MB
     options["mix_precision"] = options.get("mix_precision", True)
 
     print("Load system from Integral File")
@@ -268,7 +269,9 @@ def _prep_afqmc(options=None,
         ham_data["chol"] = jnp.array([chol[0].reshape(chol[0].shape[0], -1),
                                       chol[1].reshape(chol[1].shape[0], -1)])
 
-    options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
+    # options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
+    options["nchol_chunk"] = cholesky.chunk_chol(chol, options["nchol_chunk"], 
+                                                 options["max_memory"]/options["n_walkers"])
 
     wave_data = {}
     mo_coeff = jnp.array([np.eye(norb),np.eye(norb)])
@@ -277,7 +280,8 @@ def _prep_afqmc(options=None,
         if options["trial"] == "rhf":
             trial = wavefunctions_restricted.rhf(norb, nelec_sp, 
                                                  n_batch=options["n_batch"],
-                                                 nchol_chunk=options["nchol_chunk"], )
+                                                 nchol_chunk=options["nchol_chunk"],
+                                                 )
             wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
         elif "cisd" in options["trial"]:

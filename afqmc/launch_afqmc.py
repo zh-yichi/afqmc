@@ -2,7 +2,6 @@ import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
 
 import pickle
-from afqmc import config
 
 def run_afqmc(options,
               option_file='options.bin',
@@ -13,8 +12,8 @@ def run_afqmc(options,
         pickle.dump(options, f)
     
     if options["use_gpu"]:
-        config.afqmc_config["use_gpu"] = True
-        config.setup_jax()
+        # config.afqmc_config["use_gpu"] = True
+        # config.setup_jax()
         gpu_flag = "--use_gpu"
     else:
         gpu_flag = ""

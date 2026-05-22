@@ -308,7 +308,7 @@ class uhf(uwfn):
 
     norb: int
     nelec: Tuple[int, int]
-    n_opt_iter: int = 30
+    nchol_chunk: int = 100
     n_batch: int = 1
 
     @partial(jit, static_argnums=0)
@@ -373,36 +373,52 @@ class uhf(uwfn):
         rot_chol_a, rot_chol_b = ham_data["rot_chol"]
         green_a, green_b = self._calc_green(walker_up, walker_dn, wave_data)
 
-        # e1 = jnp.sum(green_walker[0] * rot_h1[0]) \
-        #      + jnp.sum(green_walker[1] * rot_h1[1])
-        # f_up = oe.contract("gij,jk->gik", rot_chol[0], green_walker[0].T,
-        #                    backend="jax")
-        # f_dn = oe.contract("gij,jk->gik", rot_chol[1], green_walker[1].T,
-        #                    backend="jax")
-        # c_up = vmap(jnp.trace)(f_up)
-        # c_dn = vmap(jnp.trace)(f_dn)
-        # exc_up = jnp.sum(vmap(lambda x: x * x.T)(f_up))
-        # exc_dn = jnp.sum(vmap(lambda x: x * x.T)(f_dn))
-        # e2 = (jnp.sum(c_up * c_up)
-        #       + jnp.sum(c_dn * c_dn)
-        #       + 2.0 * jnp.sum(c_up * c_dn)
-        #       - exc_up - exc_dn) / 2.0
-
         e1 = oe.contract("pq,pq->", rot_h1_a, green_a) \
             + oe.contract("pq,pq->", rot_h1_b, green_b)
         
-        lg_a = oe.contract("gpr,qr->gpq", rot_chol_a, green_a)
-        lg_b = oe.contract("gpr,qr->gpq", rot_chol_b, green_b)
-        trlg_a = oe.contract("gpp->g", lg_a)
-        trlg_b = oe.contract("gpp->g", lg_b)
-        e2aa_c = jnp.sum(trlg_a**2)
-        e2aa_e = oe.contract("gpq,gqp->", lg_a, lg_a)
-        e2aa = e2aa_c - e2aa_e
-        e2ab = jnp.sum(trlg_a*trlg_b)*2
-        e2bb_c = jnp.sum(trlg_b**2)
-        e2bb_e = oe.contract("gpq,gqp->", lg_b, lg_b)
-        e2bb = e2bb_c - e2bb_e
-        e2 = (e2aa + e2ab + e2bb) / 2
+        # lg_a = oe.contract("gpr,qr->gpq", rot_chol_a, green_a)
+        # lg_b = oe.contract("gpr,qr->gpq", rot_chol_b, green_b)
+        # trlg_a = oe.contract("gpp->g", lg_a)
+        # trlg_b = oe.contract("gpp->g", lg_b)
+        # e2aa_c = jnp.sum(trlg_a**2)
+        # e2aa_e = oe.contract("gpq,gqp->", lg_a, lg_a)
+        # e2aa = e2aa_c - e2aa_e
+        # e2ab = jnp.sum(trlg_a*trlg_b)*2
+        # e2bb_c = jnp.sum(trlg_b**2)
+        # e2bb_e = oe.contract("gpq,gqp->", lg_b, lg_b)
+        # e2bb = e2bb_c - e2bb_e
+        # e2 = (e2aa + e2ab + e2bb) / 2
+        
+        nchol = rot_chol_a.shape[0]
+        nchol_chunk = self.nchol_chunk
+        nchunks = -(-nchol // nchol_chunk)
+        pad = nchunks * nchol_chunk - nchol
+        rot_chol_a = jnp.pad(rot_chol_a, ((0, pad), (0, 0), (0, 0)))
+        rot_chol_b = jnp.pad(rot_chol_b, ((0, pad), (0, 0), (0, 0)))
+        rot_chol_a_chunks = rot_chol_a.reshape(nchunks, nchol_chunk, *rot_chol_a.shape[1:])
+        rot_chol_b_chunks = rot_chol_b.reshape(nchunks, nchol_chunk, *rot_chol_b.shape[1:])
+
+        def scanned_fun(carry, x):
+            chol_a_c, chol_b_c = x  # (nchol_chunk, nocc, norb) each
+            lg_a_c = oe.contract("gpr,qr->gpq", chol_a_c, green_a, backend="jax")
+            lg_b_c = oe.contract("gpr,qr->gpq", chol_b_c, green_b, backend="jax")
+            trlg_a_c = oe.contract("gpp->g", lg_a_c, backend="jax")
+            trlg_b_c = oe.contract("gpp->g", lg_b_c, backend="jax")
+
+            e2aa_c_c = jnp.sum(trlg_a_c ** 2)
+            e2aa_e_c = oe.contract("gpq,gqp->", lg_a_c, lg_a_c, backend="jax")
+            e2aa_c = e2aa_c_c - e2aa_e_c
+
+            e2ab_c = jnp.sum(trlg_a_c * trlg_b_c) * 2
+
+            e2bb_c_c = jnp.sum(trlg_b_c ** 2)
+            e2bb_e_c = oe.contract("gpq,gqp->", lg_b_c, lg_b_c, backend="jax")
+            e2bb_c = e2bb_c_c - e2bb_e_c
+
+            carry += (e2aa_c + e2ab_c + e2bb_c) / 2
+            return carry, 0.0
+
+        e2, _ = lax.scan(scanned_fun, 0.0, (rot_chol_a_chunks, rot_chol_b_chunks))
 
         return h0 + e1 + e2
 
@@ -981,9 +997,9 @@ class upt2ccsd(uhf):
 
     norb: int
     nelec: Tuple[int, int]
-    n_batch: int = 1
     nchol_chunk: int = 100
-    mix_precision: bool = True
+    mix_precision: bool = False
+    n_batch: int = 1
 
     @partial(jit, static_argnums=0)
     def thouless_trans(self, t1):
@@ -1085,10 +1101,11 @@ class upt2ccsd(uhf):
             backend="jax")
         e2_2_2_1 = -((lt2g_a + lt2g_b) @ (lg_a + lg_b)) / 2.0
 
-        naux = chol_a.shape[0]
+        nchol = chol_a.shape[0]
         nchol_chunk = self.nchol_chunk
-        nchunks = (naux + nchol_chunk - 1) // nchol_chunk
-        pad = nchunks * nchol_chunk - naux
+        nchunks = -(-nchol // nchol_chunk)
+        pad = nchunks * nchol_chunk - nchol
+
         chol_a = jnp.pad(chol_a, ((0, pad), (0, 0), (0, 0)))
         chol_b = jnp.pad(chol_b, ((0, pad), (0, 0), (0, 0)))
         chol_a_chunks = chol_a.reshape(nchunks, nchol_chunk, self.norb, self.norb)

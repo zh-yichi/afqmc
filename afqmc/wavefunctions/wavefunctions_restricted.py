@@ -340,10 +340,10 @@ class rhf(rwfn):
         hg = oe.contract("pq,pq->", rot_h1, green, backend="jax")
         e1 = 2 * hg
 
-        naux = rot_chol.shape[0]
+        nchol = rot_chol.shape[0]
         nchol_chunk = self.nchol_chunk
-        nchunks = (naux + nchol_chunk - 1) // nchol_chunk
-        pad = nchunks * nchol_chunk - naux
+        nchunks = -(-nchol // nchol_chunk)
+        pad = nchunks * nchol_chunk - nchol
         rot_chol = jnp.pad(rot_chol, ((0, pad), (0, 0), (0, 0)))
         rot_chol_chunks = rot_chol.reshape(nchunks, nchol_chunk, nocc, norb)
 
@@ -1155,10 +1155,10 @@ class pt2ccsd(rhf):
         lt2g = oe.contract("gij,ij->g", chol, t2_green, backend="jax")
         e2_2_2_1 = -lt2g @ lg
 
-        naux = chol.shape[0]
+        nchol = chol.shape[0]
         nchol_chunk = self.nchol_chunk
-        nchunks = (naux + nchol_chunk - 1) // nchol_chunk
-        pad = nchunks * nchol_chunk - naux
+        nchunks = -(-nchol // nchol_chunk)
+        pad = nchunks * nchol_chunk - nchol
         chol = jnp.pad(chol, ((0, pad), (0, 0), (0, 0)))
         chol_chunks = chol.reshape(nchunks, nchol_chunk, self.norb, self.norb)
 
