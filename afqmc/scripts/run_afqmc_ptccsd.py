@@ -5,23 +5,23 @@ from functools import partial
 from afqmc import config
 from afqmc import prep, sampling
 import time
-import argparse
+# import argparse
 
-import jax
-jax.config.update("jax_enable_x64", True)
+# import jax
+# jax.config.update("jax_enable_x64", True)
 
 init_time = time.time()
 print = partial(print, flush=True)
 txt_width = 90
 print(f"{' AFQMC Sampling Started ':-^{txt_width}}")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--use_gpu", action="store_true")
-    args = parser.parse_args()
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument("--use_gpu", action="store_true")
+#     args = parser.parse_args()
 
-    if args.use_gpu:
-        config.afqmc_config["use_gpu"] = True
+#     if args.use_gpu:
+#         config.afqmc_config["use_gpu"] = True
         
 config.setup_jax()
 

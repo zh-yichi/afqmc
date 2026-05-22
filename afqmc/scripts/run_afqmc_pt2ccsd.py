@@ -1,13 +1,13 @@
 import time
-import argparse
+# import argparse
 import numpy as np
 from jax import random
 from jax import numpy as jnp
 from afqmc import config
 from afqmc import prep, sampling
 from functools import partial
-import jax
-jax.config.update("jax_enable_x64", True)
+# import jax
+# jax.config.update("jax_enable_x64", True)
 
 print = partial(print, flush=True)
 
@@ -16,13 +16,13 @@ print(f"{' AFQMC Sampling Started ':-^{txt_width}}")
 
 init_time = time.time()
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--use_gpu", action="store_true")
-    args = parser.parse_args()
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument("--use_gpu", action="store_true")
+#     args = parser.parse_args()
 
-    if args.use_gpu:
-        config.afqmc_config["use_gpu"] = True
+#     if args.use_gpu:
+#         config.afqmc_config["use_gpu"] = True
 
 config.setup_jax()
 

@@ -1,12 +1,13 @@
-from functools import partial
-from jax import random, jit
 import numpy as np
+from jax import random, jit
 from jax import numpy as jnp
-from afqmc import config
-from afqmc import prep
+
+from afqmc import config, prep
+
 import time
-import argparse
-from afqmc import config
+from functools import partial
+
+print = partial(print, flush=True)
 
 def error_estimate(w_trj, e_trj):
 
@@ -21,13 +22,13 @@ def error_estimate(w_trj, e_trj):
 
     return e_mean, e_err
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--use_gpu", action="store_true")
-    args = parser.parse_args()
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument("--use_gpu", action="store_true")
+#     args = parser.parse_args()
 
-    if args.use_gpu:
-        config.afqmc_config["use_gpu"] = True
+#     if args.use_gpu:
+#         config.afqmc_config["use_gpu"] = True
 
 config.setup_jax()
 

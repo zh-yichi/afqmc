@@ -11,12 +11,12 @@ def run_afqmc(options,
     with open(option_file, 'wb') as f:
         pickle.dump(options, f)
     
-    if options["use_gpu"]:
+    # if options["use_gpu"]:
         # config.afqmc_config["use_gpu"] = True
         # config.setup_jax()
-        gpu_flag = "--use_gpu"
-    else:
-        gpu_flag = ""
+    #     gpu_flag = "--use_gpu"
+    # else:
+    #     gpu_flag = ""
 
     if script is None:
         if options["free_projection"]:
@@ -47,5 +47,6 @@ def run_afqmc(options,
     print(f'QMC script: {script}')
 
     os.system(
-        f" python {script} {gpu_flag} |tee afqmc.out"
+        # f" python {script} {gpu_flag} |tee afqmc.out"
+        f" python {script} |tee afqmc.out"
     )
