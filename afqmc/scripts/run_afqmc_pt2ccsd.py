@@ -1,13 +1,12 @@
 import time
-# import argparse
+
 import numpy as np
 from jax import random
 from jax import numpy as jnp
-from afqmc import config
-from afqmc import prep, sampling
+
+from afqmc import config, prep, sampling
+
 from functools import partial
-# import jax
-# jax.config.update("jax_enable_x64", True)
 
 print = partial(print, flush=True)
 
@@ -15,14 +14,6 @@ txt_width = 110
 print(f"{' AFQMC Sampling Started ':-^{txt_width}}")
 
 init_time = time.time()
-
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("--use_gpu", action="store_true")
-#     args = parser.parse_args()
-
-#     if args.use_gpu:
-#         config.afqmc_config["use_gpu"] = True
 
 config.setup_jax()
 
@@ -71,12 +62,13 @@ sampler_eq = sampling.sampler(
     )
 
 block_time = prop.dt * sampler_eq.n_prop_steps
+neql_block = int(-(-options["eql_time"] // block_time))
 
-for n in range(1,options["n_eql"]+1):
+for n in range(1, neql_block+1):
     prop_data, (wt, e) \
         = sampler_eq.block_sample(prop_data, ham_data, prop, trial, wave_data)
 
-    if (n+1) % (min(max(options["n_eql"] // 10, 1), 20)) == 0 and n > 0:
+    if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
         nkill = prop_data["n_killed_walkers"]
         print(f"{(n+1)*block_time:5.2f}  "
               f"{wt:12.6f}  {nkill:5d}  "
