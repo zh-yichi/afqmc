@@ -341,60 +341,94 @@ def df2chol_gpu(dferi, max_error=1e-6):
     # We must return the integer nchol so you can slice it outside the JIT function
     return chol_out, final_nchol
 
-def chunk_chol(chol, nchol_chunk_init = None, memory = None):
+def chunk_chol(chol, nchol_chunk_init=None, memory=None):
     '''
-    chunk the cholesky vectors (nchol, norb, norb). 
-    The size of nchunk is determined by allowed memory. 
-    nchunk * nchol_chunk not necessarily = nchol. 
-    The Cholesky vectors maybe padded minimumly s.t. 
-    nchol_pad / nchunk <= nchol per chunk allowed
+    Chunk the cholesky vectors along the auxiliary (nchol) axis.
+    The chunk size is determined by allowed memory.
+    nchunk * nchol_chunk is not necessarily equal to nchol; the
+    cholesky vectors may be padded minimally s.t.
+    nchol_pad / nchunk <= nchol per chunk allowed.
 
     `memory` takes precedence when both arguments are given.
 
     Input
-        chol:             Cholesky vectors, shape (nchol, norb, norb)
-                          or (2, nchol, norb, norb) for unrestricted spin
+        chol: Cholesky vectors, in one of three layouts:
+                (a) (nchol, norb, norb)              — restricted / generalized
+                (b) (2, nchol, norb, norb)           — unrestricted, equal norb
+                (c) [chol_a, chol_b], each
+                    (nchol, norb_s, norb_s)          — unrestricted, unequal norb
         nchol_chunk_init: fallback chunk size when `memory` is not set
         memory:           allowed memory per walker in MB (takes precedence
                           over nchol_chunk_init when both are set)
 
     Return
-        nchunk:      number of chunks
         nchol_chunk: number of cholesky vectors per chunk
     '''
     if nchol_chunk_init is None and memory is None:
-        raise ValueError("Specify at least one of `nchol_chunk` or `memory`.")
-    
-    if chol.ndim == 3: # (nchol, norb, norb)
-        spin_factor = 1
+        raise ValueError("Specify at least one of `nchol_chunk_init` or `memory`.")
+
+    # Determine layout and compute (nchol, elements_per_vector) where
+    # elements_per_vector is summed across spin channels.
+    if isinstance(chol, (list, tuple)):
+        # Case (c): list of two arrays with possibly different norb
+        if len(chol) != 2:
+            raise ValueError(
+                f"List/tuple input must have exactly 2 arrays "
+                f"(alpha, beta), got {len(chol)}."
+            )
+        chol_a, chol_b = chol
+        if chol_a.ndim != 3 or chol_b.ndim != 3:
+            raise ValueError(
+                f"Each cholesky array must be 3D, got shapes "
+                f"{chol_a.shape} and {chol_b.shape}."
+            )
+        if chol_a.shape[0] != chol_b.shape[0]:
+            raise ValueError(
+                f"Both spin channels must share the same nchol axis, "
+                f"got {chol_a.shape[0]} and {chol_b.shape[0]}."
+            )
+        nchol = chol_a.shape[0]
+        m1_a, m2_a = chol_a.shape[1:]
+        m1_b, m2_b = chol_b.shape[1:]
+        elements_per_vector = m1_a * m2_a + m1_b * m2_b
+        shape_str = f"alpha=({m1_a},{m2_a}), beta=({m1_b},{m2_b})"
+
+    elif chol.ndim == 3:
+        # Case (a): (nchol, norb, norb)
         nchol, m1, m2 = chol.shape
-    elif chol.ndim == 4: # (2, nchol, norb, norb)
+        elements_per_vector = m1 * m2
+        shape_str = f"({m1},{m2})"
+
+    elif chol.ndim == 4:
+        # Case (b): (2, nchol, norb, norb), equal norb across spins
         spin_factor, nchol, m1, m2 = chol.shape
+        elements_per_vector = spin_factor * m1 * m2
+        shape_str = f"{spin_factor}x({m1},{m2})"
+
     else:
         raise ValueError(
-            f"chol must be 3D or 4D, got shape {chol.shape}."
+            f"chol must be 3D, 4D, or a list of two 3D arrays; "
+            f"got shape {chol.shape}."
         )
 
+    bytes_per_element = 16  # complex128
+    bytes_per_vector = elements_per_vector * bytes_per_element
+
     if memory is not None:
-        print(f"Maximum memory per walker:            {memory:.2f}") # (MB)
-        bytes_per_element = 16  # complex128
-        bytes_per_vector = m1 * m2 * bytes_per_element
+        print(f"Maximum memory per walker:            {memory:.2f} MB")
         max_chunk_size = int(memory * 1024**2 // bytes_per_vector)
     else:
         max_chunk_size = nchol_chunk_init
 
-    max_chunk_size = max_chunk_size // spin_factor
-
     if max_chunk_size < 1:
         raise ValueError(
-            f"Chunk size after spin_factor={spin_factor} division is < 1. "
-            f"Increase memory budget or nchol_chunk "
-            f"(norb1={m1}, norb2={m2}, bytes_per_vector="
-            f"{m1 * m2 * 16 / 1024**2:.3f} MB)."
+            f"Chunk size < 1. Increase memory budget or nchol_chunk_init "
+            f"(per-vector shape {shape_str}, bytes_per_vector="
+            f"{bytes_per_vector / 1024**2:.3f} MB)."
         )
 
-    nchunk = -(-nchol // max_chunk_size)   # ceil(Ng / max_chunk_size)
-    nchol_chunk = -(-nchol // nchunk)           # ceil(Ng / Nc)
+    nchunk = -(-nchol // max_chunk_size)        # ceil(nchol / max_chunk_size)
+    nchol_chunk = -(-nchol // nchunk)           # ceil(nchol / nchunk)
     npad = nchunk * nchol_chunk - nchol
 
     print(f"Maximum number of Cholesky per chunk: {max_chunk_size}")
@@ -403,3 +437,92 @@ def chunk_chol(chol, nchol_chunk_init = None, memory = None):
     print(f"Number of padding Cholesky:           {npad}")
 
     return nchol_chunk
+
+# def chunk_chol(chol, nchol_chunk_init = None, memory = None):
+#     '''
+#     chunk the cholesky vectors (nchol, norb, norb). 
+#     The size of nchunk is determined by allowed memory. 
+#     nchunk * nchol_chunk not necessarily = nchol. 
+#     The Cholesky vectors maybe padded minimumly s.t. 
+#     nchol_pad / nchunk <= nchol per chunk allowed
+
+#     `memory` takes precedence when both arguments are given.
+
+#     Input
+#         chol:             Cholesky vectors, shape (nchol, norb, norb)
+#                           or (2, nchol, norb, norb) for unrestricted spin
+#         nchol_chunk_init: fallback chunk size when `memory` is not set
+#         memory:           allowed memory per walker in MB (takes precedence
+#                           over nchol_chunk_init when both are set)
+
+#     Return
+#         nchunk:      number of chunks
+#         nchol_chunk: number of cholesky vectors per chunk
+#     '''
+#     if nchol_chunk_init is None and memory is None:
+#         raise ValueError("Specify at least one of `nchol_chunk` or `memory`.")
+    
+#     if isinstance(chol, (list, tuple)):
+#         # Case (c): list of two arrays with possibly different norb
+#         if len(chol) != 2:
+#             raise ValueError(
+#                 f"List/tuple input must have exactly 2 arrays "
+#                 f"(alpha, beta), got {len(chol)}."
+#             )
+#         chol_a, chol_b = chol
+#         if chol_a.ndim != 3 or chol_b.ndim != 3:
+#             raise ValueError(
+#                 f"Each cholesky array must be 3D, got shapes "
+#                 f"{chol_a.shape} and {chol_b.shape}."
+#             )
+#         if chol_a.shape[0] != chol_b.shape[0]:
+#             raise ValueError(
+#                 f"Both spin channels must share the same nchol axis, "
+#                 f"got {chol_a.shape[0]} and {chol_b.shape[0]}."
+#             )
+#         nchol = chol_a.shape[0]
+#         m1_a, m2_a = chol_a.shape[1:]
+#         m1_b, m2_b = chol_b.shape[1:]
+#         elements_per_vector = m1_a * m2_a + m1_b * m2_b
+#         shape_str = f"alpha=({m1_a},{m2_a}), beta=({m1_b},{m2_b})"
+
+#     elif chol.ndim == 3: # (nchol, norb, norb)
+#         spin_factor = 1
+#         nchol, m1, m2 = chol.shape
+
+#     elif chol.ndim == 4: # (2, nchol, norb, norb)
+#         spin_factor, nchol, m1, m2 = chol.shape
+
+#     else:
+#         raise ValueError(
+#             f"chol must be 3D or 4D, got shape {chol.shape}."
+#         )
+
+#     if memory is not None:
+#         print(f"Maximum memory per walker:            {memory:.2f}") # (MB)
+#         bytes_per_element = 16  # complex128
+#         bytes_per_vector = m1 * m2 * bytes_per_element
+#         max_chunk_size = int(memory * 1024**2 // bytes_per_vector)
+#     else:
+#         max_chunk_size = nchol_chunk_init
+
+#     max_chunk_size = max_chunk_size // spin_factor
+
+#     if max_chunk_size < 1:
+#         raise ValueError(
+#             f"Chunk size after spin_factor={spin_factor} division is < 1. "
+#             f"Increase memory budget or nchol_chunk "
+#             f"(norb1={m1}, norb2={m2}, bytes_per_vector="
+#             f"{m1 * m2 * 16 / 1024**2:.3f} MB)."
+#         )
+
+#     nchunk = -(-nchol // max_chunk_size)   # ceil(Ng / max_chunk_size)
+#     nchol_chunk = -(-nchol // nchunk)           # ceil(Ng / Nc)
+#     npad = nchunk * nchol_chunk - nchol
+
+#     print(f"Maximum number of Cholesky per chunk: {max_chunk_size}")
+#     print(f"Number of Cholesky chunks:            {nchunk}")
+#     print(f"Number of Cholesky per chunk:         {nchol_chunk}")
+#     print(f"Number of padding Cholesky:           {npad}")
+
+#     return nchol_chunk

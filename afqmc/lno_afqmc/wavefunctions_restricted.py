@@ -10,7 +10,7 @@ from jax import jit, jvp, lax, vmap
 import opt_einsum as oe
 
 
-class wave_function_restricted(ABC):
+class rwfn(ABC):
     """Base class for wave functions. Contains methods for wave function measurements.
 
     The measurement methods support two types of walker batches:
@@ -188,7 +188,7 @@ class wave_function_restricted(ABC):
 
 # we assume afqmc is performed in the rhf orbital basis
 @dataclass
-class rhf(wave_function_restricted):
+class rhf(rwfn):
     """Class for the restricted Hartree-Fock wave function.
 
     The corresponding wave_data should contain "mo_coeff", a jax.Array of shape (norb, nelec).
@@ -824,7 +824,7 @@ class rhf(wave_function_restricted):
 
 
 @dataclass
-class ccsd_pt(rhf):
+class ptccsd(rhf):
 
     # norb: int
     # nelec: Tuple[int, int]
@@ -980,7 +980,7 @@ class ccsd_pt(rhf):
 
 
 @dataclass
-class ccsd_pt_ad(rhf):
+class ptccsd_ad(rhf):
 
     # norb: int
     # nelec: Tuple[int, int]
@@ -1090,7 +1090,7 @@ class ccsd_pt_ad(rhf):
 
 
 @dataclass
-class ccsd_pt2_ad(rhf):
+class pt2ccsd_ad(rhf):
 
     # norb: int
     # nelec: Tuple[int, int]
@@ -1289,11 +1289,8 @@ class ccsd_pt2_ad(rhf):
 
 
 @dataclass
-class ccsd_pt2(rhf):
+class pt2ccsd(rhf):
 
-    # norb: int
-    # nelec: int
-    # n_batch: int = 1
     nchol_chunk: int = 100
     mix_precision: bool = True
 

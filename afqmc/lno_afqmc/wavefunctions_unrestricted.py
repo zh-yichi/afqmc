@@ -10,7 +10,7 @@ from jax import jit, jvp, lax, vmap
 import opt_einsum as oe
 
 
-class wave_function_unrestricted(ABC):
+class uwfn(ABC):
     """Base class for wave functions. Contains methods for wave function measurements.
 
     The measurement methods support two types of walker batches:
@@ -198,7 +198,7 @@ class wave_function_unrestricted(ABC):
 
 
 @dataclass
-class uhf(wave_function_unrestricted):
+class uhf(uwfn):
     """Class for the unrestricted Hartree-Fock wave function.
     """
     norb: Tuple[int, int]
@@ -340,7 +340,7 @@ class uhf(wave_function_unrestricted):
     
 
 @dataclass
-class uccsd_pt_ad(uhf):
+class uptccsd_ad(uhf):
 
     @partial(jit, static_argnums=0)
     def _t_orb(self, walker_up: jax.Array, walker_dn: jax.Array, wave_data: dict) -> complex:
@@ -466,7 +466,7 @@ class uccsd_pt_ad(uhf):
     
 
 @dataclass
-class uccsd_pt(uhf):
+class uptccsd(uhf):
 
     @partial(jit, static_argnums=(0)) 
     def _calc_eorb_pt(
@@ -655,7 +655,7 @@ class uccsd_pt(uhf):
     
 
 @dataclass
-class uccsd_pt2_ad(uhf):
+class upt2ccsd_ad(uhf):
 
     @partial(jit, static_argnums=0)
     def _calc_energy_bar(
@@ -896,7 +896,7 @@ class uccsd_pt2_ad(uhf):
     
 
 @dataclass
-class uccsd_pt2(uhf):
+class upt2ccsd(uhf):
     nchol_chunk: int = 100
     mix_precision: bool = True
 
@@ -1322,7 +1322,7 @@ class uccsd_pt2(uhf):
 
 
 @dataclass
-class uccsd_pt2_alpha(uccsd_pt2):
+class upt2ccsd_alpha(upt2ccsd):
     '''
     Alpha LNO UCCSD_PT2 Trial:
     separate Alpha and Beta LNO projection 
@@ -1631,7 +1631,7 @@ class uccsd_pt2_alpha(uccsd_pt2):
         return hash(tuple(self.__dict__.values()))
     
 @dataclass
-class uccsd_pt2_beta(uccsd_pt2):
+class upt2ccsd_beta(upt2ccsd):
     '''
     Beta LNO UCCSD_PT2 Trial
     Checkout the definition and comment 

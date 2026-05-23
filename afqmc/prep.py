@@ -366,7 +366,7 @@ def init_afqmc(options=None,
     options["trial"] = options.get("trial", None)
     options["free_projection"] = options.get("free_projection", False)
     options["n_batch"] = options.get("n_batch", 1)
-    options["max_error"] = options.get("max_error", 1e-3)
+    options["max_error"] = options.get("max_error", 0.0)
     options["nchol_chunk"] = options.get("nchol_chunk", 100)
     options["max_memory"] = options.get("max_memory", 2000) # MB
     options["mix_precision"] = options.get("mix_precision", True)
@@ -421,8 +421,8 @@ def init_afqmc(options=None,
         ham_data["chol"] = jnp.array([chol[0].reshape(chol[0].shape[0], -1),
                                       chol[1].reshape(chol[1].shape[0], -1)])
 
-    options["nchol_chunk"] = cholesky.chunk_chol(chol, options["nchol_chunk"], 
-                                                 options["max_memory"]/options["n_walkers"])
+    options["nchol_chunk"] = cholesky.chunk_chol(
+        chol, options["nchol_chunk"], options["max_memory"]/options["n_walkers"])
 
     wave_data = {}
     mo_coeff = jnp.array([np.eye(norb),np.eye(norb)])

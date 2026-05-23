@@ -15,6 +15,7 @@ from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
 from functools import partial
 
+from afqmc import cholesky
 from afqmc.lno_afqmc import propagation, sampling
 from afqmc.lno_afqmc import wavefunctions_restricted as lno_wavefunctions
 from afqmc.lno_afqmc import wavefunctions_unrestricted as ulno_wavefunctions
@@ -160,7 +161,7 @@ def get_uveff_gpu(mf, dm):
     vk_a = jnp.zeros_like(dm_a)
     vk_b = jnp.zeros_like(dm_b)
 
-    print('# Building JK matrix')
+    print('Building JK matrix')
     for cderi in mf.with_df.loop():
         # print(f'# number of DF vectors {cderi.shape[0]}')
         cderi = jnp.array(lib.unpack_tril(cderi, axis=-1))
@@ -623,7 +624,7 @@ def r_write_dqmc(
     hcore_mod = np.array(hcore_mod)
     chol = np.array(chol)
     with h5py.File(filename, "w") as fh5:
-        fh5["header"] = np.array([nelec, nmo, chol.shape[0]])
+        fh5["system"] = np.array([nelec, nmo])
         fh5["hcore"] = hcore.flatten()
         fh5["hcore_mod"] = hcore_mod.flatten()
         fh5["chol"] = chol.flatten()
@@ -652,7 +653,7 @@ def u_write_dqmc(
     chol_a = np.array(chol_a)
     chol_b = np.array(chol_b)
     with h5py.File(filename, "w") as fh5:
-        fh5["header"] = np.array([nelec[0], nelec[1], nmo[0], nmo[1], chol_a.shape[0]])
+        fh5["system"] = np.array([nelec[0], nelec[1], nmo[0], nmo[1]])
         fh5["h1e_a"] = h1e_a.flatten()
         fh5["h1e_b"] = h1e_b.flatten()
         fh5["h1mod_a"] = h1mod_a.flatten()
@@ -724,21 +725,20 @@ def prep_afqmc_integral(
     
     else: 
         raise NotImplementedError('Only Support Restricted and Unrestricted Now!')
-        # return None
 
 def auto_qmc_options(options={}, spin_type="restricted"):
 
     options["dt"] = options.get("dt", 0.005)
-    options["n_walkers"] = options.get("n_walkers", 50)
+    options["n_walkers"] = options.get("n_walkers", 300)
     options["n_prop_steps"] = options.get("n_prop_steps", 50)
-    options["n_eql"] = options.get("n_eql", 80)
+    options["eql_time"] = options.get("n_eql", 20)
     options["n_blocks"] = options.get("n_blocks", 500)
     options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
     options["n_batch"] = options.get("n_batch", 1)
-    options['use_gpu'] = options.get("use_gpu", True)
-    options['mix_precision'] = options.get("mix_precision", True)
+    options['max_memory'] = options.get("max_memory", 2000)
     options["nchol_chunk"] = options.get("nchol_chunk", 100)
-    options["max_error"] = options.get("max_error", 1e-4)
+    options['mix_precision'] = options.get("mix_precision", True)
+    options["max_error"] = options.get("max_error", 0.0)
     options["n_exp_terms"] = options.get("n_exp_terms",6)
 
     if spin_type == "restricted":
@@ -760,59 +760,65 @@ def r_prep_afqmc_run(
     # with open(option_file, "rb") as f:
     #         options = pickle.load(f)
 
-    # options = auto_qmc_options(options)   
+    # options = auto_qmc_options(options)
 
     with h5py.File(chol_file, "r") as fh5:
-        [nelec, nmo, nchol] = fh5["header"]
+        [nelec, norb] = fh5["system"]
         h0 = jnp.array(fh5.get("energy_core"))
         emf = jnp.array(fh5.get("emf"))
-        h1 = jnp.array(fh5.get("hcore")).reshape(nmo, nmo)
-        chol = jnp.array(fh5.get("chol")).reshape(-1, nmo, nmo)
-        h1_mod = jnp.array(fh5.get("hcore_mod")).reshape(nmo, nmo)
+        h1 = jnp.array(fh5.get("hcore")).reshape(norb, norb)
+        h1_mod = jnp.array(fh5.get("hcore_mod")).reshape(norb, norb)
+        chol = jnp.array(fh5.get("chol")).reshape(-1, norb, norb)
 
-    assert type(nelec) is np.int64
-    assert type(nmo) is np.int64
-    assert type(nchol) is np.int64
-    nelec, nmo, nchol = int(nelec), int(nmo), int(nchol)
-    nelec_sp = (nelec // 2, nelec // 2)
-    norb = nmo
+    # assert type(nelec) is np.int64
+    # assert type(norb) is np.int64
+    # assert type(nchol) is np.int64
+
+    nelec, norb = int(nelec), int(norb)
+    nocc = nelec // 2
+    nelec_sp = (nocc, nocc)
+    nchol = chol.shape[0]
+
+    print("\nQMC System")
+    print(f"Number of electrons:       {nelec_sp}")
+    print(f"Number of orbitals:         {norb}")
+    print(f"Number of Cholesky Vectors: {nchol}")
+
+    options["nchol_chunk"] = cholesky.chunk_chol(
+        chol, options["nchol_chunk"], 
+        options["max_memory"]/options["n_walkers"]
+        )
 
     ham_data = {}
     ham_data["h0"] = h0
     ham_data["E0"] = emf
-
     ham_data["h1"] = jnp.array([h1, h1])
     ham_data["h1_mod"] = jnp.array(h1_mod)
-    nchol = chol.shape[0]
     ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
 
     wave_data = {}
     wave_data['prjlo'] = jnp.array(np.load(mo_file)["prjlo"])
-    mo_coeff = jnp.array(np.eye(nmo))
-
-    options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
+    mo_coeff = jnp.array(np.eye(norb))
+    wave_data["mo_coeff"] = mo_coeff[:, :nocc]
 
     if options["trial"] == "rhf":
         trial = lno_wavefunctions.rhf(norb, nelec_sp, n_batch=options["n_batch"])
-        wave_data["mo_coeff"] = mo_coeff[:, : nelec_sp[0]]
-    elif options["trial"] == "ccsd_pt_ad":
-        trial = lno_wavefunctions.ccsd_pt_ad(norb, nelec_sp, n_batch=options["n_batch"])
+    elif options["trial"] == "ptccsd_ad":
+        trial = lno_wavefunctions.ptccsd_ad(norb, nelec_sp, n_batch=options["n_batch"])
         amplitudes = np.load(amp_file)
         t1 = jnp.array(amplitudes["t1"])
         t2 = jnp.array(amplitudes["t2"])
         prj = wave_data['prjlo']
         wave_data["t1"] = oe.contract('ia,ik->ka',t1, prj, backend='jax')
         wave_data["t2"] = oe.contract('iajb,ik->kajb',t2, prj, backend='jax')
-    elif options["trial"] == "ccsd_pt":
-        trial = lno_wavefunctions.ccsd_pt(norb, nelec_sp, n_batch=options["n_batch"])
+    elif options["trial"] == "ptccsd":
+        trial = lno_wavefunctions.ptccsd(norb, nelec_sp, n_batch=options["n_batch"])
         amplitudes = np.load(amp_file)
         t1 = jnp.array(amplitudes["t1"])
         t2 = jnp.array(amplitudes["t2"])
         wave_data["t1"] = oe.contract('ia,ik->ka',t1,wave_data['prjlo'])
         wave_data["t2"] = oe.contract('iajb,ik->kajb',t2,wave_data['prjlo'])
-        wave_data["mo_coeff"] = mo_coeff[:, :nocc]
-    elif "ccsd_pt2" in options["trial"]:
-        nocc = nelec_sp[0]
+    elif "pt2ccsd" in options["trial"]:
         amplitudes = np.load(amp_file)
         t1 = jnp.array(amplitudes["t1"])
         t2 = jnp.array(amplitudes["t2"])
@@ -821,25 +827,19 @@ def r_prep_afqmc_run(
         wave_data['exp_t1'] = jsp.linalg.expm(t1_full)
         wave_data['exp_mt1'] = jsp.linalg.expm(-t1_full)
         wave_data["t2"] = oe.contract('iajb,ik->kajb',t2, wave_data['prjlo'], backend='jax')
-        wave_data["mo_coeff"] = mo_coeff[:, :nocc]
-        # print(t1.shape)
-        # print(chol.shape)
         lt1 = oe.contract('ia,gja->gij', t1, chol[:, :nocc, nocc:], backend='jax')
         e0t1orb = 2 * oe.contract('gik,ik,gjj->',lt1, wave_data['prjlo'], lt1, backend='jax') \
                     - oe.contract('gij,gjk,ik->',lt1, lt1, wave_data['prjlo'], backend='jax')
         ham_data['e0t1orb'] = e0t1orb
-        trial = lno_wavefunctions.ccsd_pt2(norb, nelec_sp, 
-                                           n_batch = options["n_batch"],
-                                           nchol_chunk=options["nchol_chunk"], 
-                                           mix_precision=options["mix_precision"],
-                                           )
-        # if "chunk" in options["trial"]:
-        #     trial = lno_wavefunctions.ccsd_pt2_chunk(norb, nelec_sp, 
-        #                                              n_batch = options["n_batch"],
-        #                                              nchol_chunk=options["nchol_chunk"], 
-        #                                              mix_precision=options["mix_precision"],)
-        if "ad" in options["trial"]:
-            trial = lno_wavefunctions.ccsd_pt2_ad(norb, nelec_sp, n_batch = options["n_batch"])
+        if options["trial"] == "pt2ccsd":
+            trial = lno_wavefunctions.pt2ccsd(norb, nelec_sp, 
+                                              n_batch=options["n_batch"],
+                                              nchol_chunk=options["nchol_chunk"], 
+                                              mix_precision=options["mix_precision"],
+                                              )
+        elif "ad" in options["trial"]:
+            trial = lno_wavefunctions.pt2ccsd_ad(norb, nelec_sp, 
+                                                 n_batch=options["n_batch"])
         
     if options["walker_type"] == "rhf":
         prop = propagation.propagator_restricted(
@@ -875,45 +875,38 @@ def u_prep_afqmc_run(
         chol_file="FCIDUMP_chol"
         ):
 
-    # with open(option_file, "rb") as f:
-    #     options = pickle.load(f)
-
-    options["dt"] = options.get("dt", 0.005)
-    options["n_exp_terms"] = options.get("n_exp_terms", 6)
-    options["n_walkers"] = options.get("n_walkers", 300)
-    options["n_prop_steps"] = options.get("n_prop_steps", 50)
-    options["n_blocks"] = options.get("n_blocks", 500)
-    options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
-    options["n_eql"] = options.get("n_eql", 3)
-    options["walker_type"] = options.get("walker_type", "uhf")
-    options["trial"] = options.get("trial", "uhf")
-    options["n_batch"] = options.get("n_batch", 1)
-    options['use_gpu'] = options.get("use_gpu", True)
-    options['mix_precision'] = options.get("mix_precision", True)
-    options["nchol_chunk"] = options.get("nchol_chunk", 50)
-
     with h5py.File(chol_file, "r") as fh5:
-        [nelec_a,nelec_b,nmo_a,nmo_b,nchol] = fh5["header"]
+        [nelec_a, nelec_b, norb_a, norb_b] = fh5["system"]
         h0 = jnp.array(fh5.get("energy_core"))
         emf = jnp.array(fh5.get("emf"))
-        h1_a = jnp.array(fh5.get("h1e_a")).reshape(nmo_a, nmo_a)
-        h1_b = jnp.array(fh5.get("h1e_b")).reshape(nmo_b, nmo_b)
-        h1mod_a = jnp.array(fh5.get("h1mod_a")).reshape(nmo_a, nmo_a)
-        h1mod_b = jnp.array(fh5.get("h1mod_b")).reshape(nmo_b, nmo_b)
-        chol_a = jnp.array(fh5.get("chol_a")).reshape(-1, nmo_a, nmo_a)
-        chol_b = jnp.array(fh5.get("chol_b")).reshape(-1, nmo_b, nmo_b)
+        h1_a = jnp.array(fh5.get("h1e_a")).reshape(norb_a, norb_a)
+        h1_b = jnp.array(fh5.get("h1e_b")).reshape(norb_b, norb_b)
+        h1mod_a = jnp.array(fh5.get("h1mod_a")).reshape(norb_a, norb_a)
+        h1mod_b = jnp.array(fh5.get("h1mod_b")).reshape(norb_b, norb_b)
+        chol_a = jnp.array(fh5.get("chol_a")).reshape(-1, norb_a, norb_a)
+        chol_b = jnp.array(fh5.get("chol_b")).reshape(-1, norb_b, norb_b)
 
     assert chol_a.shape[0] == chol_b.shape[0]
 
-    nelec_a, nelec_b, nmo_a, nmo_b, nchol \
-        = int(nelec_a), int(nelec_b), int(nmo_a), int(nmo_b), int(nchol)
+    nelec_a, nelec_b, norb_a, norb_b \
+        = int(nelec_a), int(nelec_b), int(norb_a), int(norb_b)
     nelec = (nelec_a, nelec_b)
-    norb = (nmo_a, nmo_b)
+    norb = (norb_a, norb_b)
+    nchol = chol_a.shape[0]
+
+    print("\nQMC System")
+    print(f"Number of electrons:        {nelec}")
+    print(f"Number of orbitals:         {norb}")
+    print(f"Number of Cholesky Vectors: {nchol}")
+
+    options["nchol_chunk"] = cholesky.chunk_chol(
+        [chol_a, chol_b], options["nchol_chunk"], 
+        options["max_memory"]/options["n_walkers"]
+        )
 
     ham_data = {}
     ham_data["h0"] = h0
     ham_data["E0"] = emf
-
     ham_data["h1"] = [jnp.array(h1_a), jnp.array(h1_b)]
     ham_data["h1_mod"] = [jnp.array(h1mod_a), jnp.array(h1mod_b)]
     ham_data["chol"] = [chol_a.reshape(chol_a.shape[0], -1),
@@ -922,9 +915,9 @@ def u_prep_afqmc_run(
     wave_data = {}
     prja = jnp.array(np.load(mo_file)["prja"])
     prjb = jnp.array(np.load(mo_file)["prjb"])
-    wave_data['prjlo'] = [prja,prjb]
-    mo_coeff_a = jnp.array(np.eye(nmo_a))
-    mo_coeff_b = jnp.array(np.eye(nmo_b))
+    wave_data['prjlo'] = [prja, prjb]
+    mo_coeff_a = jnp.array(np.eye(norb_a))
+    mo_coeff_b = jnp.array(np.eye(norb_b))
     wave_data["mo_coeff"] = [
             mo_coeff_a[:, : nelec[0]],
             mo_coeff_b[:, : nelec[1]],
@@ -934,8 +927,8 @@ def u_prep_afqmc_run(
 
     if options["trial"] == "uhf":
         trial = ulno_wavefunctions.uhf(norb, nelec, n_batch=options["n_batch"])
-    elif options["trial"] == "uccsd_pt_ad":
-        trial = ulno_wavefunctions.uccsd_pt_ad(norb, nelec, n_batch = options["n_batch"])
+    elif options["trial"] == "uptccsd_ad":
+        trial = ulno_wavefunctions.uptccsd_ad(norb, nelec, n_batch = options["n_batch"])
         amplitudes = np.load(amp_file)
         t1a = jnp.array(amplitudes["t1a"])
         t1b = jnp.array(amplitudes["t1b"])
@@ -949,8 +942,8 @@ def u_prep_afqmc_run(
         wave_data["t2ab"] = oe.contract('iajb,ik->kajb', t2ab, prja, backend='jax')
         wave_data["t2ba"] = oe.contract('jbia,ik->kajb', t2ab, prjb, backend='jax')
         wave_data["t2bb"] = oe.contract('iajb,ik->kajb', t2bb, prjb, backend='jax')
-    elif options["trial"] == "uccsd_pt":
-        trial = ulno_wavefunctions.uccsd_pt(norb, nelec, n_batch = options["n_batch"])
+    elif options["trial"] == "uptccsd":
+        trial = ulno_wavefunctions.uptccsd(norb, nelec, n_batch = options["n_batch"])
         amplitudes = np.load(amp_file)
         t1a = jnp.array(amplitudes["t1a"])
         t1b = jnp.array(amplitudes["t1b"])
@@ -964,7 +957,7 @@ def u_prep_afqmc_run(
         wave_data["t2ab"] = oe.contract('iajb,ik->kajb', t2ab, prja, backend='jax')
         wave_data["t2ba"] = oe.contract('jbia,ik->kajb', t2ab, prjb, backend='jax')
         wave_data["t2bb"] = oe.contract('iajb,ik->kajb', t2bb, prjb, backend='jax')
-    elif "uccsd_pt2" in options["trial"]:
+    elif "upt2ccsd" in options["trial"]:
         nocca, noccb = nelec
         norba, norbb = norb
         amplitudes = np.load(amp_file)
@@ -992,13 +985,13 @@ def u_prep_afqmc_run(
                     - oe.contract('gij,gjk,ik->',lt1b, lt1b, prjb, backend='jax')) * 0.5
         ham_data['e0t1orb'] = e0t1orb_aa + e0t1orb_ab + e0t1orb_ba + e0t1orb_bb
         if "ad" in options["trial"]:
-            trial = ulno_wavefunctions.uccsd_pt2_ad(norb, nelec, n_batch = options["n_batch"])
+            trial = ulno_wavefunctions.upt2ccsd_ad(norb, nelec, n_batch = options["n_batch"])
             wave_data["t2aa"] = oe.contract('iajb,ik->kajb', t2aa, prja, backend='jax')
             wave_data["t2ab"] = oe.contract('iajb,ik->kajb', t2ab, prja, backend='jax')
             wave_data["t2ba"] = oe.contract('jbia,ik->kajb', t2ab, prjb, backend='jax')
             wave_data["t2bb"] = oe.contract('iajb,ik->kajb', t2bb, prjb, backend='jax')
         elif "alpha" in options["trial"]:
-            trial = ulno_wavefunctions.uccsd_pt2_alpha(norb, nelec, 
+            trial = ulno_wavefunctions.upt2ccsd_alpha(norb, nelec, 
                                                        n_batch = options["n_batch"], 
                                                        nchol_chunk = options["nchol_chunk"],
                                                        mix_precision = options['mix_precision']
@@ -1006,19 +999,19 @@ def u_prep_afqmc_run(
             wave_data["t2aa"] = oe.contract('iajb,ik->kajb', t2aa, prja, backend='jax')
             wave_data["t2ab"] = oe.contract('iajb,ik->kajb', t2ab, prja, backend='jax')
         elif "beta" in options["trial"]:
-            trial = ulno_wavefunctions.uccsd_pt2_beta(norb, nelec, 
-                                                      n_batch = options["n_batch"], 
-                                                      nchol_chunk = options["nchol_chunk"],
-                                                      mix_precision = options['mix_precision']
-                                                      )
+            trial = ulno_wavefunctions.upt2ccsd_beta(norb, nelec, 
+                                                     n_batch = options["n_batch"], 
+                                                     nchol_chunk = options["nchol_chunk"],
+                                                     mix_precision = options['mix_precision']
+                                                     )
             wave_data["t2ba"] = oe.contract('jbia,ik->kajb', t2ab, prjb, backend='jax')
             wave_data["t2bb"] = oe.contract('iajb,ik->kajb', t2bb, prjb, backend='jax')
-        else:
-            trial = ulno_wavefunctions.uccsd_pt2(norb, nelec, 
-                                                 n_batch = options["n_batch"],
-                                                 nchol_chunk=options["nchol_chunk"], 
-                                                 mix_precision=options["mix_precision"],
-                                                 )
+        elif options["trial"] == "upt2ccsd":
+            trial = ulno_wavefunctions.upt2ccsd(norb, nelec, 
+                                                n_batch = options["n_batch"],
+                                                nchol_chunk=options["nchol_chunk"], 
+                                                mix_precision=options["mix_precision"],
+                                                )
             wave_data["t2aa"] = oe.contract('iajb,ik->kajb', t2aa, prja, backend='jax')
             wave_data["t2ab"] = oe.contract('iajb,ik->kajb', t2ab, prja, backend='jax')
             wave_data["t2ba"] = oe.contract('jbia,ik->kajb', t2ab, prjb, backend='jax')
@@ -1069,17 +1062,18 @@ def prep_afqmc_run(
     options = auto_qmc_options(options, spin_type)
 
     if spin_type =="restricted":
-        return r_prep_afqmc_run(
-            options,
-            mo_file,
-            amp_file,
-            chol_file,
-            )
+        ham_data, prop, trial, wave_data, sampler, options =\
+            r_prep_afqmc_run(options, mo_file, amp_file, chol_file)
     
     elif spin_type == "unrestricted":
-        return u_prep_afqmc_run(
-            options,
-            mo_file,
-            amp_file,
-            chol_file,
-            )
+        ham_data, prop, trial, wave_data, sampler, options =\
+            u_prep_afqmc_run(options, mo_file, amp_file, chol_file,)
+
+    print("\nQMC Parameters")
+    for op in options:
+        if options[op] is not None:
+            val = options[op]
+            val_str = f"{val:.4g}" if isinstance(val, float) else str(val)
+            print(f"{str(op):<15s} - {val_str:>15s}")
+    
+    return ham_data, prop, trial, wave_data, sampler, options

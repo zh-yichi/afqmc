@@ -10,7 +10,7 @@ from pyscf.lno import lnoccsd
 from pyscf.lno import ulnoccsd
 from collections.abc import Iterable
 
-from afqmc import config
+# from afqmc import config
 from afqmc.lno_afqmc import prep
 from afqmc.lno_afqmc import mod_lnoccsd
 
@@ -21,34 +21,19 @@ print = partial(print, flush=True)
 
 
 def run_lnoafqmc(options, option_file='options.bin'):
-    jax.config.update("jax_enable_x64", True)
     
     with open(option_file, 'wb') as f:
         pickle.dump(options, f)
 
-    if options["use_gpu"]:
-        print(f'running AFQMC on GPU')
-        config.afqmc_config = {"use_gpu": True}
-        config.setup_jax()
-        gpu_flag = "--use_gpu"
-    else:
-        print(f'running AFQMC on CPU')
-        gpu_flag = ""
     if 'pt2' in options['trial']:
-        script='ccsd_pt2/run_afqmc.py'
-
-    else:
-        raise NotImplementedError("Only support CCSD_pt and CCSD_pt2 trial.")
+        script='script/run_afqmc_pt2.py'
     
     path = os.path.abspath(__file__)
     dir_path = os.path.dirname(path)
     script = f"{dir_path}/{script}"
     print(f'AFQMC script: {script}')
     
-    os.system(
-        # f"export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1;"
-        f" python {script} {gpu_flag} |tee afqmc.out"
-    )
+    os.system(f" python {script} |tee afqmc.out")
 
 def run_afqmc(mf,
               lo_coeff = None, 

@@ -1,44 +1,25 @@
-import time
-import argparse
-import numpy as np
-import jax
-from jax import random
-from jax import numpy as jnp
 from functools import partial
-from afqmc import config
-from afqmc import sampling
-from afqmc.lno_afqmc import lno_afqmc
-
-init_time = time.time()
 print = partial(print, flush=True)
 
-txt_width = 100
-print(f"{' AFQMC Sampling Started ':-^{txt_width}}")
+print("\nAFQMC Started")
 
-jax.config.update("jax_enable_x64", True)
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--use_gpu", action="store_true")
-    args = parser.parse_args()
-
-    if args.use_gpu:
-        config.afqmc_config["use_gpu"] = True
-
+from afqmc import config
 config.setup_jax()
 
-ham_data, prop, trial, wave_data, sampler, options = (lno_afqmc._prep_afqmc())
+import time
+import numpy as np
+from jax import random
+from jax import numpy as jnp
 
-print(f"Trial: {trial}")
-print(f"Sampler: {sampler}")
+from afqmc import sampling
+from afqmc.lno_afqmc import prep
 
-print(f"norb: {trial.norb}")
-print(f"nelec: {trial.nelec}")
-print(f"nchol: {sampler.n_chol}")
+init_time = time.time()
 
-for op in options:
-    if options[op] is not None:
-        print(f"{op}: {options[op]}")
+ham_data, prop, trial, wave_data, sampler, options = (prep.prep_afqmc_run())
+
+# print(f"Trial: {trial}")
+# print(f"Sampler: {sampler}")
 
 ### initialize propagation
 trial_rdm1 = trial.get_rdm1(wave_data)
@@ -47,7 +28,6 @@ if "rdm1" not in wave_data:
     
 ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
 ham_data = prop._build_propagation_intermediates(ham_data, trial, wave_data)
-
 prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers = None)
 
 if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
@@ -71,9 +51,8 @@ t2orb = jnp.real(t2orb)[0]
 e0bar = jnp.real(e0bar)[0]
 eorb_pt = jnp.real(eorb/t1olp + t2eorb/t1olp - t2orb*e0bar/t1olp**2)
 
-print(f'Propagating with {options["n_walkers"]} walkers')
+print("\nEquilibration")
 print(f"Initial Orbital energy: {eorb_pt:.6f}")
-print(f"{' Equilibration ':-^{txt_width}}")
 print(f"{'inv_T':>5s}  {'energy':>12s}  {'runTime':>8s}")
 print(f"{0.:5.2f}  {e0:12.6f}  {time.time() - init_time:8.2f}")
 
@@ -83,16 +62,18 @@ sampler_eq = sampling.sampler(
     )
 
 block_time = prop.dt * sampler_eq.n_prop_steps
+neql_block = int(-(-options["eql_time"] // block_time))
 
-for n in range(1,options["n_eql"]+1):
+for n in range(1, neql_block+1):
     prop_data, (wt, e) \
         = sampler_eq.block_sample(prop_data, ham_data, prop, trial, wave_data)
 
-    if (n+1) % (min(max(options["n_eql"] // 10, 1), 20)) == 0 and n > 0:
+    if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
         nkill = prop_data["n_killed_walkers"]
         print(f"{(n+1)*block_time:5.2f}  {e:12.6f}  {time.time() - init_time:8.2f}")
 
-print(f"{' Sampling Blocks ':-^{txt_width}}")
+print("\nSampling Blocks")
+
 print(f"Target Final Error ~ {options['max_error']:.6f}")
 print(f"{'N':>4s}  "
       f"{'E(Guide)':>12s}  {'Error':>8s}  "
@@ -165,7 +146,8 @@ for n in range(sampler.n_blocks):
         if eorb_pt_err < 0.75 * options["max_error"] and n > 100:
             break
 
-print(f"{' Post Propagation ':-^{txt_width}}")
+print("\nPost Propagation")
+
 nsamples = n + 1
 print(f'Total number of samples {nsamples}')
 
@@ -211,7 +193,7 @@ print(f"Raw AFQMC/HF Energy: {e0:.6f} +/- {e0_err:.6f}")
 print(f"Raw AFQMC/pt2CCSD Orbital Energy (covariance): {eorb_pt:.6f} +/- {eorb_pt_cov_err:.6f}")
 print(f"Raw AFQMC/pt2CCSD Orbital Energy (direct obs): {eorb_pt:.6f} +/- {eorb_pt_sp_err:.6f}")
 
-print(f"{' Clean Observation ':-^{txt_width}}")
+print("\nRemove Outliers")
 
 def filter_outliers(ept_sp, zeta=10):
 
@@ -268,7 +250,7 @@ eorb_pt_sp_err = (np.std(ept_sp, ddof=1) / np.sqrt(nsample_clean)).real
 print(f"Clean AFQMC/pt2CCSD Orbital Energy (covariance): {eorb_pt:.6f} +/- {eorb_pt_cov_err:.6f}")
 print(f"Clean AFQMC/pt2CCSD Orbital Energy (direct obs): {eorb_pt:.6f} +/- {eorb_pt_sp_err:.6f}")
 
-print(f"{' Blocking Analysis ':-^{txt_width}}")
+print("\nBlocking Analysis")
 
 def blocking_analysis(wt_sp, eorb_sp, t2eorb_sp, t2orb_sp, e0bar_sp, t1olp_sp, min_nblocks=20):
     nsample = len(wt_sp)
@@ -360,4 +342,4 @@ plateau_value = blocking_analysis(wt_sp, eorb_sp, t2eorb_sp, t2orb_sp, e0bar_sp,
 
 print(f"Blocked AFQMC/pt2CCSD Orbital Energy: {eorb_pt:.6f} +/- {plateau_value:.6f}")
 print(f"total run time: {time.time() - init_time:.2f}")
-print(f"{' AFQMC Sampling Finished ':-^{txt_width}}")
+print("\nAFQMC Sampling Finished\n")
