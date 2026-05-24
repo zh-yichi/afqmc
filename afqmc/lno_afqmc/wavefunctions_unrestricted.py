@@ -966,11 +966,10 @@ class upt2ccsd(uhf):
         # two body energy — chunked over Cholesky auxiliary index
         nchol_chunk = self.nchol_chunk
         nchol = rot_chola.shape[0]
-        npad = (-nchol) % nchol_chunk
+        nchunks = -(-nchol // nchol_chunk)
+        npad = nchunks * nchol_chunk - nchol
         rot_chola = jnp.concatenate([rot_chola, jnp.zeros((npad, nocca, norba))], axis=0)
         rot_cholb = jnp.concatenate([rot_cholb, jnp.zeros((npad, noccb, norbb))], axis=0)
-
-        nchunks = (nchol + npad) // nchol_chunk
         rot_chola = rot_chola.reshape(nchunks, nchol_chunk, nocca, norba)
         rot_cholb = rot_cholb.reshape(nchunks, nchol_chunk, noccb, norbb)
 
@@ -1164,14 +1163,16 @@ class upt2ccsd(uhf):
         e1_2 = e1_2_1 + e1_2_2  # <HF|T2 h1|walker>/<HF|walker>
 
         # two body energy — chunked over Cholesky auxiliary index
-        nchol = chol_a.shape[0]
-        npad = (-nchol) % nchol_chunk
+        nchol = rot_chol_a.shape[0]
+        nchol_chunk = self.nchol_chunk
+        nchunks = -(-nchol // nchol_chunk)
+        npad = nchunks * nchol_chunk - nchol
+
         chol_a = jnp.concatenate([chol_a, jnp.zeros((npad, norb_a, norb_a))], axis=0)
         chol_b = jnp.concatenate([chol_b, jnp.zeros((npad, norb_b, norb_b))], axis=0)
         rot_chol_a = jnp.concatenate([rot_chol_a, jnp.zeros((npad, nocc_a, norb_a))], axis=0)
         rot_chol_b = jnp.concatenate([rot_chol_b, jnp.zeros((npad, nocc_b, norb_b))], axis=0)
 
-        nchunks = (nchol + npad) // nchol_chunk
         chol_a = chol_a.reshape(nchunks, nchol_chunk, norb_a, norb_a)
         chol_b = chol_b.reshape(nchunks, nchol_chunk, norb_b, norb_b)
         rot_chol_a = rot_chol_a.reshape(nchunks, nchol_chunk, nocc_a, norb_a)
@@ -1428,15 +1429,16 @@ class upt2ccsd_alpha(upt2ccsd):
         e1_2 = e1_2_1 + e1_2_2
 
         # two body energy — chunked over Cholesky auxiliary index
-        nchol = chol_a.shape[0]
-        npad = (-nchol) % nchol_chunk
-        # if npad > 0:
+        nchol = rot_chol_a.shape[0]
+        nchol_chunk = self.nchol_chunk
+        nchunks = -(-nchol // nchol_chunk)
+        npad = nchunks * nchol_chunk - nchol
+
         chol_a = jnp.concatenate([chol_a, jnp.zeros((npad, norb_a, norb_a))], axis=0)
         chol_b = jnp.concatenate([chol_b, jnp.zeros((npad, norb_b, norb_b))], axis=0)
         rot_chol_a = jnp.concatenate([rot_chol_a, jnp.zeros((npad, nocc_a, norb_a))], axis=0)
         rot_chol_b = jnp.concatenate([rot_chol_b, jnp.zeros((npad, nocc_b, norb_b))], axis=0)
 
-        nchunks = (nchol + npad) // nchol_chunk
         chol_a = chol_a.reshape(nchunks, nchol_chunk, norb_a, norb_a)
         chol_b = chol_b.reshape(nchunks, nchol_chunk, norb_b, norb_b)
         rot_chol_a = rot_chol_a.reshape(nchunks, nchol_chunk, nocc_a, norb_a)
@@ -1715,14 +1717,11 @@ class upt2ccsd_beta(upt2ccsd):
         # two body energy — chunked over Cholesky auxiliary index
         nchol_chunk = self.nchol_chunk
         nchol = rot_chola.shape[0]
-        # pad to multiple of nchol_chunk
-        # chunks have to be the same size inside the scan
-        npad = (-nchol) % nchol_chunk
-        # if npad > 0:
+        nchunks = -(-nchol // nchol_chunk)
+        npad = nchunks * nchol_chunk - nchol
         rot_chola = jnp.concatenate([rot_chola, jnp.zeros((npad, nocca, norba))], axis=0)
         rot_cholb = jnp.concatenate([rot_cholb, jnp.zeros((npad, noccb, norbb))], axis=0)
 
-        nchunks = (nchol + npad) // nchol_chunk
         rot_chola = rot_chola.reshape(nchunks, nchol_chunk, nocca, norba)
         rot_cholb = rot_cholb.reshape(nchunks, nchol_chunk, noccb, norbb)
 
@@ -1792,16 +1791,14 @@ class upt2ccsd_beta(upt2ccsd):
 
         # two body energy — chunked over Cholesky auxiliary index
         nchol = chol_a.shape[0]
-        # pad to multiple of nchol_chunk
-        # chunks have to be the same size inside the scan
-        npad = (-nchol) % nchol_chunk
-        # if npad > 0:
+        nchunks = -(-nchol // nchol_chunk)
+        npad = nchunks * nchol_chunk - nchol
+
         chol_a = jnp.concatenate([chol_a, jnp.zeros((npad, norb_a, norb_a))], axis=0)
         chol_b = jnp.concatenate([chol_b, jnp.zeros((npad, norb_b, norb_b))], axis=0)
         rot_chol_a = jnp.concatenate([rot_chol_a, jnp.zeros((npad, nocc_a, norb_a))], axis=0)
         rot_chol_b = jnp.concatenate([rot_chol_b, jnp.zeros((npad, nocc_b, norb_b))], axis=0)
 
-        nchunks = (nchol + npad) // nchol_chunk
         chol_a = chol_a.reshape(nchunks, nchol_chunk, norb_a, norb_a)
         chol_b = chol_b.reshape(nchunks, nchol_chunk, norb_b, norb_b)
         rot_chol_a = rot_chol_a.reshape(nchunks, nchol_chunk, nocc_a, norb_a)
