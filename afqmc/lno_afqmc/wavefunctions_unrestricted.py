@@ -1105,6 +1105,13 @@ class upt2ccsd(uhf):
     @partial(jit, static_argnums=0)
     def _t2eorb_tc(self, walker_up, walker_dn, ham_data, wave_data):
         """use chunked cholesky for two-body terms"""
+        if self.mix_precision:
+            rtype = jnp.float32
+            ctype = jnp.complex64
+        else:
+            rtype = jnp.float64
+            ctype = jnp.complex128
+        
         nchol_chunk = self.nchol_chunk
         norb_a, norb_b = self.norb
         nocc_a, nocc_b = self.nelec
@@ -1202,21 +1209,36 @@ class upt2ccsd(uhf):
 
             lt2_green_a = oe.contract("gpi,ji->gpj", rot_chol_a_c, t2_green_a_tot, backend="jax")
             lt2_green_b = oe.contract("gpi,ji->gpj", rot_chol_b_c, t2_green_b_tot, backend="jax")
-            carry[2] += (oe.contract("gip,gip->", gl_a, lt2_green_a, backend="jax")
-                    + oe.contract("gip,gip->", gl_b, lt2_green_b, backend="jax")) / 2
+            carry[2] += (
+                (oe.contract("gip,gip->", gl_a.astype(ctype), lt2_green_a.astype(ctype), backend="jax")
+                + oe.contract("gip,gip->", gl_b.astype(ctype), lt2_green_b.astype(ctype), backend="jax")) / 2
+                ).astype(jnp.complex128)
 
             glgp_a = oe.contract("gip,pa->gia", gl_a, greenp_a, backend="jax")
             glgp_b = oe.contract("gip,pa->gia", gl_b, greenp_b, backend="jax")
 
-            l2t2_aa_a = oe.contract("gia,iajb->gjb", glgp_a, t2aa, backend="jax")
-            l2t2_ab_a = oe.contract("gia,iajb->gjb", glgp_a, t2ab, backend="jax")
-            l2t2_ba_b = oe.contract("gia,iajb->gjb", glgp_b, t2ba, backend="jax")
-            l2t2_bb_b = oe.contract("gia,iajb->gjb", glgp_b, t2bb, backend="jax")
-            l2t2_aa = 0.5 * oe.contract("gjb,gjb->", l2t2_aa_a, glgp_a, backend="jax")
-            l2t2_ab = 0.5 * oe.contract("gjb,gjb->", l2t2_ab_a, glgp_b, backend="jax")
-            l2t2_ba = 0.5 * oe.contract("gjb,gjb->", l2t2_ba_b, glgp_a, backend="jax")
-            l2t2_bb = 0.5 * oe.contract("gjb,gjb->", l2t2_bb_b, glgp_b, backend="jax")
-            carry[3] += l2t2_aa + l2t2_ab + l2t2_ba + l2t2_bb
+            l2t2_aa_a = oe.contract("gia,iajb->gjb", glgp_a.astype(ctype), t2aa.astype(rtype), backend="jax")
+            l2t2_ab_a = oe.contract("gia,iajb->gjb", glgp_a.astype(ctype), t2ab.astype(rtype), backend="jax")
+            l2t2_ba_b = oe.contract("gia,iajb->gjb", glgp_b.astype(ctype), t2ba.astype(rtype), backend="jax")
+            l2t2_bb_b = oe.contract("gia,iajb->gjb", glgp_b.astype(ctype), t2bb.astype(rtype), backend="jax")
+            
+            l2t2_aa = 0.5 * oe.contract("gjb,gjb->", 
+                                        l2t2_aa_a.astype(ctype), 
+                                        glgp_a.astype(ctype), 
+                                        backend="jax").astype(jnp.complex128)
+            l2t2_ab = 0.5 * oe.contract("gjb,gjb->", 
+                                        l2t2_ab_a.astype(ctype), 
+                                        glgp_b.astype(ctype), 
+                                        backend="jax").astype(jnp.complex128)
+            l2t2_ba = 0.5 * oe.contract("gjb,gjb->", 
+                                        l2t2_ba_b.astype(ctype), 
+                                        glgp_a.astype(ctype), 
+                                        backend="jax").astype(jnp.complex128)
+            l2t2_bb = 0.5 * oe.contract("gjb,gjb->", 
+                                        l2t2_bb_b.astype(ctype), 
+                                        glgp_b.astype(ctype), 
+                                        backend="jax").astype(jnp.complex128)
+            carry[3] += (l2t2_aa + l2t2_ab + l2t2_ba + l2t2_bb).astype(jnp.complex128)
 
             return carry, 0.0
 

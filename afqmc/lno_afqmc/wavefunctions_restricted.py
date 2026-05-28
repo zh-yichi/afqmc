@@ -919,6 +919,13 @@ class pt2ccsd(rhf):
 
     @partial(jit, static_argnums=0)
     def _t2eorb_tc(self, walker, ham_data, wave_data):
+        if self.mix_precision:
+            rtype = jnp.float32
+            ctype = jnp.complex64
+        else:
+            rtype = jnp.float64
+            ctype = jnp.complex128
+        
         nocc, norb = self.nelec[0], self.norb
         nchol_chunk = self.nchol_chunk  # nchol per chunk
         t2 = wave_data["t2"]
@@ -985,15 +992,26 @@ class pt2ccsd(rhf):
 
             # t_iajb G_ir G_js Gp_pa Gp_qb L_pr L_qs type
             glgp = oe.contract("gir,rb->gib", gl, greenp, backend="jax")
-            if self.mix_precision:
-                glgp_mp = glgp.astype(jnp.complex64)
-                t2_mp = t2.astype(jnp.float32)
-            else:                
-                glgp_mp = glgp
-                t2_mp = t2
-            l2t2_c = oe.contract("gia,iajb,gjb->", glgp_mp, t2_mp, glgp_mp, backend="jax")
-            l2t2_e = oe.contract("gib,iajb,gja->", glgp_mp, t2_mp, glgp_mp, backend="jax")
-            carry[3] += (2 * l2t2_c - l2t2_e).astype(jnp.complex128)
+            # if self.mix_precision:
+            #     glgp_mp = glgp.astype(jnp.complex64)
+            #     t2_mp = t2.astype(jnp.float32)
+            # else:                
+            #     glgp_mp = glgp
+            #     t2_mp = t2
+            # l2t2_c = oe.contract("gia,iajb,gjb->", glgp_mp, t2_mp, glgp_mp, backend="jax")
+            # l2t2_e = oe.contract("gib,iajb,gja->", glgp_mp, t2_mp, glgp_mp, backend="jax")
+            lt2_c = oe.contract("gia,iajb->gjb", glgp.astype(ctype), t2.astype(rtype), backend="jax")
+            lt2_e = oe.contract("gib,iajb->gja", glgp.astype(ctype), t2.astype(rtype), backend="jax")
+            
+            l2t2_c = oe.contract("gjb,gjb->", 
+                                 lt2_c.astype(ctype), 
+                                 glgp.astype(ctype), 
+                                 backend="jax").astype(jnp.complex128)
+            l2t2_e = oe.contract("gja,gja->", 
+                                 lt2_e.astype(ctype), 
+                                 glgp.astype(ctype), 
+                                 backend="jax").astype(jnp.complex128)
+            carry[3] += (2*l2t2_c - l2t2_e).astype(jnp.complex128)
 
             return carry, 0.0
 

@@ -899,10 +899,9 @@ def u_prep_afqmc_run(
     print(f"Number of orbitals:         {norb}")
     print(f"Number of Cholesky Vectors: {nchol}")
 
-    options["nchol_chunk"] = cholesky.chunk_chol(
-        [chol_a, chol_b], options["nchol_chunk"], 
-        options["max_memory"]/options["n_walkers"]
-        )
+    options["nchol_chunk"] = cholesky.chunk_chol([chol_a, chol_b], 
+                                                 options["nchol_chunk"], 
+                                                 options["max_memory"]/options["n_walkers"])
 
     ham_data = {}
     ham_data["h0"] = h0
@@ -923,7 +922,7 @@ def u_prep_afqmc_run(
             mo_coeff_b[:, : nelec[1]],
             ]
     
-    options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
+    # options["nchol_chunk"] = min(options["nchol_chunk"], nchol)
 
     if options["trial"] == "uhf":
         trial = ulno_wavefunctions.uhf(norb, nelec, n_batch=options["n_batch"])
