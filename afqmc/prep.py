@@ -483,7 +483,7 @@ def init_afqmc(options=None,
             wave_data["mo_coeff"] = mo_coeff[0][:,:nelec_sp[0]]
             trial = wavefunctions_restricted.ptccd(norb, nelec_sp, n_batch=options["n_batch"])
 
-        elif options["trial"] == "pt2ccsd":
+        elif "pt2ccsd" in options["trial"]:
             trial = wavefunctions_restricted.pt2ccsd(norb, nelec_sp, 
                                                      n_batch=options["n_batch"],
                                                      nchol_chunk=options["nchol_chunk"], 
