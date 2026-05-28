@@ -1185,16 +1185,24 @@ class pt2ccsd(rhf):
                                           backend="jax").astype(jnp.complex128)
             
             glgp_c = oe.contract("giq,qa->gia", gl_c[:,:nocc,:], greenp, backend="jax")
-            l2t2_1 = oe.contract("gia,gjb,iajb->", 
-                                 glgp_c.astype(ctype),
+
+            lt2_1 = oe.contract("gia,iajb->gjb", 
                                  glgp_c.astype(ctype),
                                  t2.astype(rtype), 
                                  backend="jax")
-            l2t2_2 = oe.contract("gib,gja,iajb->", 
-                                 glgp_c.astype(ctype), 
-                                 glgp_c.astype(ctype), 
+            lt2_2 = oe.contract("gib,iajb->gja", 
+                                 glgp_c.astype(ctype),
                                  t2.astype(rtype), 
                                  backend="jax")
+            l2t2_1 = oe.contract("gjb,gjb->", 
+                                 lt2_1.astype(ctype),
+                                 glgp_c.astype(ctype),
+                                 backend="jax").astype(jnp.complex128)
+            l2t2_2 = oe.contract("gja,gja->", 
+                                 lt2_2.astype(ctype), 
+                                 glgp_c.astype(ctype), 
+                                 backend="jax").astype(jnp.complex128)
+            
             carry[3] += (2*l2t2_1 - l2t2_2).astype(jnp.complex128)
             return carry, 0.0
 
