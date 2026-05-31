@@ -1161,7 +1161,7 @@ class pt2ccsd(rhf):
         nchunks = -(-nchol // nchol_chunk)
         pad = nchunks * nchol_chunk - nchol
         chol = jnp.pad(chol, ((0, pad), (0, 0), (0, 0)))
-        chol = chol.reshape(nchunks, nchol_chunk, self.norb, self.norb)
+        chol = chol.reshape(nchunks, nchol_chunk, self.norb, self.norb) 
 
         def scanned_fun(carry, x):
             chol_c = x  # (nchol_chunk, norb, norb)

@@ -22,7 +22,7 @@ from afqmc.lno_afqmc import wavefunctions_unrestricted as ulno_wavefunctions
 
 print = partial(print, flush=True)
 
-def ao_comp(mf, orbloc, ao_threshold=1e-2):
+def ao_comp(mf, orbloc, ao_threshold=1e-2, print_ao=False):
     mol = mf.mol
     S = mol.intor('int1e_ovlp')
     proj = (S @ orbloc)**2
@@ -33,16 +33,19 @@ def ao_comp(mf, orbloc, ao_threshold=1e-2):
     above = np.where(proj > ao_threshold)[0]
     # sort them by contribution descending
     above = above[np.argsort(proj[above])[::-1]]
-    ao_lines = []
-    print(f"AOs with contribution > {ao_threshold}")
-    ao_lines.append(f"AOs with contribution > {ao_threshold}")
-    print(f"{'AO Label':>16s}  {'Amp':>6s}")
-    ao_lines.append(f"{'AO Label':>16s}  {'Amp':>6s}")
-    for idx in above:
-        print(f"{ao_labels[idx]:>16s}  {proj[idx]:6.4f}")
-        ao_lines.append(f"{ao_labels[idx]:>16s}  {proj[idx]:6.4f}") 
-    ao_message = "\n".join(ao_lines)
-    return ao_message, ao_labels[above[0]]
+    ao_max = ao_labels[above[0]]
+    if print_ao:
+        ao_lines = []
+        print(f"AOs with contribution > {ao_threshold}")
+        ao_lines.append(f"AOs with contribution > {ao_threshold}")
+        print(f"{'AO Label':>16s}  {'Amp':>6s}")
+        ao_lines.append(f"{'AO Label':>16s}  {'Amp':>6s}")
+        for idx in above:
+            print(f"{ao_labels[idx]:>16s}  {proj[idx]:6.4f}")
+            # ao_lines.append(f"{ao_labels[idx]:>16s}  {proj[idx]:6.4f}") 
+        ao_message = "\n".join(ao_lines)
+
+    return ao_max
 
 def las_size(mf, frozen):
     mol = mf.mol
@@ -527,7 +530,7 @@ def u_prep_afqmc_integral(
 
     if getattr(mf, "with_df", None) is not None:
         time2 = time.perf_counter()
-        clas_coeff, a2c, b2c = common_las(mf, mo_coeff, ncas, ncore, torr=1e-9, print_ao=True)
+        clas_coeff, a2c, b2c = common_las(mf, mo_coeff, ncas, ncore, torr=1e-8)
         time3 = time.perf_counter()
 
         print("Composing AO ERIs from DF basis")
@@ -731,7 +734,7 @@ def auto_qmc_options(options={}, spin_type="restricted"):
     options["dt"] = options.get("dt", 0.005)
     options["n_walkers"] = options.get("n_walkers", 300)
     options["n_prop_steps"] = options.get("n_prop_steps", 50)
-    options["eql_time"] = options.get("n_eql", 20)
+    options["eql_time"] = options.get("eql_time", 20)
     options["n_blocks"] = options.get("n_blocks", 500)
     options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
     options["n_batch"] = options.get("n_batch", 1)

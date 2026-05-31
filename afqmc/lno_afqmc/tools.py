@@ -40,3 +40,21 @@ def iao_localization(mf, lo_file=None):
         return riao_localization(mf, lo_file)
     elif isinstance(mf, scf.uhf.UHF):
         return uiao_localization(mf, lo_file)
+
+def plot_density(mol, orbloc, lno_coeff, lno_active, spin_type, idx):
+    from pyscf.tools import cubegen
+    # plot density as rho(r) = sum_p |psi_p(r)|^2
+    if spin_type == "restricted":
+        dm_ctr = orbloc @ orbloc.T
+        _ = cubegen.density(mol, f'ctr_density_{idx}.cube', dm_ctr)
+        dm_las = lno_coeff[:,lno_active] @ lno_coeff[:,lno_active].T
+        _ = cubegen.density(mol, f'las_density_{idx}.cube', dm_las)
+
+    elif spin_type == "unrestricted":
+        dm_ctr = orbloc[0] @ orbloc[0].T + orbloc[1] @ orbloc[1].T
+        _ = cubegen.density(mol, f'ctr_density_{idx}.cube', dm_ctr)
+        dm_las = (lno_coeff[0][:,lno_active[0]] @ lno_coeff[0][:,lno_active[0]].T
+                  +lno_coeff[1][:,lno_active[1]] @ lno_coeff[1][:,lno_active[1]].T)
+        _ = cubegen.density(mol, f'las_density_{idx}.cube', dm_las)
+        
+    return None

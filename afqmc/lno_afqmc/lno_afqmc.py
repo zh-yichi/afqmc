@@ -11,7 +11,7 @@ from pyscf.lno import ulnoccsd
 from collections.abc import Iterable
 
 # from afqmc import config
-from afqmc.lno_afqmc import prep
+from afqmc.lno_afqmc import prep, tools
 from afqmc.lno_afqmc import mod_lnoccsd
 
 from functools import partial
@@ -37,23 +37,24 @@ def run_lnoafqmc(options, option_file='options.bin'):
 
 def run_afqmc(mf,
               lo_coeff = None, 
-              lo_coeff_file = 'lo_coeff.npz',
+            #   lo_coeff_file = 'lo_coeff.npz',
               frag_lolist = None,
               nfrozen = 0,
               thresh = 1e-6,
               qmc_options = {}, 
               chol_cut = 1e-5, 
               target_sto_error = 1e-3, 
-              run_frg_list = None, 
+              run_frag_list = None, 
               atom_group = None,
+              plot_las = False,
               ):
     
-    if lo_coeff is None:
-        try:
-            lo_coeff = np.load(lo_coeff_file)["lo_coeff"]
-        except:
-            raise ValueError(
-                f"lo_coeff was not provided and could not be loaded from '{lo_coeff_file}'")
+    # if lo_coeff is None:
+    #     try:
+    #         lo_coeff = np.load(lo_coeff_file)["lo_coeff"]
+    #     except:
+    #         raise ValueError(
+    #             f"lo_coeff was not provided and could not be loaded from '{lo_coeff_file}'")
 
     spin_type = prep.kind(lo_coeff)
 
@@ -74,10 +75,10 @@ def run_afqmc(mf,
     eris = mlno.ao2mo()
 
     nfrag = len(frag_lolist)
-    if run_frg_list is None:
-        run_frg_list = range(nfrag)
+    if run_frag_list is None:
+        run_frag_list = range(nfrag)
     
-    frag_lolist = [frag_lolist[i] for i in run_frg_list]
+    frag_lolist = [frag_lolist[i] for i in run_frag_list]
 
     lno_pct_occ = [None, None]
     lno_norb = [[None,None]] * nfrag
@@ -92,7 +93,8 @@ def run_afqmc(mf,
     trial_base = qmc_options.get("trial", "")
 
     las_center = [None]*nfrag
-    las_size = np.zeros(nfrag, dtype='int32')
+    las_size = [None]*nfrag
+    # las_size = np.zeros(nfrag, dtype='int32')
     lno_emp2 = np.zeros(nfrag, dtype='float64')
     lno_ecc  = np.zeros(nfrag, dtype='float64')
     lno_eqmc = np.zeros(nfrag, dtype='float64')
@@ -100,15 +102,19 @@ def run_afqmc(mf,
     ccsd_time = np.zeros(nfrag, dtype='float64')
     qmc_time = np.zeros(nfrag, dtype='float64')
 
+    mol = mf.mol
+
     # Loop over fragment
     for ifrag, loidx in enumerate(frag_lolist):
         print("\n")
         width = 80
-        msg = f" {spin_type} LNO-FRAGMENT {run_frg_list[ifrag]+1}/{nfrag} "
+        msg = f" {spin_type} LNO-FRAGMENT {run_frag_list[ifrag]+1}/{nfrag} "
         print(msg.center(width, '='))
         if atom_group is not None:
-            atom_msg = f"{atom_group[ifrag]}"
-            print(f"Center Atom {atom_msg}")
+            loc_ctr = f"{atom_group[run_frag_list[ifrag]]}"
+            print(f"Center Atom {loc_ctr}")
+        else:
+            loc_ctr = None
 
         if spin_type == "unrestricted":
             orbloc = [lo_coeff[0][:,loidx[0]], lo_coeff[1][:,loidx[1]]]
@@ -142,7 +148,8 @@ def run_afqmc(mf,
         # u|canactocc> => orbtial in/out the space spanned by |orbloc>
         # uocc_loc = <lno_actocc|orbloc>
         lno_coeff, lno_frozen, uocc_loc, _ = mlno.make_las(eris, orbloc, lno_type, lno_param)
-        # lno_coeff still connected to canonical mo_coeff unitarily
+
+        mo_occ = mlno.mo_occ
 
         if spin_type == "unrestricted":
             if uocc_loc[0].size > 0 and uocc_loc[1].size == 0:
@@ -152,16 +159,13 @@ def run_afqmc(mf,
             else:
                 lno_elec_type = 'mixed'
             print(f'LNO-Frgament Spin Type = {lno_elec_type}')
-            ao_message_a, ao_max_a = prep.ao_comp(mf, orbloc[0])
-            ao_message_b, ao_max_b = prep.ao_comp(mf, orbloc[1])
-            ao_message = ao_message_a + "\n" + ao_message_b
-            ao_max = ao_max_a + ao_max_b
-        else:
-            ao_message, ao_max = prep.ao_comp(mf, orbloc)
 
-        mo_occ = mlno.mo_occ
+            if loc_ctr is None:
+                ao_max_a = prep.ao_comp(mf, orbloc[0])
+                ao_max_b = prep.ao_comp(mf, orbloc[1])
+                loc_ctr = ao_max_a + ao_max_b
+                print(f"LNO Center {loc_ctr}")
 
-        if spin_type == "unrestricted":
             lno_frozen, maskact = ulnoccsd.get_maskact(lno_frozen, [mo_occ[0].size, mo_occ[1].size])
             occidxa = mo_occ[0] > 1e-10
             occidxb = mo_occ[1] > 1e-10
@@ -170,20 +174,35 @@ def run_afqmc(mf,
             nactvir_a = int(np.sum(moidxa & ~occidxa))
             nactocc_b = int(np.sum(moidxb & occidxb))
             nactvir_b = int(np.sum(moidxb & ~occidxb))
-            nactocc = nactocc_a + nactocc_b
-            nactvir = nactvir_a + nactvir_b
-            print(f'LAS alpha: {nactocc_a} occupied, {nactvir_a} virtual')
-            print(f'LAS beta:  {nactocc_b} occupied, {nactvir_b} virtual')
-        else:
-            lno_frozen, maskact = lnoccsd.get_maskact(lno_frozen, mo_occ.size)
-            nactocc, nactvir = prep.las_size(mf, lno_frozen)
-            print(f'LAS occupied orbitals: {nactocc}')
-            print(f'LAS virtual orbitals: {nactvir}')
-
-        if spin_type == "unrestricted":
+            nactocc = [nactocc_a, nactocc_b]
+            nactvir = [nactvir_a, nactvir_b]
+            lno_active_a = np.array([i for i in range(mol.nao) if i not in lno_frozen[0]])
+            lno_active_b = np.array([i for i in range(mol.nao) if i not in lno_frozen[1]])
+            lno_active = [lno_active_a, lno_active_b]
+            lno_tot = [len(lno_active_a), len(lno_active_b)]
+            # print(f'LAS alpha: {nactocc_a} occupied, {nactvir_a} virtual')
+            print(f'LAS occupied orbitals:  {nactocc}')
+            print(f'LAS virtual orbitals:   {nactvir}')
+            print(f'LAS total size:         {lno_tot}')
             mcc = ulnoccsd.UCCSD(mf, mo_coeff=lno_coeff, frozen=lno_frozen).set(verbose=1)
         else:
+            print(f'LNO-Frgament Spin Type = restricted')
+            if loc_ctr is None:
+                loc_ctr = prep.ao_comp(mf, orbloc)
+                print(f"LNO Center {loc_ctr}")
+
+            lno_frozen, maskact = lnoccsd.get_maskact(lno_frozen, mo_occ.size)
+            lno_active = np.array([i for i in range(mol.nao) if i not in lno_frozen])
+            nactocc, nactvir = prep.las_size(mf, lno_frozen)
+            lno_tot = len(lno_active)
+            print(f'LAS occupied orbitals:  {nactocc}')
+            print(f'LAS virtual orbitals:   {nactvir}')
+            print(f'LAS total size:         {lno_tot}')
             mcc = lnoccsd.CCSD(mf, mo_coeff=lno_coeff, frozen=lno_frozen).set(verbose=1)
+        
+        if plot_las:
+            tools.plot_density(mol, orbloc, lno_coeff, lno_active, spin_type, idx = run_frag_list[ifrag]+1)
+
         mcc._s1e = mlno._s1e
         mcc._h1e = mlno._h1e
         mcc._vhf = mlno._vhf
@@ -195,15 +214,12 @@ def run_afqmc(mf,
         time1 = time.perf_counter()
         lnocc_time = time1 - time0
 
-        print(f"CCSD time: {lnocc_time:.6f} s")
-        print(f'LNO-MP2 Orbital Energy: {eorb_mp2:.8f}')
+        print(f'LNO-MP2 Orbital Energy:  {eorb_mp2:.8f}')
         print(f'LNO-CCSD Orbital Energy: {eorb_cc:.8f}')
+        print(f"LNO-CCSD time:           {lnocc_time:.6f} s")
 
-        if atom_group:
-            las_center[ifrag] = atom_msg
-        else:
-            las_center[ifrag] = ao_max
-        las_size[ifrag] = nactocc + nactvir
+        las_center[ifrag] = loc_ctr
+        las_size[ifrag] = lno_tot
         lno_emp2[ifrag] = eorb_mp2
         lno_ecc[ifrag] = eorb_cc
         ccsd_time[ifrag] = lnocc_time
@@ -235,7 +251,7 @@ def run_afqmc(mf,
             )
         
         run_lnoafqmc(qmc_options)
-        outfile = f'fragment.out{run_frg_list[ifrag]+1}'
+        outfile = f'fragment.out{run_frag_list[ifrag]+1}'
         os.system(f'mv afqmc.out {outfile}')
         with open(outfile, "r") as f:
             for line in f:
@@ -248,14 +264,12 @@ def run_afqmc(mf,
         lno_eqmc_err[ifrag] = eorb_afqmc_err
         qmc_time[ifrag] = lnoqmc_time
 
-        header = f' Fragment{run_frg_list[ifrag]+1} Results '
+        header = f' Fragment{run_frag_list[ifrag]+1} Results '
         width = 80  # pick a consistent total width
         with open(outfile, 'a') as f:
             f.write('\n')
             f.write(f'{header:=^{width}}\n')
-            if atom_group:
-                f.write("\t Center Atom " + atom_msg + "\n")
-            f.write("\t" + ao_message + "\n")
+            f.write("\t LNO Center " + loc_ctr + "\n")
             f.write('-' * width + '\n')
             f.write(f'\t LNO-Active Space electrons: {nactocc} | orbitals: {nactocc+nactvir} \n')
             f.write(f'\t LNO-MP2 Orbital Energy:   {eorb_mp2:.8f} \n')
@@ -267,7 +281,10 @@ def run_afqmc(mf,
         jax.clear_caches()
         gc.collect()
 
+    las_size = np.array(las_size, dtype=np.int32)
     las_max = las_size.max()
+    # convert to list of string for print
+    las_size = list(map(lambda row: f"{row}", las_size))
     e_mp2 = np.sum(lno_emp2)
     e_ccsd = np.sum(lno_ecc)
     e_afqmc = np.sum(lno_eqmc)
@@ -287,21 +304,39 @@ def run_afqmc(mf,
                 f'{"t(CCSD)":>8s}  {"t(AFQMC)":>8s}\n')
         f.write('-' * width + '\n')
         
-        for n, i in enumerate(run_frg_list):
-            f.write(f"{i+1:4d}  {las_center[n]:>14s}  {las_size[n]:8d}  "
+        for n, i in enumerate(run_frag_list):
+            f.write(f"{i+1:4d}  {las_center[n]:>14s}  {las_size[n]:8s}  "
                     f"{lno_emp2[n]:10.8f}  {lno_ecc[n]:10.8f}  "
                     f"{lno_eqmc[n]:10.6f}  {lno_eqmc_err[n]:8.6f}  "
                     f"{ccsd_time[n]:8.2f}  {qmc_time[n]:8.2f}\n")
         
         f.write('-' * width + '\n')
 
-        f.write(f'{"Sum":>4s}  {"":>14s}  {"":>8s}  '
-                f'{e_mp2:10.8f}  {e_ccsd:10.8f}  '
-                f'{e_afqmc:10.6f}  {e_afqmc_err:8.6f}  '
-                f'{tot_ccsd_time:8.2f}  {tot_qmc_time:8.2f}\n')
+        # f.write(f'{"Summary"} {"LNO Thresh"} {"Max LAS"} '
+        #         f'{"E[LNO-MP2]"} {"E[LNO-CCSD]"} '
+        #         f'{"E[LNO-AFQMC]"} {"Err[LNO-AFQMC]"}'
+        #         f'{"CCSD Time"} {"AFQMC Time"}')
+        
+        # f.write(f'{lno_thresh} {las_max}'
+        #         f'{e_mp2:10.8f}  {e_ccsd:10.8f}  '
+        #         f'{e_afqmc:10.6f}  {e_afqmc_err:8.6f}  '
+        #         f'{tot_ccsd_time:8.2f}  {tot_qmc_time:8.2f}\n')
+        f.write(f'{"Summary"} \n')
+        # lno_thresh_str = f"{lno_thresh}"
+        lno_thresh_str = "[" + ", ".join(f"{x:.2e}" for x in lno_thresh) + "]"
+        f.write(f'{"LNO Thresh":<16} {"Max LAS":<10} '
+                f'{"E[LNO-MP2]":>12} {"E[LNO-CCSD]":>12} '
+                f'{"E[LNO-AFQMC]":>12} {"Err[LNO-AFQMC]":>14} '
+                f'{"CCSD Time":>10} {"AFQMC Time":>10}\n')
+
+        f.write(f'{lno_thresh_str:<16} {las_max:<10} '
+                f'{e_mp2:>12.8f} {e_ccsd:>12.8f} '
+                f'{e_afqmc:>12.6f} {e_afqmc_err:>14.6f} '
+                f'{tot_ccsd_time:>10.2f} {tot_qmc_time:>10.2f}\n')
+        
         f.write('=' * width + '\n\n')
 
-        f.write(f'LNO Threshold:          ({lno_thresh[0]:.2e}, {lno_thresh[1]:.2e})\n')
-        f.write(f'MAX. Orbitals:          {las_max}\n')
+        # f.write(f'LNO Threshold:          ({lno_thresh[0]:.2e}, {lno_thresh[1]:.2e})\n')
+        # f.write(f'MAX. Orbitals:          {las_max}\n')
 
     return None
