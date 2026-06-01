@@ -221,7 +221,7 @@ def run_afqmc(mf,
 
         print(f'LNO-MP2 Orbital Energy:  {eorb_mp2:.8f}')
         print(f'LNO-CCSD Orbital Energy: {eorb_cc:.8f}')
-        print(f"LNO-CCSD time:           {lnocc_time:.6f} s")
+        print(f"LNO-CCSD time:           {lnocc_time:.2f} s")
 
         las_center[ifrag] = loc_ctr
         las_size[ifrag] = lno_tot
@@ -298,7 +298,7 @@ def run_afqmc(mf,
     tot_qmc_time = np.sum(qmc_time)
 
     with open(f'lno_result.out', 'w') as f:
-        width = 110
+        width = 100
         f.write('=' * width + '\n')
         f.write(f'{"LNO-AFQMC Results":^{width}}\n')
         f.write('=' * width + '\n')
@@ -326,17 +326,19 @@ def run_afqmc(mf,
         #         f'{e_mp2:10.8f}  {e_ccsd:10.8f}  '
         #         f'{e_afqmc:10.6f}  {e_afqmc_err:8.6f}  '
         #         f'{tot_ccsd_time:8.2f}  {tot_qmc_time:8.2f}\n')
-        f.write(f'{"Summary"} \n')
+        f.write(f'{"Summarize Fragments":^{width}}\n')
+        f.write('-' * width + '\n')
+        # f.write(f'{"Summary"} \n')
         # lno_thresh_str = f"{lno_thresh}"
         lno_thresh_str = "[" + ", ".join(f"{x:.2e}" for x in lno_thresh) + "]"
-        f.write(f'{"LNO Thresh":<16} {"Max LAS":<10} '
-                f'{"E[LNO-MP2]":>12} {"E[LNO-CCSD]":>12} '
-                f'{"E[LNO-AFQMC]":>12} {"Err[LNO-AFQMC]":>14} '
-                f'{"CCSD Time":>10} {"AFQMC Time":>10}\n')
+        f.write(f'{"LNO-Thresh":<20} {"Max LAS":>8} '
+                f'{"E[MP2]":>12} {"E[CCSD]":>12} '
+                f'{"E[AFQMC]":>10} {"Err[AFQMC]":>10} '
+                f'{"CCSD-Time":>10} {"AFQMC-Time":>10}\n')
 
-        f.write(f'{lno_thresh_str:<16} {las_max:<10} '
+        f.write(f'{lno_thresh_str:<20} {las_max:>8} '
                 f'{e_mp2:>12.8f} {e_ccsd:>12.8f} '
-                f'{e_afqmc:>12.6f} {e_afqmc_err:>14.6f} '
+                f'{e_afqmc:>10.6f} {e_afqmc_err:>10.6f} '
                 f'{tot_ccsd_time:>10.2f} {tot_qmc_time:>10.2f}\n')
         
         f.write('=' * width + '\n\n')
