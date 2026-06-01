@@ -6,6 +6,8 @@ jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 from jax import random
+
+from pyscf import lib
 from pyscf.lno import lnoccsd
 from pyscf.lno import ulnoccsd
 from collections.abc import Iterable
@@ -74,33 +76,34 @@ def run_afqmc(mf,
     lno_type = ['1h','1h']
     eris = mlno.ao2mo()
 
-    nfrag = len(frag_lolist)
+    nfrag_tot = len(frag_lolist)
     if run_frag_list is None:
-        run_frag_list = range(nfrag)
+        run_frag_list = range(nfrag_tot)
     
     frag_lolist = [frag_lolist[i] for i in run_frag_list]
+    nfrag_run = len(frag_lolist)
 
     lno_pct_occ = [None, None]
-    lno_norb = [[None,None]] * nfrag
+    lno_norb = [[None,None]] * nfrag_tot
 
     seeds = random.randint(random.PRNGKey(qmc_options["seed"]),
-                           shape=(nfrag,), 
+                           shape=(nfrag_tot,), 
                            minval=0, 
-                           maxval=100*nfrag
+                           maxval=100*nfrag_tot
                            )
     
-    qmc_options["max_error"] = target_sto_error / np.sqrt(nfrag)
+    qmc_options["max_error"] = target_sto_error / np.sqrt(nfrag_tot)
     trial_base = qmc_options.get("trial", "")
 
-    las_center = [None]*nfrag
-    las_size = [None]*nfrag
+    las_center = [None]*nfrag_run
+    las_size = [None]*nfrag_run
     # las_size = np.zeros(nfrag, dtype='int32')
-    lno_emp2 = np.zeros(nfrag, dtype='float64')
-    lno_ecc  = np.zeros(nfrag, dtype='float64')
-    lno_eqmc = np.zeros(nfrag, dtype='float64')
-    lno_eqmc_err  = np.zeros(nfrag, dtype='float64')
-    ccsd_time = np.zeros(nfrag, dtype='float64')
-    qmc_time = np.zeros(nfrag, dtype='float64')
+    lno_emp2 = np.zeros(nfrag_run, dtype='float64')
+    lno_ecc  = np.zeros(nfrag_run, dtype='float64')
+    lno_eqmc = np.zeros(nfrag_run, dtype='float64')
+    lno_eqmc_err  = np.zeros(nfrag_run, dtype='float64')
+    ccsd_time = np.zeros(nfrag_run, dtype='float64')
+    qmc_time = np.zeros(nfrag_run, dtype='float64')
 
     mol = mf.mol
 
@@ -108,13 +111,15 @@ def run_afqmc(mf,
     for ifrag, loidx in enumerate(frag_lolist):
         print("\n")
         width = 80
-        msg = f" {spin_type} LNO-FRAGMENT {run_frag_list[ifrag]+1}/{nfrag} "
+        msg = f" {spin_type} LNO-FRAGMENT {run_frag_list[ifrag]+1}/({nfrag_run},{nfrag_tot}) "
         print(msg.center(width, '='))
         if atom_group is not None:
             loc_ctr = f"{atom_group[run_frag_list[ifrag]]}"
             print(f"Center Atom {loc_ctr}")
         else:
             loc_ctr = None
+        
+        print(f"PySCF NumPy Threads = {lib.num_threads()}")
 
         if spin_type == "unrestricted":
             orbloc = [lo_coeff[0][:,loidx[0]], lo_coeff[1][:,loidx[1]]]
