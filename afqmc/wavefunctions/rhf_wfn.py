@@ -32,7 +32,7 @@ def r_slater_green(bra: jax.Array, ket: jax.Array) -> jax.Array:
 def r_slater_half_green(bra: jax.Array, ket: jax.Array) -> jax.Array:
     '''half Green's function - the ket coefficient
        is contracted with the observable tensors'''
-    green = (ket @ (jnp.linalg.inv(bra.T.conj() @ ket)) @ bra.T.conj()).T
+    green = (ket @ (jnp.linalg.inv(bra.T.conj() @ ket))).T
     return green
 
 @jit
@@ -116,6 +116,7 @@ def r_rot_slater_energy(
 
     return energy
 
+# implementation of above functions in QMC sampling
 def r_overlap(trial, walker, wave_data):
     return r_slater_overlap(wave_data["mo_coeff"], walker)
 
@@ -129,7 +130,7 @@ def r_energy(trial, walker, ham_data, wave_data):
     chol = ham_data["chol"].reshape(trial.nchol, trial.norb, trial.norb)
     return r_slater_energy(wave_data["mo_coeff"], walker, h0, h1, chol)
 
-def r_rot__force_bias(trial, walker, ham_data, wave_data):
+def r_rot_force_bias(trial, walker, ham_data, wave_data):
     rot_chol = ham_data["rot_chol"].reshape(trial.nchol, trial.norb, trial.norb)
     return r_rot_slater_force_bias(wave_data["mo_coeff"], walker, rot_chol)
 

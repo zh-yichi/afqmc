@@ -7,11 +7,13 @@ import pickle
 import numpy as np
 
 import opt_einsum as oe
+
+import jax
 import jax.numpy as jnp
 from jax import scipy as jsp
 from jax import jit, lax, random, vmap
 
-from afqmc import hamiltonian, cholesky
+from afqmc import hamiltonian, cholesky, linalg_utils
 from afqmc import propagation, sampling, fp_sampling
 from afqmc.wavefunctions import wavefunctions_restricted
 from afqmc.wavefunctions import wavefunctions_unrestricted
@@ -19,69 +21,78 @@ from afqmc.wavefunctions import wavefunctions_unrestricted
 from functools import partial
 print = partial(print, flush=True)
 
-def init_walkers_1rdm(
-        trial,
-        wave_data: dict, 
-        n_walkers: int, 
-        restricted: bool = False
-        ):
-    """Initialize walkers by rdm1 natural orbitals.
+def replicate_walker(walker, nwalker):
+    if isinstance(walker, jax.Array):
+        walkers = jnp.array([walker] * nwalker, dtype=jnp.complex128)
+    elif isinstance(walker, (tuple, list)):
+        walkers_a = jnp.array([walker[0]] * nwalker, dtype=jnp.complex128)
+        walkers_b = jnp.array([walker[1]] * nwalker, dtype=jnp.complex128)
+        walkers = [walkers_a, walkers_b]
+    return walkers
 
-    Args:
-        trial: trial wavefunction object
-        wave_data: The trial wave function data.
-        n_walkers: The number of walkers.
-        restricted: Whether the walkers should be restricted.
+# def init_walkers_1rdm(
+#         trial,
+#         wave_data: dict, 
+#         n_walkers: int, 
+#         restricted: bool = False
+#         ):
+#     """Initialize walkers by rdm1 natural orbitals.
 
-    Returns:
-        walkers: The initial walkers.
-            If restricted, a single jax.Array of shape (nwalkers, norb, nelec[0]).
-            If unrestricted, a list of two jax.Arrays each of shape (nwalkers, norb, nelec[sigma]).
-    """
-    rdm1 = trial.get_rdm1(wave_data)
-    natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : trial.nelec[0]]
-    natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : trial.nelec[1]]
+#     Args:
+#         trial: trial wavefunction object
+#         wave_data: The trial wave function data.
+#         n_walkers: The number of walkers.
+#         restricted: Whether the walkers should be restricted.
+
+#     Returns:
+#         walkers: The initial walkers.
+#             If restricted, a single jax.Array of shape (nwalkers, norb, nelec[0]).
+#             If unrestricted, a list of two jax.Arrays each of shape (nwalkers, norb, nelec[sigma]).
+#     """
+#     rdm1 = trial.get_rdm1(wave_data)
+#     natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : trial.nelec[0]]
+#     natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : trial.nelec[1]]
     
-    if restricted:
-        if trial.nelec[0] == trial.nelec[1]:
-            det_overlap = np.linalg.det(
-                natorbs_up[:, : trial.nelec[0]].T @ natorbs_dn[:, : trial.nelec[1]]
-            )
-            if (
-                np.abs(det_overlap) > 1e-3
-            ):  # probably should scale this threshold with number of electrons
-                return jnp.array([natorbs_up + 0.0j] * n_walkers)
-            else:
-                overlaps = np.array(
-                    [
-                        natorbs_up[:, i].T @ natorbs_dn[:, i]
-                        for i in range(trial.nelec[0])
-                    ]
-                )
-                new_vecs = natorbs_up[:, : trial.nelec[0]] + np.einsum(
-                    "ij,j->ij", natorbs_dn[:, : trial.nelec[1]], np.sign(overlaps)
-                )
-                new_vecs = np.linalg.qr(new_vecs)[0]
-                det_overlap = np.linalg.det(
-                    new_vecs.T @ natorbs_up[:, : trial.nelec[0]]
-                ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : trial.nelec[1]])
-                if np.abs(det_overlap) > 1e-3:
-                    return jnp.array([new_vecs + 0.0j] * n_walkers)
-                else:
-                    raise ValueError(
-                        "Cannot find a set of RHF orbitals with good trial overlap."
-                    )
-        else:
-            # bring the dn orbital projection onto up space to the front
-            dn_proj = natorbs_up.T.conj() @ natorbs_dn
-            proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
-            orbs = natorbs_up @ proj_orbs
-            return jnp.array([orbs + 0.0j] * n_walkers)
-    else:
-        return [
-            jnp.array([natorbs_up + 0.0j] * n_walkers),
-            jnp.array([natorbs_dn + 0.0j] * n_walkers),
-        ]
+#     if restricted:
+#         if trial.nelec[0] == trial.nelec[1]:
+#             det_overlap = np.linalg.det(
+#                 natorbs_up[:, : trial.nelec[0]].T @ natorbs_dn[:, : trial.nelec[1]]
+#             )
+#             if (
+#                 np.abs(det_overlap) > 1e-3
+#             ):  # probably should scale this threshold with number of electrons
+#                 return jnp.array([natorbs_up + 0.0j] * n_walkers)
+#             else:
+#                 overlaps = np.array(
+#                     [
+#                         natorbs_up[:, i].T @ natorbs_dn[:, i]
+#                         for i in range(trial.nelec[0])
+#                     ]
+#                 )
+#                 new_vecs = natorbs_up[:, : trial.nelec[0]] + np.einsum(
+#                     "ij,j->ij", natorbs_dn[:, : trial.nelec[1]], np.sign(overlaps)
+#                 )
+#                 new_vecs = np.linalg.qr(new_vecs)[0]
+#                 det_overlap = np.linalg.det(
+#                     new_vecs.T @ natorbs_up[:, : trial.nelec[0]]
+#                 ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : trial.nelec[1]])
+#                 if np.abs(det_overlap) > 1e-3:
+#                     return jnp.array([new_vecs + 0.0j] * n_walkers)
+#                 else:
+#                     raise ValueError(
+#                         "Cannot find a set of RHF orbitals with good trial overlap."
+#                     )
+#         else:
+#             # bring the dn orbital projection onto up space to the front
+#             dn_proj = natorbs_up.T.conj() @ natorbs_dn
+#             proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
+#             orbs = natorbs_up @ proj_orbs
+#             return jnp.array([orbs + 0.0j] * n_walkers)
+#     else:
+#         return [
+#             jnp.array([natorbs_up + 0.0j] * n_walkers),
+#             jnp.array([natorbs_dn + 0.0j] * n_walkers),
+#         ]
 
 #### restricted ####
 def decompose_rt2(t2, thresh=1e-8):
@@ -262,6 +273,12 @@ def uthouless(slater, tau):
 
     return [slater_ta, slater_tb]
 
+def thouless(slater, tau):
+    if isinstance(slater, jax.Array) and len(slater.shape) == 2:
+        return rthouless(slater, tau)
+    elif isinstance(slater, (tuple, list)) and isinstance(tau, (tuple, list)):
+        return uthouless(slater, tau)
+
 @partial(jit, static_argnames=("n_walkers"))
 def get_uccsd_walkers(prop_data, wave_data, n_walkers):
     prop_data["key"], subkey = random.split(prop_data["key"])
@@ -309,31 +326,67 @@ def get_ccsd_walkers(prop_data, wave_data, n_walkers, walker_type):
     else:
         raise ValueError(f"unsupport CCSD initial walker_type: {walker_type}")
 
-# def init_walkers(trial, prop_data, wave_data, n_walkers, walker_type):
 
+def init_hf_prop_data(
+    trial,
+    wave_data,
+    ham_data,
+    options
+    ):
 
-# @partial(jit, static_argnames=("prop", "trial", "n_walkers", "walker_type", "seed"))
-def init_ccsd_prop_data(wave_data, ham_data, prop, trial,
-                        n_walkers, walker_type, seed):
+    print("\nInitalize QMC walkers by HF")
     prop_data = {}
-    prop_data["weights"] = jnp.ones(prop.n_walkers)
-    prop_data["key"] = random.PRNGKey(seed)
-    
+    prop_data["n_killed_walkers"] = 0
+    prop_data["key"] = random.PRNGKey(options["seed"])
+
+    weights0 = jnp.ones(options["n_walkers"], dtype=jnp.float64)
+    walkers0 = replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
+    overlaps0 = trial.calc_overlap(walkers0, wave_data)
+    energies0 = trial.calc_energy(walkers0, ham_data, wave_data)
+    energy0 = jnp.sum(overlaps0 * energies0) / jnp.sum(overlaps0)
+
+    prop_data["walkers"] = walkers0
+    prop_data["weights"] = weights0
+    prop_data["overlaps"] = overlaps0
+    prop_data["e_estimate"] = jnp.real(energy0)
+    prop_data["pop_control_ene_shift"] = jnp.real(energy0)
+
+    return prop_data
+
+def init_ccsd_prop_data(
+    trial,
+    wave_data,
+    ham_data,
+    options
+    ):
+
     print("\nInitalize QMC walkers by stochastic CCSD")
-    init_walkers, prop_data = get_ccsd_walkers(
-        prop_data, wave_data, n_walkers, walker_type)
-    prop_data["walkers"] = init_walkers
+    prop_data = {}
+    prop_data["n_killed_walkers"] = 0
+    prop_data["key"] = random.PRNGKey(options["seed"])
+
+    weights0 = jnp.ones(options["n_walkers"], dtype=jnp.float64)
+    walkers0 = replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
+    overlaps0 = trial.calc_overlap(walkers0, wave_data)
+
+    walkers1, prop_data = get_ccsd_walkers(
+        prop_data, wave_data, options["n_walkers"], options["walker_type"]
+    )
+    overlaps1 = trial.calc_overlap(walkers1, wave_data)
+    weights1 = jnp.real(weights0 * overlaps1 / overlaps0)
+
+    prop_data["weights"] = weights1
+    prop_data["walkers"] = walkers1
+    prop_data["overlaps"] = overlaps1
 
     h0 = ham_data["h0"]
     t1s, t2s, e0s, e1s = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
-    olps = trial.calc_overlap(prop_data["walkers"], wave_data)
-    prop_data["overlaps"] = olps
 
-    olp = jnp.sum(olps)
-    t1 = jnp.sum(olps * t1s) / olp
-    t2 = jnp.sum(olps * t2s) / olp
-    e0 = jnp.sum(olps * e0s) / olp
-    e1 = jnp.sum(olps * e1s) / olp
+    wt = jnp.sum(weights1)
+    t1 = jnp.sum(weights1 * t1s) / wt
+    t2 = jnp.sum(weights1 * t2s) / wt
+    e0 = jnp.sum(weights1 * e0s) / wt
+    e1 = jnp.sum(weights1 * e1s) / wt
 
     energy = jnp.real(h0 + e0 / t1 + e1 / t1 - t2 * e0 / t1**2)
 
@@ -425,15 +478,16 @@ def init_afqmc(options=None,
         chol, options["nchol_chunk"], options["max_memory"]/options["n_walkers"])
 
     wave_data = {}
-    mo_coeff = jnp.array([np.eye(norb),np.eye(norb)])
+    mo_coeff = [jnp.eye(norb), jnp.eye(norb)]
 
     if spin_type == "restricted":
+        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
         if options["trial"] == "rhf":
             trial = wavefunctions_restricted.rhf(norb, nelec_sp, 
                                                  n_batch=options["n_batch"],
                                                  nchol_chunk=options["nchol_chunk"],
                                                  )
-            wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
+            # wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
         elif "cisd" in options["trial"]:
             try:
@@ -441,8 +495,7 @@ def init_afqmc(options=None,
                 t1 = jnp.array(amplitudes["t1"])
                 t2 = jnp.array(amplitudes["t2"])
                 ci2 = t2 + jnp.einsum("ia,jb->iajb", t1, t1)
-                trial_wave_data = {"ci1": t1, "ci2": ci2, 
-                                "mo_coeff": mo_coeff[0][:, : nelec_sp[0]]}
+                trial_wave_data = {"ci1": t1, "ci2": ci2}
                 wave_data.update(trial_wave_data)
                 trial = wavefunctions_restricted.cisd(norb, nelec_sp, 
                                                       n_batch=options["n_batch"]
@@ -458,7 +511,7 @@ def init_afqmc(options=None,
             try:
                 amplitudes = np.load(amp_file)
                 t2 = jnp.array(amplitudes["t2"])
-                trial_wave_data = {"ci2": t2, "mo_coeff": mo_coeff[0][:, : nelec_sp[0]]}
+                trial_wave_data = {"ci2": t2}
                 wave_data.update(trial_wave_data)
                 trial = wavefunctions_restricted.cid(norb, nelec_sp, n_batch=options["n_batch"])
             except:
@@ -470,7 +523,6 @@ def init_afqmc(options=None,
             t2 = jnp.array(amplitudes["t2"])
             trial_wave_data = {"t1": t1, "t2": t2}
             wave_data.update(trial_wave_data)
-            wave_data["mo_coeff"] = mo_coeff[0][:,:nelec_sp[0]]
             trial = wavefunctions_restricted.ptccsd(norb, nelec_sp, n_batch=options["n_batch"])
             if "ad" in options["trial"]:
                 trial = wavefunctions_restricted.ptccsd_ad(norb, nelec_sp, n_batch=options["n_batch"])
@@ -480,7 +532,6 @@ def init_afqmc(options=None,
             t2 = jnp.array(amplitudes["t2"])
             trial_wave_data = {"t2": t2}
             wave_data.update(trial_wave_data)
-            wave_data["mo_coeff"] = mo_coeff[0][:,:nelec_sp[0]]
             trial = wavefunctions_restricted.ptccd(norb, nelec_sp, n_batch=options["n_batch"])
 
         elif "pt2ccsd" in options["trial"]:
@@ -495,9 +546,8 @@ def init_afqmc(options=None,
             t2 = jnp.array(amplitudes["t2"])
             trial_wave_data = {"t1": t1, "t2": t2}
             wave_data.update(trial_wave_data)
-            mo_t = trial.thouless_trans(t1)[:,:nocc]
-            wave_data['mo_t'] = mo_t
-            wave_data["mo_coeff"] = mo_coeff[0][:,:nelec_sp[0]]
+            # mo_t = thouless(wave_data['mo_coeff'], t1)
+            wave_data['mo_t'] = thouless(wave_data['mo_coeff'], t1)
             if "ad" in options["trial"]:
                 trial = wavefunctions_restricted.pt2ccsd_ad(norb, nelec_sp, 
                                                             n_batch=options["n_batch"])
@@ -539,24 +589,18 @@ def init_afqmc(options=None,
             t2 = jnp.array(amplitudes["t2"])
             trial_wave_data = {"t1": t1, "t2": t2}
             wave_data.update(trial_wave_data)
-            init_sd = jnp.eye(norb)[:,:nocc]
-            mo_t = trial._thouless(init_sd, t1)
-            wave_data['mo_t'] = mo_t
+            wave_data['mo_t'] = thouless(wave_data['mo_coeff'], t1)
             wave_data['tau'] = trial.decompose_t2(t2)
-            wave_data["mo_coeff"] = mo_coeff[0][:,:nocc]
     
     elif spin_type == "unrestricted":
+        wave_data["mo_coeff"] = [mo_coeff[0][:, : nelec_sp[0]],
+                                 mo_coeff[1][:, : nelec_sp[1]],]
+
         if options["trial"] == "uhf":
-            trial = wavefunctions_unrestricted.uhf(norb, nelec_sp, 
-                                                   n_batch=options["n_batch"])
-            wave_data["mo_coeff"] = [
-                mo_coeff[0][:, : nelec_sp[0]],
-                mo_coeff[1][:, : nelec_sp[1]],
-            ]
+            trial = wavefunctions_unrestricted.uhf(norb, nelec_sp, n_batch=options["n_batch"])
 
         elif options["trial"] == "ucisd":
-            trial = wavefunctions_unrestricted.ucisd(
-                    norb, nelec_sp, n_batch=options["n_batch"])
+            trial = wavefunctions_unrestricted.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
             nocc_a, nocc_b = trial.nelec[0], trial.nelec[1]
             try:
                 amplitudes = np.load(amp_file)
@@ -579,8 +623,7 @@ def init_afqmc(options=None,
                     "mo_coeff": mo_coeff,
                 }
                 wave_data.update(trial_wave_data)
-                mo = [mo_coeff[0][:,:nocc_a], mo_coeff[1][:,:nocc_b]]
-                mo_t = trial._thouless(mo, [t1a, t1b])
+                mo_t = thouless(wave_data['mo_coeff'], [t1a, t1b])
                 wave_data['mo_ta'] = mo_t[0]
                 wave_data['mo_tb'] = mo_t[1]
                 # wave_data['tau'] = trial.decompose_t2([t2aa,t2ab,t2bb])
@@ -628,10 +671,6 @@ def init_afqmc(options=None,
                 mix_precision=options["mix_precision"],
                 )
             noccA, noccB = trial.nelec[0], trial.nelec[1]
-            wave_data["mo_coeff"] = [
-                mo_coeff[0][:, : noccA],
-                mo_coeff[1][:, : noccB],
-            ]
             ham_data['h1_mod'] = h1_mod
             amplitudes = np.load(amp_file)
             t1a = jnp.array(amplitudes["t1a"])
@@ -639,8 +678,11 @@ def init_afqmc(options=None,
             t2aa = jnp.array(amplitudes["t2aa"])
             t2ab = jnp.array(amplitudes["t2ab"])
             t2bb = jnp.array(amplitudes["t2bb"])
-            mo_ta = trial.thouless_trans(t1a)[:,:noccA]
-            mo_tb = trial.thouless_trans(t1b)[:,:noccB]
+            # mo_ta = trial.thouless_trans(t1a)[:,:noccA]
+            # mo_tb = trial.thouless_trans(t1b)[:,:noccB]
+            # wave_data['mo_ta'] = mo_ta
+            # wave_data['mo_tb'] = mo_tb
+            [mo_ta, mo_tb] = thouless(wave_data['mo_coeff'], [t1a, t1b])
             wave_data['mo_ta'] = mo_ta
             wave_data['mo_tb'] = mo_tb
             wave_data["t2aa"] = t2aa
@@ -680,10 +722,10 @@ def init_afqmc(options=None,
             t2aa = jnp.array(amplitudes["t2aa"])
             t2ab = jnp.array(amplitudes["t2ab"])
             t2bb = jnp.array(amplitudes["t2bb"])
-            mo = [mo_coeff[0][:,:nocc_a], mo_coeff[1][:,:nocc_b]]
-            mo_t = trial._thouless(mo, [t1a, t1b])
-            wave_data['mo_ta'] = mo_t[0]
-            wave_data['mo_tb'] = mo_t[1]
+            # mo = [mo_coeff[0][:,:nocc_a], mo_coeff[1][:,:nocc_b]]
+            [mo_ta, mo_tb] = thouless(wave_data['mo_coeff'], [t1a, t1b])
+            wave_data['mo_ta'] = mo_ta
+            wave_data['mo_tb'] = mo_tb
             wave_data["t2aa"] = t2aa
             wave_data["t2bb"] = t2bb
             wave_data["t2ab"] = t2ab

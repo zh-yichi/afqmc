@@ -150,18 +150,19 @@ class sampler:
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
-
+    
 
 @dataclass
-class sampler_mixed(sampler):
+class sampler_exp(sampler):
+    """An experimental energy sampler for general Guide/Trial combination"""
 
-    @partial(jit, static_argnums=(0,3,4))
+    @partial(jit, static_argnums=(0,1,2))
     def block_sample(
         self,
-        prop_data,
-        ham_data,
         prop,
         trial,
+        prop_data,
+        ham_data,
         wave_data,
         ):
         """Block scan function. Propagation and energy calculation."""
@@ -171,58 +172,112 @@ class sampler_mixed(sampler):
             shape=(
                 self.n_prop_steps,
                 prop.n_walkers,
-                self.n_chol,
+                trial.nchol,
             ),
         )
         _step_scan_wrapper = lambda x, y: self._step_scan(
             x, y, ham_data, prop, trial, wave_data
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
-        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(
-            prop_data["weights"]
-        )
-
         prop_data = prop.orthonormalize_walkers(prop_data)
-        og = trial.calc_overlap(prop_data["walkers"], wave_data)
-        prop_data["overlaps"] = og
-        otg, eg, et = trial.calc_energy_mixed(prop_data["walkers"],ham_data,wave_data)
-        de, do = trial.calc_stoccsd_cr(prop_data["walkers"], ham_data, wave_data)
+        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
 
-        ot = otg * og
-        ot_cr = ot + do
-        et_cr = (et * ot + de) / ot_cr
+        energies = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
+        outlier = jnp.abs(energies - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
+        weights = jnp.where(outlier, 0.0, prop_data["weights"])
 
-        otg = jnp.real(otg)
-        eg = jnp.real(eg)
-        et = jnp.real(et)
-        ot_cr = jnp.real(ot_cr)
-        et_cr = jnp.real(et_cr)
+        guide_olps = trial.calc_overlap(prop_data["walkers"], wave_data)
+        trial_olps = trial.calc_trial_overlap(prop_data["walkers"], wave_data)
+        prop_data["overlaps"] = guide_olps
 
-        eg = jnp.where(
-            jnp.abs(eg - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt),
-            prop_data["e_estimate"],
-            eg,
-        )
-        
-        wt = prop_data["weights"]
-        wp = wt * otg
-        wp_cr = wt * ot_cr / og
+        olp_ratio = trial_olps / guide_olps
+        weights_p = weights * olp_ratio
 
-        blk_wt = jnp.sum(wt)
-        blk_wp = jnp.sum(wp)
-        blk_wp_cr = jnp.sum(wp_cr)
-        blk_eg = jnp.sum(eg * wt) / blk_wt
-        blk_et = jnp.sum(et * wp) / blk_wp
-        blk_et_cr = jnp.sum(et_cr * wp_cr) / blk_wp_cr
+        blk_wt = jnp.sum(weights)
+        blk_wp = jnp.sum(weights_p)
+        blk_et = jnp.sum(weights_p * energies) / blk_wp
 
+        # prop_data["pop_control_ene_shift"] = 0.9 * prop_data["pop_control_ene_shift"] + 0.1 * blk_eg
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-        prop_data["pop_control_ene_shift"] = 0.9 * prop_data["pop_control_ene_shift"] + 0.1 * blk_eg
 
-        return prop_data, (blk_wt, blk_wp, blk_wp_cr, blk_eg, blk_et, blk_et_cr)
+        return prop_data, (blk_wt, blk_wp, blk_et)
     
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
+
+
+# @dataclass
+# class sampler_mixed(sampler):
+
+#     @partial(jit, static_argnums=(0,3,4))
+#     def block_sample(
+#         self,
+#         prop_data,
+#         ham_data,
+#         prop,
+#         trial,
+#         wave_data,
+#         ):
+#         """Block scan function. Propagation and energy calculation."""
+#         prop_data["key"], subkey = random.split(prop_data["key"])
+#         fields = random.normal(
+#             subkey,
+#             shape=(
+#                 self.n_prop_steps,
+#                 prop.n_walkers,
+#                 self.n_chol,
+#             ),
+#         )
+#         _step_scan_wrapper = lambda x, y: self._step_scan(
+#             x, y, ham_data, prop, trial, wave_data
+#         )
+#         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+#         prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(
+#             prop_data["weights"]
+#         )
+
+#         prop_data = prop.orthonormalize_walkers(prop_data)
+#         og = trial.calc_overlap(prop_data["walkers"], wave_data)
+#         prop_data["overlaps"] = og
+#         otg, eg, et = trial.calc_energy_mixed(prop_data["walkers"],ham_data,wave_data)
+#         de, do = trial.calc_stoccsd_cr(prop_data["walkers"], ham_data, wave_data)
+
+#         ot = otg * og
+#         ot_cr = ot + do
+#         et_cr = (et * ot + de) / ot_cr
+
+#         otg = jnp.real(otg)
+#         eg = jnp.real(eg)
+#         et = jnp.real(et)
+#         ot_cr = jnp.real(ot_cr)
+#         et_cr = jnp.real(et_cr)
+
+#         eg = jnp.where(
+#             jnp.abs(eg - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt),
+#             prop_data["e_estimate"],
+#             eg,
+#         )
+        
+#         wt = prop_data["weights"]
+#         wp = wt * otg
+#         wp_cr = wt * ot_cr / og
+
+#         blk_wt = jnp.sum(wt)
+#         blk_wp = jnp.sum(wp)
+#         blk_wp_cr = jnp.sum(wp_cr)
+#         blk_eg = jnp.sum(eg * wt) / blk_wt
+#         blk_et = jnp.sum(et * wp) / blk_wp
+#         blk_et_cr = jnp.sum(et_cr * wp_cr) / blk_wp_cr
+
+#         prop_data = prop.stochastic_reconfiguration_local(prop_data)
+#         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+#         prop_data["pop_control_ene_shift"] = 0.9 * prop_data["pop_control_ene_shift"] + 0.1 * blk_eg
+
+#         return prop_data, (blk_wt, blk_wp, blk_wp_cr, blk_eg, blk_et, blk_et_cr)
+    
+#     def __hash__(self) -> int:
+#         return hash(tuple(self.__dict__.values()))
 
 
 @dataclass
@@ -406,6 +461,46 @@ class sampler_pt2(sampler):
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
         return prop_data, (blk_wt, blk_eg, blk_t1, blk_t2, blk_e0, blk_e1)
+    
+    @partial(jit, static_argnums=(0,3,4))
+    def sample_energy(
+        self,
+        prop_data,
+        ham_data,
+        prop,
+        trial,
+        wave_data,
+        ):
+        """Block scan function. Propagation and energy calculation."""
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(
+                self.n_prop_steps,
+                prop.n_walkers,
+                self.n_chol,
+            ),
+        )
+        _step_scan_wrapper = lambda x, y: self._step_scan(
+            x, y, ham_data, prop, trial, wave_data
+        )
+        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        prop_data = prop.orthonormalize_walkers(prop_data)
+
+        t1, t2, e0, e1 = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
+
+        blk_wt = jnp.sum(prop_data["weights"])
+        blk_t1 = jnp.sum(prop_data["weights"] * t1) / blk_wt
+        blk_t2 = jnp.sum(prop_data["weights"] * t2) / blk_wt
+        blk_e0 = jnp.sum(prop_data["weights"] * e0) / blk_wt
+        blk_e1 = jnp.sum(prop_data["weights"] * e1) / blk_wt
+
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+
+        return prop_data, (blk_wt, blk_t1, blk_t2, blk_e0, blk_e1)
 
     def pt2blocking_analysis(
             self,

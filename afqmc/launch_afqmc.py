@@ -15,7 +15,7 @@ def ph_afqmc(
     if script is None:
         if  'pt' in options['trial']:
             if '2' in options['trial']:
-                script='run_afqmc_pt2ccsd.py'
+                script='run_afqmc_pt2ccsd_new.py'
             else:
                 script='run_afqmc_ptccsd.py'
         

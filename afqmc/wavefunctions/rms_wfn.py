@@ -75,3 +75,27 @@ def rms_rot_energy(slaters, walker, h0, rot_h1, rot_chol):
     energy = jnp.sum(olps*energies) / olp
 
     return energy
+
+# implementation of above functions in QMC sampling
+def r_overlap(trial, walker, wave_data):
+    return rms_overlap(wave_data["slaters"], walker)
+
+def r_force_bias(trial, walker, ham_data, wave_data):
+    chol = ham_data["chol"].reshape(trial.nchol, trial.norb, trial.norb)
+    return rms_force_bias(wave_data["slaters"], walker, chol)
+
+def r_energy(trial, walker, ham_data, wave_data):
+    h0 = ham_data["h0"]
+    h1 = ((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
+    chol = ham_data["chol"].reshape(trial.nchol, trial.norb, trial.norb)
+    return rms_energy(wave_data["slaters"], walker, h0, h1, chol)
+
+def r_rot_force_bias(trial, walker, ham_data, wave_data):
+    rot_chol = ham_data["rot_chol"].reshape(trial.nchol, trial.norb, trial.norb)
+    return rms_rot_force_bias(wave_data["slaters"], walker, rot_chol)
+
+def r_rot_energy(trial, walker, ham_data, wave_data):
+    h0 = ham_data["h0"]
+    rot_h1 = ham_data["rot_h1"]
+    rot_chol = ham_data["rot_chol"]
+    return rms_rot_energy(wave_data["slaters"], walker, h0, rot_h1, rot_chol)
