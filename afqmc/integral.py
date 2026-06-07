@@ -277,12 +277,28 @@ def prep_integral(
         nocc = int(np.count_nonzero(mf.mo_occ))
         nelec = [nocc - norb_frozen, nocc - norb_frozen]
         h1e, enuc = h1e_ras(mf, basis_coeff, nbasis, norb_frozen, useDF)
-        chol_ao = cholesky.cholesky_by_mol(mol, max_error=chol_cut, cmax=10)
-        chol_ao = jnp.array(chol_ao.reshape((-1, nao, nao)))
-        chol = cholesky.cderi2mo_gpu(chol_ao, basis_coeff)
-        chol = cholesky.unpack_symmetric(chol, nao)
-        chol = chol[:, norb_frozen:, norb_frozen:]
+        if not useDF:
+            chol_ao = cholesky.cholesky_by_mol(mol, max_error=chol_cut, cmax=10)
+            chol_ao = jnp.array(chol_ao.reshape((-1, nao, nao)))
+            chol = cholesky.cderi2mo_gpu(chol_ao, basis_coeff)
+            chol = cholesky.unpack_symmetric(chol, nao)
+    
+        elif useDF:
+            naux = mf.with_df.get_naoaux()
+            npair = nao*(nao+1)//2
+            naux = mf.with_df.get_naoaux()
+            chol_ao = np.zeros((naux, npair))
+            p1 = 0
+            for cderi in mf.with_df.loop():
+                p0, p1 = p1, p1 + cderi.shape[0]
+                chol_ao[p0:p1] = jnp.array(cderi)
+            chol_ao = cholesky.compress_cderi_gpu(chol_ao, thresh=chol_cut)
+            chol_ao = cholesky.unpack_symmetric(chol_ao, nao)
+            chol = cholesky.cderi2mo_gpu(chol_ao, basis_coeff)
+            chol = cholesky.unpack_symmetric(chol, nao)
 
+        chol = chol[:, norb_frozen:, norb_frozen:]
+        print(f"Cholesky shape: {chol.shape} ")
         v0 = 0.5 * oe.contract("gpr,gqr->pq", chol, chol, backend="jax")
         h1e_mod = h1e - v0
         chol = chol.reshape((chol.shape[0], -1))
@@ -298,17 +314,33 @@ def prep_integral(
         nbasis = ncas[0]
         h1e, enuc = h1e_uas(mf, basis_coeff, ncas, ncore, useDF)
 
-        chol_ao = cholesky.cholesky_by_mol(mol, max_error=chol_cut, cmax=10)
-        chol_ao = jnp.array(chol_ao.reshape((-1, nao, nao)))
-        chol_a = cholesky.cderi2mo_gpu(chol_ao, basis_coeff[0])
-        chol_b = cholesky.cderi2mo_gpu(chol_ao, basis_coeff[1])
-        chol_a = cholesky.unpack_symmetric(chol_a, nao)
-        chol_b = cholesky.unpack_symmetric(chol_b, nao)
-        print(f"Alpha Cholesky shape: {chol_a.shape} ")
-        print(f" Beta Cholesky shape: {chol_b.shape} ")
+        if not useDF:
+            chol_ao = cholesky.cholesky_by_mol(mol, max_error=chol_cut, cmax=10)
+            chol_ao = jnp.array(chol_ao.reshape((-1, nao, nao)))
+            chol_a = cholesky.cderi2mo_gpu(chol_ao, basis_coeff[0])
+            chol_b = cholesky.cderi2mo_gpu(chol_ao, basis_coeff[1])
+            chol_a = cholesky.unpack_symmetric(chol_a, nao)
+            chol_b = cholesky.unpack_symmetric(chol_b, nao)
+        elif useDF:
+            naux = mf.with_df.get_naoaux()
+            npair = nao*(nao+1)//2
+            naux = mf.with_df.get_naoaux()
+            chol_ao = np.zeros((naux, npair))
+            p1 = 0
+            for cderi in mf.with_df.loop():
+                p0, p1 = p1, p1 + cderi.shape[0]
+                chol_ao[p0:p1] = jnp.array(cderi)
+            chol_ao = cholesky.compress_cderi_gpu(chol_ao, thresh=chol_cut)
+            chol_ao = cholesky.unpack_symmetric(chol_ao, nao)
+            chol_a = cholesky.cderi2mo_gpu(chol_ao, basis_coeff[0])
+            chol_b = cholesky.cderi2mo_gpu(chol_ao, basis_coeff[1])
+            chol_a = cholesky.unpack_symmetric(chol_a, nao)
+            chol_b = cholesky.unpack_symmetric(chol_b, nao)
 
         chol_a = chol_a[:, ncore[0]:, ncore[0]:]
         chol_b = chol_b[:, ncore[1]:, ncore[1]:]
+        print(f"Alpha Cholesky shape: {chol_a.shape} ")
+        print(f" Beta Cholesky shape: {chol_b.shape} ")
         v0_a = 0.5 * oe.contract("gpr,gqr->pq", chol_a, chol_a, backend="jax")
         v0_b = 0.5 * oe.contract("gpr,gqr->pq", chol_b, chol_b, backend="jax")
         h1e = jnp.array(h1e)
