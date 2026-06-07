@@ -56,10 +56,21 @@ class wfn:
     nchol_chunk: int
     nwalker_batch: int = 1
 
-    # def __post_init__(self):
-    #     nwalker = 
-    #     assert nwalker % nbatch == 0, \
-    #         f"nwalker={nwalker} not divisible by nbatch={nbatch}"
+    def __post_init__(self):
+        
+        object.__setattr__(self, "nelec", tuple(int(x) for x in self.nelec))
+        object.__setattr__(self, "norb",
+                        int(self.norb) if not isinstance(self.norb, tuple)
+                        else tuple(int(x) for x in self.norb))
+        
+        assert self.guide_overlap_fn.__module__ == self.force_bias_fn.__module__, (
+            f"guide_overlap_fn ({self.guide_overlap_fn.__module__}) and "
+            f"force_bias_fn ({self.force_bias_fn.__module__}) must come from the same module"
+        )
+        assert self.trial_overlap_fn.__module__ == self.energy_fn.__module__, (
+            f"trial_overlap_fn ({self.trial_overlap_fn.__module__}) and "
+            f"energy_fn ({self.energy_fn.__module__}) must come from the same module"
+        )
 
     def _guide_overlap(self, walker, wave_data):
         return self.guide_overlap_fn(self, walker, wave_data)

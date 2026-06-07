@@ -17,6 +17,12 @@ def u_slater_half_green(bra: tuple, ket: tuple):
     return (green_a, green_b)
 
 @jit
+def u_slater_delta_green(bra: tuple, ket: tuple):
+    green_a = (ket[0].dot(jnp.linalg.inv(ket[0][:ket[0].shape[1],:]))).T
+    green_b = (ket[1].dot(jnp.linalg.inv(ket[1][:ket[1].shape[1],:]))).T
+    return (green_a, green_b)
+
+@jit
 def u_slater_green(bra: tuple, ket: tuple):
     green_a = (ket[0] @ (jnp.linalg.inv(bra[0].T.conj() @ ket[0])) @ bra[0].T.conj()).T
     green_b = (ket[1] @ (jnp.linalg.inv(bra[1].T.conj() @ ket[1])) @ bra[0].T.conj()).T
@@ -86,7 +92,7 @@ def u_slater_energy(
     # into shape (nchunk, nchol_chunk, nocc, norb)
     # before calling this function
 
-    green = u_slater_half_green(bra, ket)
+    green = u_slater_green(bra, ket)
     e1 = oe.contract("pq,pq->", h1[0], green[0]) \
         + oe.contract("pq,pq->", h1[1], green[1])
 
@@ -147,7 +153,7 @@ def u_rot_force_bias(trial, walker, ham_data, wave_data):
     rot_chol = (rot_chol_a, rot_chol_b)
     return u_rot_slater_force_bias(wave_data["mo_coeff"], walker, rot_chol)
 
-def r_rot_energy(trial, walker, ham_data, wave_data):
+def u_rot_energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     rot_h1 = ham_data["rot_h1"]
     rot_chol_a = ham_data["rot_chol"][0].reshape(trial.nchol, trial.norb, trial.norb)
