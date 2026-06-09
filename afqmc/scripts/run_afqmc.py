@@ -11,31 +11,32 @@ print = partial(print, flush=True)
 
 init_time = time.time()
 
+prep.print_start()
 config.setup_jax()
-
-print(f'------------------- AFQMC Sampling Started -------------------')
 
 ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
-init_walkers = None
-trial_rdm1 = trial.get_rdm1(wave_data)
-if "rdm1" not in wave_data:
-    wave_data["rdm1"] = trial_rdm1
+
+wave_data["rdm1"] = trial.get_rdm1(wave_data)
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 
-prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers)
-if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
-    raise ValueError("Initial overlaps are zero. Pass walkers with non-zero overlap.")
-prop_data["key"] = random.PRNGKey(options["seed"])
+prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
 
-prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-prop_data["n_killed_walkers"] = 0
-prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+# prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers)
+# if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
+#     raise ValueError("Initial overlaps are zero. Pass walkers with non-zero overlap.")
+# prop_data["key"] = random.PRNGKey(options["seed"])
+
+# prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+# prop_data["n_killed_walkers"] = 0
+# prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+
 e_init = prop_data["e_estimate"]
 
-print(f'Propagating with {options["n_walkers"]} walkers')
-print("----------------------- Equilibration -----------------------")
+
+print("\nEquilibration")
+
 print(f"{'inv_T':>5s}  {'energy':>10s}  {'runTime':>8s}")
 print(f"{0.:5.2f}  {e_init:10.6f}  {time.time() - init_time:8.2f}")
 
@@ -43,17 +44,19 @@ sampler_eq = sampling.sampler(
     n_prop_steps=50,
     n_chol = sampler.n_chol
     )
-block_time = prop.dt * sampler_eq.n_prop_steps
 
-for n in range(1,options["n_eql"]+1):
+block_time = prop.dt * sampler_eq.n_prop_steps
+neql_block = int(-(-options["eql_time"] // block_time))
+
+for n in range(1,neql_block+1):
     prop_data, (wt, e) \
         = sampler_eq.block_sample(prop_data, ham_data, prop, trial, wave_data)
     prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * e
 
-    if (n+1) % (min(max(options["n_eql"] // 10, 1), 20)) == 0 and n > 0:
+    if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
         print(f"{(n+1)*block_time:5.2f}  {e:10.6f}  {time.time() - init_time:8.2f}")
 
-print("--------------------- Sampling Blocks -----------------------")
+print("\nSampling")
 print(f"{'N':>4s}  {'weight':>12s}  {'killW':>5s}  "
       f"{'energy':>12s}  {'error':>8s}  {'runTime':>8s}")
 
@@ -82,7 +85,7 @@ for n in range(sampler.n_blocks):
         if err < 0.75 * options["max_error"] and n > 100:
             break
 
-print('---------------------- Post Propagation ---------------------')
+print("\nPost Propagation Process")
 nsamples = n + 1
 print(f'total number of samples {nsamples}')
 wt_sp = wt_sp[:nsamples]
@@ -93,7 +96,7 @@ err = sampler.blocking_analysis(wt_sp, e_sp, min_nblocks=20,final=False)
 
 print(f"Raw AFQMC: {energy:.6f} +/- {err:.6f}")
 
-print("--------------------- Clean Observation ---------------------")
+print("\nRemove Outliers")
 def filter_outliers(e_sp, zeta=30):
 
     median = np.median(e_sp)
@@ -113,10 +116,11 @@ print(f"Removed {nsamples-nsample_clean} Outliers")
 print(f"Outliers AFQMC Energy {e_sp[~mask]}")
 e_sp = e_sp[mask]
 
+print("\nBlocking Analysis")
 energy = np.sum(wt_sp * e_sp) / np.sum(wt_sp)
 err = sampler.blocking_analysis(wt_sp, e_sp, min_nblocks=20, final=True)
 
 print(f"Final AFQMC: {energy:.6f} +/- {err:.6f}")
 
 print(f"total run time: {time.time() - init_time:.2f}")
-print(f'------------------ AFQMC Sampling Finished -------------------')
+print(f"\nAFQMC Sampling Finished\n")

@@ -546,8 +546,8 @@ def init_afqmc(options=None,
             t2 = jnp.array(amplitudes["t2"])
             trial_wave_data = {"t1": t1, "t2": t2}
             wave_data.update(trial_wave_data)
-            # mo_t = thouless(wave_data['mo_coeff'], t1)
-            wave_data['mo_t'] = thouless(wave_data['mo_coeff'], t1)
+            mo_t = thouless(wave_data['mo_coeff'], t1)
+            wave_data['mo_t'] = mo_t #thouless(wave_data['mo_coeff'], t1)
             if "ad" in options["trial"]:
                 trial = wavefunctions_restricted.pt2ccsd_ad(norb, nelec_sp, 
                                                             n_batch=options["n_batch"])
@@ -614,19 +614,11 @@ def init_afqmc(options=None,
                 ci2bb = t2bb + 2 * jnp.einsum("ia,jb->iajb", t1b, t1b)
                 ci2aa = (ci2aa - ci2aa.transpose(0, 3, 2, 1)) / 2
                 ci2bb = (ci2bb - ci2bb.transpose(0, 3, 2, 1)) / 2
-                trial_wave_data = {
-                    "ci1A": t1a,
-                    "ci1B": t1b,
-                    "ci2AA": ci2aa,
-                    "ci2AB": ci2ab,
-                    "ci2BB": ci2bb,
-                    "mo_coeff": mo_coeff,
-                }
-                wave_data.update(trial_wave_data)
-                mo_t = thouless(wave_data['mo_coeff'], [t1a, t1b])
-                wave_data['mo_ta'] = mo_t[0]
-                wave_data['mo_tb'] = mo_t[1]
-                # wave_data['tau'] = trial.decompose_t2([t2aa,t2ab,t2bb])
+                wave_data["ci1A"] = t1a
+                wave_data["ci1B"] = t1b
+                wave_data["ci2AA"] = ci2aa
+                wave_data["ci2AB"] = ci2ab
+                wave_data["ci2BB"] = ci2bb
             except:
                 raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
 
