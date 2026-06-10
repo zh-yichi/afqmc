@@ -25,7 +25,9 @@ prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
 
 w_init = jnp.sum(prop_data["weights"])
 e_init = prop_data["e_estimate"]
+w_init = jnp.sum(prop_data["weights"])
 
+print(wave_data["rdm1"])
 
 print("\nEquilibration")
 
@@ -47,10 +49,11 @@ for n in range(1,neql_block+1):
 
     if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
         print(f"{(n+1)*block_time:5.2f}  {wt:10.5f}  {e:10.5f}  {time.time() - init_time:8.2f}")
+        print(f"{(n+1)*block_time:5.2f}  {wt:10.5f}  {e:10.5f}  {time.time() - init_time:8.2f}")
 
 print("\nSampling")
-print(f"{'N':>4s}  {'weight':>12s}  {'killW':>5s}  "
-      f"{'energy':>12s}  {'error':>8s}  {'runTime':>8s}")
+print(f"{'N':>4s}  {'killW':>5s}  {'weight':>10s}  "
+      f"{'energy':>10s}  {'error':>8s}  {'runTime':>10s}")
 
 wt_sp = np.zeros(sampler.n_blocks,dtype="float64")
 e_sp = np.zeros(sampler.n_blocks,dtype="float64")
@@ -69,10 +72,10 @@ for n in range(sampler.n_blocks):
     if (n+1) % (min(max(sampler.n_blocks // 10, 1), 20)) == 0 and n > 0:
         weight = np.mean(wt_sp[:n+1])
         energy = np.mean(wt_sp[:n+1] * e_sp[:n+1]) / weight
-        err = sampler.blocking_analysis(wt_sp[:n+1], e_sp[:n+1], min_nblocks=20, final=False)
+        err = sampling.blocking_analysis(wt_sp[:n+1], e_sp[:n+1], min_nblocks=20, final=False)
         tot_kw = np.sum(n_killed)
-        print(f"{n+1:4d}  {weight:12.6f}  {tot_kw:5d}  "
-              f"{energy:12.6f}  {err:8.6f}  {time.time() - init_time:8.2f}")
+        print(f"{n+1:4d}  {tot_kw:5d}  {weight:10.5f}  "
+              f"{energy:10.5f}  {err:8.5f}  {time.time() - init_time:10.2f}")
         
         if err < 0.75 * options["max_error"] and n > 100:
             break
@@ -83,24 +86,24 @@ print(f'total number of samples {nsamples}')
 wt_sp = wt_sp[:nsamples]
 e_sp = e_sp[:nsamples]
 
-energy = np.sum(wt_sp * e_sp) / np.sum(wt_sp)
-err = sampler.blocking_analysis(wt_sp, e_sp, min_nblocks=20,final=False)
+# energy = np.sum(wt_sp * e_sp) / np.sum(wt_sp)
+# err = sampler.blocking_analysis(wt_sp, e_sp, min_nblocks=20,final=False)
 
-print(f"Raw AFQMC: {energy:.6f} +/- {err:.6f}")
+# print(f"Raw AFQMC: {energy:.6f} +/- {err:.6f}")
 
-print("\nRemove Outliers")
-def filter_outliers(e_sp, zeta=30):
+# print("\nRemove Outliers")
+# def filter_outliers(e_sp, zeta=30):
 
-    median = np.median(e_sp)
-    mad = 1.4826 * np.median(np.abs(e_sp - median))
-    bound = zeta * mad
-    mask = np.abs(e_sp - median) < bound
-    print(f"removing energies outside zeta > {zeta}")
-    print(f"Energy bound [{median-bound:.6f}, {median+bound:.6f}]")
+#     median = np.median(e_sp)
+#     mad = 1.4826 * np.median(np.abs(e_sp - median))
+#     bound = zeta * mad
+#     mask = np.abs(e_sp - median) < bound
+#     print(f"removing energies outside zeta > {zeta}")
+#     print(f"Energy bound [{median-bound:.6f}, {median+bound:.6f}]")
     
-    return mask
+#     return mask
 
-mask = filter_outliers(e_sp, zeta=30)
+mask = sampling.filter_outliers(e_sp, zeta=30)
 
 wt_sp = wt_sp[mask]
 nsample_clean = len(wt_sp)
@@ -110,7 +113,7 @@ e_sp = e_sp[mask]
 
 print("\nBlocking Analysis")
 energy = np.sum(wt_sp * e_sp) / np.sum(wt_sp)
-err = sampler.blocking_analysis(wt_sp, e_sp, min_nblocks=20, final=True)
+err = sampling.blocking_analysis(wt_sp, e_sp, min_nblocks=20, final=True)
 
 print(f"Final AFQMC: {energy:.6f} +/- {err:.6f}")
 

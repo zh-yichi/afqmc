@@ -3,6 +3,89 @@ from functools import partial
 import jax.numpy as jnp
 from jax import jit, lax, random
 import numpy as np
+from scipy.optimize import curve_fit
+
+def blocking_analysis(wt_sp, en_sp, min_nblocks=20, final=False):
+    
+    nsample = len(wt_sp)
+    max_size = nsample // min_nblocks
+    if max_size < 10:
+        min_nblocks = max(nsample // 10, 3)
+        max_size = nsample // min_nblocks
+        if final:
+            print(f"Warning: small dataset, relaxed min_nblocks to {min_nblocks}")
+    block_sizes = np.arange(1, max_size + 1)
+    block_vars = np.zeros(max_size)
+    block_var_errs = np.zeros(max_size)
+    block_means = np.zeros(max_size)
+    if final:
+        print(f"nsample = {nsample}, max_block_size = {max_size}, min_nblocks = {min_nblocks}")
+        print(f"{'B':>4s}  {'NB':>4s}  {'NS':>4s}  {'Observable':>10s}  {'Error':>8s}  {'dError':>8s}")
+    for i, block_size in enumerate(block_sizes):
+        n_blocks = nsample // block_size
+        sl = slice(0, n_blocks * block_size)
+        wt = (wt_sp[sl]).reshape(n_blocks, block_size)
+        wt_en = (wt_sp[sl] * en_sp[sl]).reshape(n_blocks, block_size)
+        block_weight = np.sum(wt, axis=1)
+        block_energy = (np.sum(wt_en, axis=1) / block_weight).real
+        block_mean = np.mean(block_energy)
+        block_var = np.var(block_energy, ddof=1) / n_blocks  # variance of the mean
+        block_error = np.sqrt(block_var)
+        var_of_var = block_var * np.sqrt(2.0 / (n_blocks - 1))
+        err_of_err = block_error / np.sqrt(2.0 * (n_blocks - 1))
+        block_means[i] = block_mean
+        block_vars[i] = block_var
+        block_var_errs[i] = var_of_var
+        if final:
+            print(f'{block_size:4d}  {n_blocks:4d}  {block_size*n_blocks:4d}  '
+                    f'{block_mean:10.6f}  {block_error:8.6f}  {err_of_err:8.6f}')
+    
+    if final:
+        def model(x, a, b, tau):
+            return a - b * np.exp(-x / tau)
+        p0 = [block_vars.max(), block_vars.max() - block_vars[0], 5.0]
+        try:
+            popt, pcov = curve_fit(model, block_sizes, block_vars,
+                                sigma=block_var_errs, absolute_sigma=True,
+                                p0=p0, maxfev=10000)
+            plateau_var = popt[0]
+            plateau_var_unc = np.sqrt(pcov[0, 0])
+            plateau_value = np.sqrt(plateau_var)
+            plateau_uncertainty = plateau_var_unc / (2.0 * plateau_value)
+            tau = popt[2]
+            ratio = 0.01 * popt[0] / popt[1]
+            if ratio > 0:
+                plateau_block_size = int(np.ceil(-popt[2] * np.log(ratio)))
+            else:
+                plateau_block_size = 1
+            print(f"Fit (variance): plateau_var = {plateau_var:.3e} ± {plateau_var_unc:.3e}")
+            print(f"Fit (error):    plateau = {plateau_value:.6f} ± {plateau_uncertainty:.6f}")
+            print(f"     autocorrelation length ~ {tau:.1f} blocks")
+            print(f"     plateau reached at block size ~ {plateau_block_size}")
+            if plateau_block_size > max_size:
+                print(f"     !!!Failed to reach plateau in blocking")
+                print(f"     Return max block error")
+                plateau_value = np.sqrt(block_vars.max())
+        except RuntimeError as e:
+            print(f"\nFit failed: {e}")
+            plateau_value = np.sqrt(block_vars.max())
+            print(f"Fallback max error: {plateau_value:.6f}")
+    
+    else: 
+        plateau_value = np.sqrt(block_vars.max())
+    
+    return plateau_value
+
+def filter_outliers(samples, zeta=20):
+
+    median = np.median(samples)
+    mad = 1.4826 * np.median(np.abs(samples - median))
+    bound = zeta * mad
+    mask = np.abs(samples - median) < bound
+    print(f"Remove samples outside Zeta > {zeta}")
+    print(f"Outlier bound [{median-bound:.6f}, {median+bound:.6f}]")
+    
+    return mask
 
 @dataclass
 class sampler:
@@ -65,88 +148,88 @@ class sampler:
 
         return prop_data, (block_weight, block_energy)
     
-    def blocking_analysis(self, wt_sp, en_sp, min_nblocks=20, final=False,):
+    # def blocking_analysis(self, wt_sp, en_sp, min_nblocks=20, final=False,):
         
-        nsample = len(wt_sp)
-        max_size = nsample // min_nblocks
-        if max_size < 10:
-            min_nblocks = max(nsample // 10, 3)
-            max_size = nsample // min_nblocks
-            if final:
-                print(f"Warning: small dataset, relaxed min_nblocks to {min_nblocks}")
-        block_sizes = np.arange(1, max_size + 1)
-        block_vars = np.zeros(max_size)
-        block_var_errs = np.zeros(max_size)
-        block_means = np.zeros(max_size)
-        if final:
-            print(f"nsample = {nsample}, max_block_size = {max_size}, min_nblocks = {min_nblocks}")
-            print(f"{'B':>4s}  {'NB':>4s}  {'NS':>4s}  {'Observable':>10s}  {'Error':>8s}  {'dError':>8s}")
-        for i, block_size in enumerate(block_sizes):
-            n_blocks = nsample // block_size
-            sl = slice(0, n_blocks * block_size)
-            wt = (wt_sp[sl]).reshape(n_blocks, block_size)
-            wt_en = (wt_sp[sl] * en_sp[sl]).reshape(n_blocks, block_size)
-            block_weight = np.sum(wt, axis=1)
-            block_energy = np.sum(wt_en, axis=1) / block_weight
-            block_mean = np.mean(block_energy)
-            block_var = np.var(block_energy, ddof=1) / n_blocks  # variance of the mean
-            block_error = np.sqrt(block_var)
-            var_of_var = block_var * np.sqrt(2.0 / (n_blocks - 1))
-            err_of_err = block_error / np.sqrt(2.0 * (n_blocks - 1))
-            block_means[i] = block_mean
-            block_vars[i] = block_var
-            block_var_errs[i] = var_of_var
-            if final:
-                print(f'{block_size:4d}  {n_blocks:4d}  {block_size*n_blocks:4d}  '
-                      f'{block_mean:10.6f}  {block_error:8.6f}  {err_of_err:8.6f}')
+    #     nsample = len(wt_sp)
+    #     max_size = nsample // min_nblocks
+    #     if max_size < 10:
+    #         min_nblocks = max(nsample // 10, 3)
+    #         max_size = nsample // min_nblocks
+    #         if final:
+    #             print(f"Warning: small dataset, relaxed min_nblocks to {min_nblocks}")
+    #     block_sizes = np.arange(1, max_size + 1)
+    #     block_vars = np.zeros(max_size)
+    #     block_var_errs = np.zeros(max_size)
+    #     block_means = np.zeros(max_size)
+    #     if final:
+    #         print(f"nsample = {nsample}, max_block_size = {max_size}, min_nblocks = {min_nblocks}")
+    #         print(f"{'B':>4s}  {'NB':>4s}  {'NS':>4s}  {'Observable':>10s}  {'Error':>8s}  {'dError':>8s}")
+    #     for i, block_size in enumerate(block_sizes):
+    #         n_blocks = nsample // block_size
+    #         sl = slice(0, n_blocks * block_size)
+    #         wt = (wt_sp[sl]).reshape(n_blocks, block_size)
+    #         wt_en = (wt_sp[sl] * en_sp[sl]).reshape(n_blocks, block_size)
+    #         block_weight = np.sum(wt, axis=1)
+    #         block_energy = np.sum(wt_en, axis=1) / block_weight
+    #         block_mean = np.mean(block_energy)
+    #         block_var = np.var(block_energy, ddof=1) / n_blocks  # variance of the mean
+    #         block_error = np.sqrt(block_var)
+    #         var_of_var = block_var * np.sqrt(2.0 / (n_blocks - 1))
+    #         err_of_err = block_error / np.sqrt(2.0 * (n_blocks - 1))
+    #         block_means[i] = block_mean
+    #         block_vars[i] = block_var
+    #         block_var_errs[i] = var_of_var
+    #         if final:
+    #             print(f'{block_size:4d}  {n_blocks:4d}  {block_size*n_blocks:4d}  '
+    #                   f'{block_mean:10.6f}  {block_error:8.6f}  {err_of_err:8.6f}')
         
-        if final:
-            from scipy.optimize import curve_fit
-            def model(x, a, b, tau):
-                return a - b * np.exp(-x / tau)
-            p0 = [block_vars.max(), block_vars.max() - block_vars[0], 5.0]
-            try:
-                popt, pcov = curve_fit(model, block_sizes, block_vars,
-                                    sigma=block_var_errs, absolute_sigma=True,
-                                    p0=p0, maxfev=10000)
-                plateau_var = popt[0]
-                plateau_var_unc = np.sqrt(pcov[0, 0])
-                plateau_value = np.sqrt(plateau_var)
-                plateau_uncertainty = plateau_var_unc / (2.0 * plateau_value)
-                tau = popt[2]
-                ratio = 0.01 * popt[0] / popt[1]
-                if ratio > 0:
-                    plateau_block_size = int(np.ceil(-popt[2] * np.log(ratio)))
-                else:
-                    plateau_block_size = 1
-                print(f"Fit (variance): plateau_var = {plateau_var:.3e} ± {plateau_var_unc:.3e}")
-                print(f"Fit (error):    plateau = {plateau_value:.6f} ± {plateau_uncertainty:.6f}")
-                print(f"     autocorrelation length ~ {tau:.1f} blocks")
-                print(f"     plateau reached at block size ~ {plateau_block_size}")
-                if plateau_block_size > max_size:
-                    print(f"     !!!Failed to reach plateau in blocking")
-                    print(f"     Return max block error")
-                    plateau_value = np.sqrt(block_vars.max())
-            except RuntimeError as e:
-                print(f"\nFit failed: {e}")
-                plateau_value = np.sqrt(block_vars.max())
-                print(f"Fallback max error: {plateau_value:.6f}")
+    #     if final:
+    #         from scipy.optimize import curve_fit
+    #         def model(x, a, b, tau):
+    #             return a - b * np.exp(-x / tau)
+    #         p0 = [block_vars.max(), block_vars.max() - block_vars[0], 5.0]
+    #         try:
+    #             popt, pcov = curve_fit(model, block_sizes, block_vars,
+    #                                 sigma=block_var_errs, absolute_sigma=True,
+    #                                 p0=p0, maxfev=10000)
+    #             plateau_var = popt[0]
+    #             plateau_var_unc = np.sqrt(pcov[0, 0])
+    #             plateau_value = np.sqrt(plateau_var)
+    #             plateau_uncertainty = plateau_var_unc / (2.0 * plateau_value)
+    #             tau = popt[2]
+    #             ratio = 0.01 * popt[0] / popt[1]
+    #             if ratio > 0:
+    #                 plateau_block_size = int(np.ceil(-popt[2] * np.log(ratio)))
+    #             else:
+    #                 plateau_block_size = 1
+    #             print(f"Fit (variance): plateau_var = {plateau_var:.3e} ± {plateau_var_unc:.3e}")
+    #             print(f"Fit (error):    plateau = {plateau_value:.6f} ± {plateau_uncertainty:.6f}")
+    #             print(f"     autocorrelation length ~ {tau:.1f} blocks")
+    #             print(f"     plateau reached at block size ~ {plateau_block_size}")
+    #             if plateau_block_size > max_size:
+    #                 print(f"     !!!Failed to reach plateau in blocking")
+    #                 print(f"     Return max block error")
+    #                 plateau_value = np.sqrt(block_vars.max())
+    #         except RuntimeError as e:
+    #             print(f"\nFit failed: {e}")
+    #             plateau_value = np.sqrt(block_vars.max())
+    #             print(f"Fallback max error: {plateau_value:.6f}")
         
-        else: 
-            plateau_value = np.sqrt(block_vars.max())
+    #     else: 
+    #         plateau_value = np.sqrt(block_vars.max())
         
-        return plateau_value
+    #     return plateau_value
     
-    def filter_outliers(self, samples, zeta=20):
+    # def filter_outliers(self, samples, zeta=20):
 
-        median = np.median(samples)
-        mad = 1.4826 * np.median(np.abs(samples - median))
-        bound = zeta * mad
-        mask = np.abs(samples - median) < bound
-        print(f"Remove samples outside Zeta > {zeta}")
-        print(f"Outlier bound [{median-bound:.6f}, {median+bound:.6f}]")
+    #     median = np.median(samples)
+    #     mad = 1.4826 * np.median(np.abs(samples - median))
+    #     bound = zeta * mad
+    #     mask = np.abs(samples - median) < bound
+    #     print(f"Remove samples outside Zeta > {zeta}")
+    #     print(f"Outlier bound [{median-bound:.6f}, {median+bound:.6f}]")
         
-        return mask
+    #     return mask
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
@@ -157,7 +240,7 @@ class sampler_exp(sampler):
     """An experimental energy sampler for general Guide/Trial combination"""
 
     @partial(jit, static_argnums=(0,1,2))
-    def block_sample(
+    def sample_energy(
         self,
         prop,
         trial,

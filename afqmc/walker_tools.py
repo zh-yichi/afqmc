@@ -5,6 +5,45 @@ import opt_einsum as oe
 from . import slater_tools, t2_tools
 from functools import partial
 
+def map_over_walkers(single_fn, walkers, nbatch, *broadcast_args):
+    """Lift a single-walker function to all walkers via batched scan + vmap.
+
+    single_fn(walker, *broadcast_args) -> per-walker result (scalar or vector).
+    Returns shape (n_walkers, *per_walker_trailing_dims).
+    *broadcast_args = wave_data, ham_data ...
+    """
+    if isinstance(walkers, jax.Array) and len(walkers.shape) == 3:
+        nwalker = walkers.shape[0]
+        assert nwalker % nbatch == 0, \
+            f"nwalker={nwalker} not divisible by nbatch={nbatch}"
+        
+        batch_size = nwalker // nbatch
+        walkers = walkers.reshape(nbatch, batch_size, *walkers.shape[1:])
+
+    elif isinstance(walkers, (tuple, list)) and len(walkers[0].shape) == 3:
+        assert len(walkers[0].shape) == len(walkers[1].shape)
+        nwalker = walkers[0].shape[0]
+        assert nwalker % nbatch == 0, \
+            f"nwalker={nwalker} not divisible by nbatch={nbatch}"
+        
+        batch_size = nwalker // nbatch
+        walkers_a = walkers[0].reshape(nbatch, batch_size, *walkers[0].shape[1:])
+        walkers_b = walkers[1].reshape(nbatch, batch_size, *walkers[1].shape[1:])
+        walkers = (walkers_a, walkers_b)
+    
+    else:
+        raise TypeError("walkers must be a 3D array for spin-restricted "
+                        "and a tuple/list of 3D arrays for spin-unrestricted")
+
+    in_axes = (0,) + (None,) * len(broadcast_args)   # map walker, broadcast the rest
+
+    def scan_walkers(carry, walker_batch):
+        out_batch = vmap(single_fn, in_axes=in_axes)(walker_batch, *broadcast_args)
+        return carry, out_batch
+
+    _, out = lax.scan(scan_walkers, None, walkers)
+    return out.reshape(nwalker, *out.shape[2:])
+
 def calc_walkers_norm(walkers):
 
     def scan_walkers(carry, walker):

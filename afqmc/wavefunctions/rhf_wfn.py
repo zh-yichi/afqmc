@@ -11,7 +11,7 @@ def calc_force_bias(trial, walker, ham_data, wave_data):
     return slater_tools.r_force_bias(wave_data["mo_coeff"], walker, chol)
 
 def calc_rot_force_bias(trial, walker, ham_data, wave_data):
-    rot_chol = ham_data["rot_chol"].reshape(trial.nchol, trial.norb, trial.norb)
+    rot_chol = ham_data["rot_chol"]
     return slater_tools.r_rot_force_bias(wave_data["mo_coeff"], walker, rot_chol)
 
 def calc_energy(trial, walker, ham_data, wave_data):
@@ -38,7 +38,7 @@ def calc_rot_energy(trial, walker, ham_data, wave_data):
     rot_chol = rot_chol.reshape(nchunks, nchol_chunk, *rot_chol.shape[1:])
     return slater_tools.r_rot_energy(wave_data["mo_coeff"], walker, h0, rot_h1, rot_chol)
 
-def build_rot_measurement_intermediates(trial, ham_data: dict, wave_data: dict) -> dict:
+def calc_intermediate(trial, ham_data: dict, wave_data: dict) -> dict:
     """Builds half rotated integrals for efficient force bias and energy calculations."""
     ham_data["h1"] = (
         ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)

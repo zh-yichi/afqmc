@@ -28,8 +28,8 @@ def calc_energy(trial, walker, ham_data, wave_data):
     return slater_tools.u_energy(wave_data["mo_coeff"], walker, h0, h1, chol)
 
 def calc_rot_force_bias(trial, walker, ham_data, wave_data):
-    rot_chol_a = ham_data["rot_chol"][0].reshape(trial.nchol, trial.norb, trial.norb)
-    rot_chol_b = ham_data["rot_chol"][1].reshape(trial.nchol, trial.norb, trial.norb)
+    rot_chol_a = ham_data["rot_chol"][0]
+    rot_chol_b = ham_data["rot_chol"][1]
     rot_chol = (rot_chol_a, rot_chol_b)
     return slater_tools.u_rot_force_bias(wave_data["mo_coeff"], walker, rot_chol)
 

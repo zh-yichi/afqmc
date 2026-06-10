@@ -164,7 +164,7 @@ def calc_energy(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> co
     overlap = 1.0 + overlap_1 + overlap_2
     return (e1 + e2) / overlap + e0
 
-def build_measurement_intermediates(trial, ham_data: dict, wave_data: dict):
+def calc_intermediate(trial, ham_data: dict, wave_data: dict):
     ham_data["lci1"] = oe.contract(
         "git,pt->gip",
         ham_data["chol"].reshape(-1, trial.norb, trial.norb)[:, :, trial.nelec[0] :],
