@@ -50,7 +50,7 @@ class wfn:
     force_bias_fn: Callable    # defined by guide
     trial_overlap_fn: Callable # defined by trial
     energy_fn: Callable        # defined by trial
-    nelec: Tuple[int, int]
+    nelec: tuple[int, int]
     norb: int | tuple[int, int]
     nchol: int
     nchol_chunk: int

@@ -1,141 +1,57 @@
-"""
-Tool kit for single slater determinant operations
-Including: 
-    Overlap, 
-    Green's Function, 
-    Force Bias,
-    Energy
-For both restricted and unrestricted determinant
-"""
-
-import jax
-from jax import jit, lax
 from jax import numpy as jnp
-
 import opt_einsum as oe
+from .. import slater_tools
 
-@jit
-def r_slater_overlap(bra: jax.Array, ket: jax.Array):
-    ''' 
-    <bra|ket>
-    '''
-    olp = jnp.linalg.det(bra.T.conj() @ ket) ** 2
-    return olp
+# implementation in QMC sampling
+def calc_overlap(trial, walker, wave_data):
+    return slater_tools.r_overlap(wave_data["mo_coeff"], walker)
 
-@jit
-def r_slater_green(bra: jax.Array, ket: jax.Array) -> jax.Array:
-    '''<bra|a^dagger_p a_q|ket>/<bra|ket>'''
-    green = (ket @ (jnp.linalg.inv(bra.T.conj() @ ket)) @ bra.T.conj()).T
-    return green
-
-@jit
-def r_slater_half_green(bra: jax.Array, ket: jax.Array) -> jax.Array:
-    '''half Green's function - the ket coefficient
-       is contracted with the observable tensors'''
-    green = (ket @ (jnp.linalg.inv(bra.T.conj() @ ket))).T
-    return green
-
-@jit
-def r_slater_delta_green(bra: jax.Array, ket:jax.Array) -> jax.Array:
-    '''hald Green's function when bra is identity'''
-    green = (ket.dot(jnp.linalg.inv(ket[:ket.shape[1], :]))).T
-    return green
-
-@jit
-def r_slater_force_bias(bra, ket, chol):
-    green = r_slater_green(bra, ket)
-    fb = 2.0 * oe.contract("gpq,pq->g", chol, green, backend="jax")
-    return fb
-
-@jit
-def r_rot_slater_force_bias(bra, ket, rot_chol):
-    green = r_slater_half_green(bra, ket)
-    fb = 2.0 * oe.contract("gpq,pq->g", rot_chol, green, backend="jax")
-    return fb
-
-@jit
-def r_slater_energy(
-    bra: jax.Array, 
-    ket: jax.Array, 
-    h0: float, 
-    h1:jax.Array, 
-    chol: jax.Array
-    ) -> jax.Array:
-    '''
-    h0 + h_pq <bra|a^dagger_p a_q|ket>/<bra|ket> 
-    + 1/2 v_pqrs <bra|a^dagger_p a^dagger_q a_s a_r|ket>/<bra|ket>
-    '''
-
-    green = r_slater_green(bra, ket)
-    e1 = 2* oe.contract("pq,pq->", green, h1, backend="jax")
-
-    # lg = oe.contract("gpr,qr->gpq", chol, green, backend="jax")
-    # e2_1 = 2 * jnp.sum(oe.contract('gpp->g', lg, backend="jax")**2)
-    # e2_2 = -oe.contract('gpq,gqp->',lg,lg, backend="jax")
-    # e2 = e2_1 + e2_2
-
-    def scan_chol(carry, x):
-        chol_i = x
-        gl_i = oe.contract("pr,qr->pq", green, chol_i, backend="jax")
-        e2_c_i = 2 * oe.contract('pp->', gl_i, backend="jax")**2
-        e2_e_i = -oe.contract('pq,qp->', gl_i, gl_i, backend="jax")
-        carry += e2_c_i + e2_e_i
-        return carry, 0
-    
-    e2, _ = lax.scan(scan_chol, 0.0, chol)
-    energy = h0 + e1 + e2
-
-    return energy
-
-@jit
-def r_rot_slater_energy(
-    bra: jax.Array, 
-    ket: jax.Array, 
-    h0: float, 
-    rot_h1:jax.Array, 
-    rot_chol: jax.Array
-    ) -> jax.Array:
-    '''
-    h0 + h_pq <bra|a^dagger_p a_q|ket>/<bra|ket> 
-    + 1/2 v_pqrs <bra|a^dagger_p a^dagger_q a_s a_r|ket>/<bra|ket>
-    '''
-
-    green = r_slater_half_green(bra, ket)
-    e1 = 2* oe.contract("pq,pq->", green, rot_h1, backend="jax")
-
-    def scan_chol(carry, x):
-        chol_i = x
-        gl_i = oe.contract("pr,qr->pq", green, chol_i, backend="jax")
-        e2_c_i = 2 * oe.contract('pp->', gl_i, backend="jax")**2
-        e2_e_i = -oe.contract('pq,qp->', gl_i, gl_i, backend="jax")
-        carry += e2_c_i + e2_e_i
-        return carry, 0
-    
-    e2, _ = lax.scan(scan_chol, 0.0, rot_chol)
-    energy = h0 + e1 + e2
-
-    return energy
-
-# implementation of above functions in QMC sampling
-def r_overlap(trial, walker, wave_data):
-    return r_slater_overlap(wave_data["mo_coeff"], walker)
-
-def r_force_bias(trial, walker, ham_data, wave_data):
+def calc_force_bias(trial, walker, ham_data, wave_data):
     chol = ham_data["chol"].reshape(trial.nchol, trial.norb, trial.norb)
-    return r_slater_force_bias(wave_data["mo_coeff"], walker, chol)
+    return slater_tools.r_force_bias(wave_data["mo_coeff"], walker, chol)
 
-def r_energy(trial, walker, ham_data, wave_data):
+def calc_rot_force_bias(trial, walker, ham_data, wave_data):
+    rot_chol = ham_data["rot_chol"].reshape(trial.nchol, trial.norb, trial.norb)
+    return slater_tools.r_rot_force_bias(wave_data["mo_coeff"], walker, rot_chol)
+
+def calc_energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     h1 = ((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
     chol = ham_data["chol"].reshape(trial.nchol, trial.norb, trial.norb)
-    return r_slater_energy(wave_data["mo_coeff"], walker, h0, h1, chol)
+    nchol = chol.shape[0]
+    nchol_chunk = trial.nchol_chunk
+    nchunks = -(-nchol // nchol_chunk)
+    pad = nchunks * nchol_chunk - nchol
+    chol = jnp.pad(chol, ((0, pad), (0, 0), (0, 0)))
+    chol = chol.reshape(nchunks, nchol_chunk, *chol.shape[1:])
+    return slater_tools.r_energy(wave_data["mo_coeff"], walker, h0, h1, chol)
 
-def r_rot_force_bias(trial, walker, ham_data, wave_data):
-    rot_chol = ham_data["rot_chol"].reshape(trial.nchol, trial.norb, trial.norb)
-    return r_rot_slater_force_bias(wave_data["mo_coeff"], walker, rot_chol)
-
-def r_rot_energy(trial, walker, ham_data, wave_data):
+def calc_rot_energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     rot_h1 = ham_data["rot_h1"]
     rot_chol = ham_data["rot_chol"]
-    return r_rot_slater_energy(wave_data["mo_coeff"], walker, h0, rot_h1, rot_chol)
+    nchol = rot_chol.shape[0]
+    nchol_chunk = trial.nchol_chunk
+    nchunks = -(-nchol // nchol_chunk)
+    pad = nchunks * nchol_chunk - nchol
+    rot_chol = jnp.pad(rot_chol, ((0, pad), (0, 0), (0, 0)))
+    rot_chol = rot_chol.reshape(nchunks, nchol_chunk, *rot_chol.shape[1:])
+    return slater_tools.r_rot_energy(wave_data["mo_coeff"], walker, h0, rot_h1, rot_chol)
+
+def build_rot_measurement_intermediates(trial, ham_data: dict, wave_data: dict) -> dict:
+    """Builds half rotated integrals for efficient force bias and energy calculations."""
+    ham_data["h1"] = (
+        ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
+    )
+    ham_data["h1"] = (
+        ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
+    )
+    ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ (
+        (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
+    )
+    ham_data["rot_chol"] = oe.contract(
+        "pi,gij->gpj",
+        wave_data["mo_coeff"].T.conj(),
+        ham_data["chol"].reshape(-1, trial.norb, trial.norb), 
+        backend="jax")
+    return ham_data

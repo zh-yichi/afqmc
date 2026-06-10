@@ -10,25 +10,26 @@ import opt_einsum as oe
 
 import jax
 import jax.numpy as jnp
-from jax import scipy as jsp
-from jax import jit, lax, random, vmap
+# from jax import scipy as jsp
+# from jax import jit, lax, random, vmap
+from jax import random
 
-from afqmc import hamiltonian, cholesky, linalg_utils
-from afqmc import propagation, sampling, fp_sampling
-from afqmc.wavefunctions import wavefunctions_restricted
-from afqmc.wavefunctions import wavefunctions_unrestricted
+from . import hamiltonian, cholesky, walker_tools, slater_tools, t2_tools
+from . import propagation, sampling, fp_sampling
+from .wavefunctions import wavefunctions_restricted
+from .wavefunctions import wavefunctions_unrestricted
 
 from functools import partial
 print = partial(print, flush=True)
 
-def replicate_walker(walker, nwalker):
-    if isinstance(walker, jax.Array):
-        walkers = jnp.array([walker] * nwalker, dtype=jnp.complex128)
-    elif isinstance(walker, (tuple, list)):
-        walkers_a = jnp.array([walker[0]] * nwalker, dtype=jnp.complex128)
-        walkers_b = jnp.array([walker[1]] * nwalker, dtype=jnp.complex128)
-        walkers = [walkers_a, walkers_b]
-    return walkers
+# def replicate_walker(walker, nwalker):
+#     if isinstance(walker, jax.Array):
+#         walkers = jnp.array([walker] * nwalker, dtype=jnp.complex128)
+#     elif isinstance(walker, (tuple, list)):
+#         walkers_a = jnp.array([walker[0]] * nwalker, dtype=jnp.complex128)
+#         walkers_b = jnp.array([walker[1]] * nwalker, dtype=jnp.complex128)
+#         walkers = [walkers_a, walkers_b]
+#     return walkers
 
 # def init_walkers_1rdm(
 #         trial,
@@ -95,236 +96,267 @@ def replicate_walker(walker, nwalker):
 #         ]
 
 #### restricted ####
-def decompose_rt2(t2, thresh=1e-8):
-    # adapted from Yann
+# def decompose_rt2(t2, thresh=1e-8):
+#     # adapted from Yann
 
-    # nO = self.nelec[0]
-    # nV = self.norb - nO
+#     # nO = self.nelec[0]
+#     # nV = self.norb - nO
 
-    nocc, nvir, _, _ = t2.shape
-    npair = nocc * nvir
+#     nocc, nvir, _, _ = t2.shape
+#     npair = nocc * nvir
 
-    # assert t2.shape == (nO, nV, nO, nV)
+#     # assert t2.shape == (nO, nV, nO, nV)
     
-    t2 = t2.reshape(npair, npair)
-    e_val, e_vec = jnp.linalg.eigh(t2)
+#     t2 = t2.reshape(npair, npair)
+#     e_val, e_vec = jnp.linalg.eigh(t2)
 
-    # Keep only important modes
-    mask = jnp.abs(e_val) > thresh
-    e_val_trunc = e_val[mask]
-    e_vec_trunc = e_vec[:, mask]
+#     # Keep only important modes
+#     mask = jnp.abs(e_val) > thresh
+#     e_val_trunc = e_val[mask]
+#     e_vec_trunc = e_vec[:, mask]
 
-    tau = e_vec_trunc @ jnp.diag(jnp.sqrt(e_val_trunc + 0.0j))
+#     tau = e_vec_trunc @ jnp.diag(jnp.sqrt(e_val_trunc + 0.0j))
     
-    err = jnp.linalg.norm(t2 - tau @ tau.T)
-    assert err < 10 * thresh
+#     err = jnp.linalg.norm(t2 - tau @ tau.T)
+#     assert err < 10 * thresh
 
-    # print(f'Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
-    # print(f'cutoff = {thresh:.2e} | error = {err:.2e}')
-    # print(f'number of T2 decomposition vectors {len(e_val_trunc)}')
+#     # print(f'Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
+#     # print(f'cutoff = {thresh:.2e} | error = {err:.2e}')
+#     # print(f'number of T2 decomposition vectors {len(e_val_trunc)}')
 
-    tau = tau.T.reshape(-1, nocc, nvir)
+#     tau = tau.T.reshape(-1, nocc, nvir)
 
-    return tau
+#     return tau
 
-@jit
-def rthouless(init_slater, t):
-    '''
-    restricted thouless transformation
-    |psi'> = exp(t_ia a+ i)|psi>
-    use the block form of t, no need to apply full exp(t)
-    equivalent to the function below
-    '''
-    # norb, nocc = self.norb, self.nelec[0]
-    # nvir = norb - nocc
-    nocc, nvir = t.shape
-    norb = nocc + nvir
-    assert init_slater.shape == (norb, nocc)
-    t_full = jnp.eye(norb, dtype=jnp.complex128)
-    exp_t = t_full.at[:nocc, nocc:].set(t)
-    return exp_t.T @ init_slater
+# @jit
+# def rthouless(init_slater, t):
+#     '''
+#     restricted thouless transformation
+#     |psi'> = exp(t_ia a+ i)|psi>
+#     use the block form of t, no need to apply full exp(t)
+#     equivalent to the function below
+#     '''
+#     # norb, nocc = self.norb, self.nelec[0]
+#     # nvir = norb - nocc
+#     nocc, nvir = t.shape
+#     norb = nocc + nvir
+#     assert init_slater.shape == (norb, nocc)
+#     t_full = jnp.eye(norb, dtype=jnp.complex128)
+#     exp_t = t_full.at[:nocc, nocc:].set(t)
+#     return exp_t.T @ init_slater
 
-@jit
-def rthouless_full(init_slater, t):
-    '''
-    restricted thouless transformation
-    |psi'> = exp(t_ia a+ i)|psi>
-    apply full exp(t)
-    equivalent to the function above
-    '''
-    nocc, nvir = t.shape
-    norb = nocc + nvir
-    assert init_slater.shape == (norb, nocc)
-    t_full = jnp.zeros((norb, norb), dtype=jnp.complex128)
-    t_full = t_full.at[:nocc, nocc:].set(t)
-    exp_t = jsp.linalg.expm(t_full)
-    return exp_t.T @ init_slater
+# @jit
+# def rthouless_full(init_slater, t):
+#     '''
+#     restricted thouless transformation
+#     |psi'> = exp(t_ia a+ i)|psi>
+#     apply full exp(t)
+#     equivalent to the function above
+#     '''
+#     nocc, nvir = t.shape
+#     norb = nocc + nvir
+#     assert init_slater.shape == (norb, nocc)
+#     t_full = jnp.zeros((norb, norb), dtype=jnp.complex128)
+#     t_full = t_full.at[:nocc, nocc:].set(t)
+#     exp_t = jsp.linalg.expm(t_full)
+#     return exp_t.T @ init_slater
 
-@partial(jit, static_argnames=("n_walkers"))
-def get_rccsd_walkers(prop_data, wave_data, n_walkers):
-    prop_data["key"], subkey = random.split(prop_data["key"])
+# @partial(jit, static_argnames=("n_walkers"))
+# def get_rccsd_walkers(prop_data, wave_data, n_walkers):
+#     prop_data["key"], subkey = random.split(prop_data["key"])
     
-    fieldy = random.normal(
-        subkey,
-        shape=(
-            n_walkers,
-            wave_data['tau'].shape[0],
-        ),
-    )
-    # ytaus shape (nwalker, nocc, nvir)
-    ytaus = oe.contract("wg,gia->wia", fieldy, wave_data['tau'], backend='jax')
+#     fieldy = random.normal(
+#         subkey,
+#         shape=(
+#             n_walkers,
+#             wave_data['tau'].shape[0],
+#         ),
+#     )
+#     # ytaus shape (nwalker, nocc, nvir)
+#     ytaus = oe.contract("wg,gia->wia", fieldy, wave_data['tau'], backend='jax')
 
-    slaters = vmap(lambda y: rthouless(wave_data['mo_t'], y))(ytaus)
+#     slaters = vmap(lambda y: rthouless(wave_data['mo_t'], y))(ytaus)
 
-    # mo_t = wave_data['mo_t']
+#     # mo_t = wave_data['mo_t']
 
-    # def scan_body(carry, ytau):
-    #     # ytau_up, ytau_dn = ytau
-    #     slater = rthouless(wave_data['mo_t'], ytau)
-    #     return carry, slater
+#     # def scan_body(carry, ytau):
+#     #     # ytau_up, ytau_dn = ytau
+#     #     slater = rthouless(wave_data['mo_t'], ytau)
+#     #     return carry, slater
 
-    # # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
-    # _, slaters = lax.scan(scan_body, None, ytaus)
+#     # # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
+#     # _, slaters = lax.scan(scan_body, None, ytaus)
 
-    return slaters, prop_data
+#     return slaters, prop_data
 
 
-def decompose_ut2(t2, thresh=1e-8):
-    # adapted from Yann
-    # norb = trial.norb
-    # nocca, noccb = trial.nelec
-    # nvira, nvirb = (norb - nocca, norb - noccb)
+# def decompose_ut2(t2, thresh=1e-8):
+#     # adapted from Yann
+#     # norb = trial.norb
+#     # nocca, noccb = trial.nelec
+#     # nvira, nvirb = (norb - nocca, norb - noccb)
 
-    t2aa, t2ab, t2bb = t2
-    nocca, nvira, noccb, nvirb = t2ab.shape
-    # Number of excitation pairs
-    npaira = nocca * nvira
-    npairb = noccb * nvirb
+#     t2aa, t2ab, t2bb = t2
+#     nocca, nvira, noccb, nvirb = t2ab.shape
+#     # Number of excitation pairs
+#     npaira = nocca * nvira
+#     npairb = noccb * nvirb
 
-    assert t2aa.shape == (nocca, nvira, nocca, nvira)
-    # assert t2ab.shape == (nocca, nvira, noccb, nvirb)
-    assert t2bb.shape == (noccb, nvirb, noccb, nvirb)
+#     assert t2aa.shape == (nocca, nvira, nocca, nvira)
+#     # assert t2ab.shape == (nocca, nvira, noccb, nvirb)
+#     assert t2bb.shape == (noccb, nvirb, noccb, nvirb)
 
-    # print('Decomposing Unrestricted T2 amplitudes')
+#     # print('Decomposing Unrestricted T2 amplitudes')
 
-    t2aa = t2aa.reshape(npaira, npaira)
-    t2ab = t2ab.reshape(npaira, npairb)
-    t2bb = t2bb.reshape(npairb, npairb)
+#     t2aa = t2aa.reshape(npaira, npaira)
+#     t2ab = t2ab.reshape(npaira, npairb)
+#     t2bb = t2bb.reshape(npairb, npairb)
 
-    # Symmetric full t2 
-    # [[ t2aa/2  t2ab   ]]
-    # [[ t2ab^T  t2bb/2 ]]
-    t2full = np.zeros((npaira + npairb, npaira + npairb))
-    t2full[:npaira, :npaira] = 0.5 * t2aa
-    t2full[npaira:, :npaira] = t2ab.T
-    t2full[:npaira, npaira:] = t2ab
-    t2full[npaira:, npaira:] = 0.5 * t2bb
-    t2full = jnp.array(t2full)
+#     # Symmetric full t2 
+#     # [[ t2aa/2  t2ab   ]]
+#     # [[ t2ab^T  t2bb/2 ]]
+#     t2full = np.zeros((npaira + npairb, npaira + npairb))
+#     t2full[:npaira, :npaira] = 0.5 * t2aa
+#     t2full[npaira:, :npaira] = t2ab.T
+#     t2full[:npaira, npaira:] = t2ab
+#     t2full[npaira:, npaira:] = 0.5 * t2bb
+#     t2full = jnp.array(t2full)
 
-    # t2 = LL^T
-    e_val, e_vec = jnp.linalg.eigh(t2full)
+#     # t2 = LL^T
+#     e_val, e_vec = jnp.linalg.eigh(t2full)
 
-    # Keep only important modes
-    mask = jnp.abs(e_val) > thresh
-    e_val_trunc = e_val[mask]
-    e_vec_trunc = e_vec[:, mask]
+#     # Keep only important modes
+#     mask = jnp.abs(e_val) > thresh
+#     e_val_trunc = e_val[mask]
+#     e_vec_trunc = e_vec[:, mask]
     
-    tau = e_vec_trunc @ jnp.diag(np.sqrt(e_val_trunc + 0.0j))
-    err = jnp.linalg.norm(t2full - tau @ tau.T)
-    assert err < 10 * thresh
-    # print(f'Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
-    # print(f'SVD cutoff = {thresh:.2e} | error = {err:.2e}')
-    # print(f'number of T2 decomposition vectors {len(e_val_trunc)}')
+#     tau = e_vec_trunc @ jnp.diag(np.sqrt(e_val_trunc + 0.0j))
+#     err = jnp.linalg.norm(t2full - tau @ tau.T)
+#     assert err < 10 * thresh
+#     # print(f'Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
+#     # print(f'SVD cutoff = {thresh:.2e} | error = {err:.2e}')
+#     # print(f'number of T2 decomposition vectors {len(e_val_trunc)}')
 
-    # alpha/beta operators for HS
-    # Summation on the left to have a list of operators
-    taua = tau.T[:,:npaira]
-    taub = tau.T[:, npaira:]
-    taua = taua.reshape(-1, nocca, nvira)
-    taub = taub.reshape(-1, noccb, nvirb)
+#     # alpha/beta operators for HS
+#     # Summation on the left to have a list of operators
+#     taua = tau.T[:,:npaira]
+#     taub = tau.T[:, npaira:]
+#     taua = taua.reshape(-1, nocca, nvira)
+#     taub = taub.reshape(-1, noccb, nvirb)
 
-    return [taua, taub]
+#     return [taua, taub]
 
-@jit
-def uthouless(slater, tau):
-    # calculate |psi'> = exp(t_ia a+ i)|psi>
+# @jit
+# def uthouless(slater, tau):
+#     # calculate |psi'> = exp(t_ia a+ i)|psi>
     
-    slater_a, slater_b = slater
-    ta, tb = tau
-    nocc_a, nvir_a = ta.shape
-    nocc_b, nvir_b = tb.shape
+#     slater_a, slater_b = slater
+#     ta, tb = tau
+#     nocc_a, nvir_a = ta.shape
+#     nocc_b, nvir_b = tb.shape
     
-    norb_a = nocc_a + nvir_a
-    norb_b = nocc_b + nvir_b
+#     norb_a = nocc_a + nvir_a
+#     norb_b = nocc_b + nvir_b
     
-    assert norb_a == norb_b
-    norb = norb_a
+#     assert norb_a == norb_b
+#     norb = norb_a
     
-    assert slater_a.shape == (norb, nocc_a)
-    assert slater_b.shape == (norb, nocc_b)
+#     assert slater_a.shape == (norb, nocc_a)
+#     assert slater_b.shape == (norb, nocc_b)
 
-    ta_full = jnp.eye(norb, dtype=jnp.complex128)
-    tb_full = jnp.eye(norb, dtype=jnp.complex128)
-    exp_ta = ta_full.at[:nocc_a, nocc_a:].set(ta)
-    exp_tb = tb_full.at[:nocc_b, nocc_b:].set(tb)
+#     ta_full = jnp.eye(norb, dtype=jnp.complex128)
+#     tb_full = jnp.eye(norb, dtype=jnp.complex128)
+#     exp_ta = ta_full.at[:nocc_a, nocc_a:].set(ta)
+#     exp_tb = tb_full.at[:nocc_b, nocc_b:].set(tb)
 
-    slater_ta = exp_ta.T @ slater_a
-    slater_tb = exp_tb.T @ slater_b
+#     slater_ta = exp_ta.T @ slater_a
+#     slater_tb = exp_tb.T @ slater_b
 
-    return [slater_ta, slater_tb]
+#     return [slater_ta, slater_tb]
 
-def thouless(slater, tau):
-    if isinstance(slater, jax.Array) and len(slater.shape) == 2:
-        return rthouless(slater, tau)
-    elif isinstance(slater, (tuple, list)) and isinstance(tau, (tuple, list)):
-        return uthouless(slater, tau)
+# def thouless(slater, tau):
+#     if isinstance(slater, jax.Array) and len(slater.shape) == 2:
+#         return rthouless(slater, tau)
+#     elif isinstance(slater, (tuple, list)) and isinstance(tau, (tuple, list)):
+#         return uthouless(slater, tau)
 
-@partial(jit, static_argnames=("n_walkers"))
-def get_uccsd_walkers(prop_data, wave_data, n_walkers):
-    prop_data["key"], subkey = random.split(prop_data["key"])
+# @partial(jit, static_argnames=("n_walkers"))
+# def get_uccsd_walkers(prop_data, wave_data, n_walkers):
+#     prop_data["key"], subkey = random.split(prop_data["key"])
     
-    fieldy = random.normal(
-        subkey,
-        shape=(
-            n_walkers,
-            wave_data['tau'][0].shape[0],
-        ),
-    )
-    # ytaus shape (nwalker, nocc, nvir)
-    ytaus_up = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][0], backend='jax')
-    ytaus_dn = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][1], backend='jax')
+#     fieldy = random.normal(
+#         subkey,
+#         shape=(
+#             n_walkers,
+#             wave_data['tau'][0].shape[0],
+#         ),
+#     )
+#     # ytaus shape (nwalker, nocc, nvir)
+#     ytaus_up = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][0], backend='jax')
+#     ytaus_dn = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][1], backend='jax')
 
-    mo_t = (wave_data["mo_ta"], wave_data["mo_tb"])
+#     mo_t = (wave_data["mo_ta"], wave_data["mo_tb"])
     
-    slaters_up, slaters_dn = vmap(
-        lambda yu, yd: uthouless(mo_t, (yu, yd)))(ytaus_up, ytaus_dn)
+#     slaters_up, slaters_dn = vmap(
+#         lambda yu, yd: uthouless(mo_t, (yu, yd)))(ytaus_up, ytaus_dn)
 
-    # mo_t = [wave_data['mo_ta'], wave_data['mo_tb']]
+#     # mo_t = [wave_data['mo_ta'], wave_data['mo_tb']]
 
-    # def scan_body(carry, ytau):
-    #     ytau_up, ytau_dn = ytau
-    #     slater_up, slater_dn = uthouless(mo_t, [ytau_up, ytau_dn])
-    #     return carry, (slater_up, slater_dn)
+#     # def scan_body(carry, ytau):
+#     #     ytau_up, ytau_dn = ytau
+#     #     slater_up, slater_dn = uthouless(mo_t, [ytau_up, ytau_dn])
+#     #     return carry, (slater_up, slater_dn)
 
-    # # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
-    # _, (slaters_up, slaters_dn) = lax.scan(scan_body, None, (ytaus_up, ytaus_dn),)
+#     # # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
+#     # _, (slaters_up, slaters_dn) = lax.scan(scan_body, None, (ytaus_up, ytaus_dn),)
 
-    return [slaters_up, slaters_dn], prop_data
+#     return [slaters_up, slaters_dn], prop_data
 
 
-def get_ccsd_walkers(prop_data, wave_data, n_walkers, walker_type):
-    if walker_type == "rhf":
-        if "tau" not in wave_data:
-            wave_data["tau"] = decompose_rt2(wave_data["t2"])
-        return get_rccsd_walkers(prop_data, wave_data, n_walkers)
-    elif walker_type == "uhf":
-        if "tau" not in wave_data:
-            wave_data["tau"] = decompose_ut2([wave_data["t2aa"],
-                                              wave_data["t2ab"],
-                                              wave_data["t2bb"]])
-        return get_uccsd_walkers(prop_data, wave_data, n_walkers)
-    else:
-        raise ValueError(f"unsupport CCSD initial walker_type: {walker_type}")
+# def get_ccsd_walkers(prop_data, wave_data, n_walkers, walker_type):
+#     if walker_type == "rhf":
+#         if "tau" not in wave_data:
+#             wave_data["tau"] = decompose_rt2(wave_data["t2"])
+#         return get_rccsd_walkers(prop_data, wave_data, n_walkers)
+#     elif walker_type == "uhf":
+#         if "tau" not in wave_data:
+#             wave_data["tau"] = decompose_ut2([wave_data["t2aa"],
+#                                               wave_data["t2ab"],
+#                                               wave_data["t2bb"]])
+#         return get_uccsd_walkers(prop_data, wave_data, n_walkers)
+#     else:
+#         raise ValueError(f"unsupport CCSD initial walker_type: {walker_type}")
+
+def load_cc_amplitude(wave_data=None, amp_file="amplitudes.npz"):
+    if wave_data is None:
+        wave_data = {}
+    t1, t2 = t2_tools.read_cc_amps(amp_file)
+    if isinstance(t2, jax.Array):
+        wave_data["t1"] = t1
+        wave_data["t2"] = t2
+    elif isinstance(t2, tuple):
+        wave_data["t1a"] = t1[0]
+        wave_data["t1b"] = t1[1]
+        wave_data["t2aa"] = t2[0]
+        wave_data["t2ab"] = t2[1]
+        wave_data["t2bb"] = t2[2]
+    return wave_data
+
+def load_ci_amplitude(wave_data=None, amp_file="amplitudes.npz"):
+    if wave_data is None:
+        wave_data = {}
+    t1, t2 = t2_tools.read_cc_amps(amp_file)
+    ci1, ci2 = t2_tools.cc2ci(t1, t2)
+    if isinstance(ci2, jax.Array):
+        wave_data["ci1"] = ci1
+        wave_data["ci2"] = ci2
+    elif isinstance(ci2, tuple):
+        wave_data["ci1A"] = ci1[0]
+        wave_data["ci1B"] = ci1[1]
+        wave_data["ci2AA"] = ci2[0]
+        wave_data["ci2AB"] = ci2[1]
+        wave_data["ci2BB"] = ci2[2]
+    return wave_data
 
 
 def init_hf_prop_data(
@@ -340,7 +372,7 @@ def init_hf_prop_data(
     prop_data["key"] = random.PRNGKey(options["seed"])
 
     weights0 = jnp.ones(options["n_walkers"], dtype=jnp.float64)
-    walkers0 = replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
+    walkers0 = walker_tools.replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
     overlaps0 = trial.calc_overlap(walkers0, wave_data)
     energies0 = trial.calc_energy(walkers0, ham_data, wave_data)
     energy0 = jnp.sum(overlaps0 * energies0) / jnp.sum(overlaps0)
@@ -366,10 +398,10 @@ def init_ccsd_prop_data(
     prop_data["key"] = random.PRNGKey(options["seed"])
 
     weights0 = jnp.ones(options["n_walkers"], dtype=jnp.float64)
-    walkers0 = replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
+    walkers0 = walker_tools.replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
     overlaps0 = trial.calc_overlap(walkers0, wave_data)
 
-    walkers1, prop_data = get_ccsd_walkers(
+    walkers1, prop_data = walker_tools.get_ccsd_walkers(
         prop_data, wave_data, options["n_walkers"], options["walker_type"]
     )
     overlaps1 = trial.calc_overlap(walkers1, wave_data)
@@ -439,8 +471,6 @@ def init_afqmc(options=None,
 
     assert spin_type in ["restricted", "unrestricted"]
 
-    # print(f"AFQMC Object Spin type: {spin_type}")
-
     if spin_type == 'restricted':
         h1 = jnp.array(h1).reshape(norb, norb)
         h1_mod = jnp.array(h1_mod).reshape(norb, norb)
@@ -468,106 +498,77 @@ def init_afqmc(options=None,
         nchol = chol.shape[0]
         ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
     elif spin_type == 'unrestricted':
-        ham_data["h1"] = jnp.array(h1)
-        ham_data["h1_mod"] = jnp.array(h1_mod)
+        ham_data["h1"] = (jnp.array(h1[0]), 
+                          jnp.array(h1[1]))
+        ham_data["h1_mod"] = (jnp.array(h1_mod[0]),
+                              jnp.array(h1_mod[1]))
         nchol = chol[0].shape[0]
-        ham_data["chol"] = jnp.array([chol[0].reshape(chol[0].shape[0], -1),
-                                      chol[1].reshape(chol[1].shape[0], -1)])
+        ham_data["chol"] = (jnp.array(chol[0].reshape(chol[0].shape[0], -1),
+                            jnp.array(chol[1].reshape(chol[1].shape[0], -1))))
 
     options["nchol_chunk"] = cholesky.chunk_chol(
         chol, options["nchol_chunk"], options["max_memory"]/options["n_walkers"])
 
     wave_data = {}
-    mo_coeff = [jnp.eye(norb), jnp.eye(norb)]
 
     if spin_type == "restricted":
-        wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
+        wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec_sp[0]]
         if options["trial"] == "rhf":
             trial = wavefunctions_restricted.rhf(norb, nelec_sp, 
                                                  n_batch=options["n_batch"],
                                                  nchol_chunk=options["nchol_chunk"],
                                                  )
-            # wave_data["mo_coeff"] = mo_coeff[0][:, : nelec_sp[0]]
 
         elif "cisd" in options["trial"]:
-            try:
-                amplitudes = np.load(amp_file)
-                t1 = jnp.array(amplitudes["t1"])
-                t2 = jnp.array(amplitudes["t2"])
-                ci2 = t2 + jnp.einsum("ia,jb->iajb", t1, t1)
-                trial_wave_data = {"ci1": t1, "ci2": ci2}
-                wave_data.update(trial_wave_data)
-                trial = wavefunctions_restricted.cisd(norb, nelec_sp, 
-                                                      n_batch=options["n_batch"]
-                                                      )
-                if "/" in options["trial"]:
-                    guide_wave = wavefunctions_restricted.cisd(norb, nelec_sp, n_batch=options["n_batch"])
-                    trial_wave = wavefunctions_restricted.rhf(norb, nelec_sp, n_batch=options["n_batch"])
-                    trial = wavefunctions_restricted.mixed(guide_wave, trial_wave)
-            except:
-                raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
+            wave_data = load_ci_amplitude(wave_data, amp_file)
+            trial = wavefunctions_restricted.cisd(norb, nelec_sp, 
+                                                    n_batch=options["n_batch"]
+                                                    )
 
         elif options["trial"] == "cid":
-            try:
-                amplitudes = np.load(amp_file)
-                t2 = jnp.array(amplitudes["t2"])
-                trial_wave_data = {"ci2": t2}
-                wave_data.update(trial_wave_data)
-                trial = wavefunctions_restricted.cid(norb, nelec_sp, n_batch=options["n_batch"])
-            except:
-                raise ValueError("Trial specified as cisd, but amplitudes.npz not found.")
+            wave_data = load_ci_amplitude(wave_data, amp_file)
+            trial = wavefunctions_restricted.cid(norb, nelec_sp, n_batch=options["n_batch"])
             
         elif options["trial"] == "ptccsd":
-            amplitudes = np.load(amp_file)
-            t1 = jnp.array(amplitudes["t1"])
-            t2 = jnp.array(amplitudes["t2"])
-            trial_wave_data = {"t1": t1, "t2": t2}
-            wave_data.update(trial_wave_data)
+            wave_data = load_cc_amplitude(wave_data, amp_file)
             trial = wavefunctions_restricted.ptccsd(norb, nelec_sp, n_batch=options["n_batch"])
             if "ad" in options["trial"]:
                 trial = wavefunctions_restricted.ptccsd_ad(norb, nelec_sp, n_batch=options["n_batch"])
         
         elif options["trial"] == "ptccd":
-            amplitudes = np.load(amp_file)
-            t2 = jnp.array(amplitudes["t2"])
-            trial_wave_data = {"t2": t2}
-            wave_data.update(trial_wave_data)
+            wave_data = load_cc_amplitude(wave_data, amp_file)
             trial = wavefunctions_restricted.ptccd(norb, nelec_sp, n_batch=options["n_batch"])
 
         elif "pt2ccsd" in options["trial"]:
+            wave_data = load_cc_amplitude(wave_data, amp_file)
+            wave_data["mo_t"] = slater_tools.thouless(wave_data["mo_coeff"], wave_data["t1"])
             trial = wavefunctions_restricted.pt2ccsd(norb, nelec_sp, 
                                                      n_batch=options["n_batch"],
                                                      nchol_chunk=options["nchol_chunk"], 
                                                      mix_precision=options["mix_precision"],
                                                      )
-            nocc = nelec_sp[0]
-            amplitudes = np.load(amp_file)
-            t1 = jnp.array(amplitudes["t1"])
-            t2 = jnp.array(amplitudes["t2"])
-            trial_wave_data = {"t1": t1, "t2": t2}
-            wave_data.update(trial_wave_data)
-            mo_t = thouless(wave_data['mo_coeff'], t1)
-            wave_data['mo_t'] = mo_t #thouless(wave_data['mo_coeff'], t1)
             if "ad" in options["trial"]:
+                nocc = nelec_sp[0]
+                rot_t2 = oe.contract('il,jk,lakb->iajb',
+                                     wave_data["mo_t"][:nocc,:nocc].T,
+                                     wave_data["mo_t"][:nocc,:nocc].T,
+                                     wave_data["t2"], 
+                                     backend='jax')
+                wave_data['rot_t2'] = rot_t2
                 trial = wavefunctions_restricted.pt2ccsd_ad(norb, nelec_sp, 
                                                             n_batch=options["n_batch"])
-                rot_t2 = jnp.einsum('il,jk,lakb->iajb',
-                                mo_t[:nocc,:nocc].T,mo_t[:nocc,:nocc].T,t2)
-                wave_data['rot_t2'] = rot_t2
 
         elif "stoccsd" in options["trial"]:
+            wave_data = load_cc_amplitude(wave_data, amp_file)
+            wave_data['mo_t'] = slater_tools.thouless(wave_data['mo_coeff'], wave_data["t1"])
+            wave_data['tau'] = t2_tools.decompose_t2(wave_data["t2"])
+
             if "2" in options["trial"]:
                 trial = wavefunctions_restricted.stoccsd2(
                     norb,
                     nelec_sp,
                     n_batch = options["n_batch"],
                     nslater = options['nslater']
-                    )
-                    
-                sampler = sampling.sampler_stoccsd2(
-                    n_prop_steps = options["n_prop_steps"],
-                    n_blocks = options["n_blocks"],
-                    n_chol = nchol,
                     )
             else:
                 trial = wavefunctions_restricted.stoccsd(
@@ -577,157 +578,123 @@ def init_afqmc(options=None,
                     nslater = options['nslater']
                     )
                     
-                sampler = sampling.sampler_stoccsd(
-                    n_prop_steps = options["n_prop_steps"],
-                    n_blocks = options["n_blocks"],
-                    n_chol = nchol,
-                    )
-            
-            nocc = nelec_sp[0]
-            amplitudes = np.load(amp_file)
-            t1 = jnp.array(amplitudes["t1"])
-            t2 = jnp.array(amplitudes["t2"])
-            trial_wave_data = {"t1": t1, "t2": t2}
-            wave_data.update(trial_wave_data)
-            wave_data['mo_t'] = thouless(wave_data['mo_coeff'], t1)
-            wave_data['tau'] = trial.decompose_t2(t2)
     
     elif spin_type == "unrestricted":
-        wave_data["mo_coeff"] = [mo_coeff[0][:, : nelec_sp[0]],
-                                 mo_coeff[1][:, : nelec_sp[1]],]
+        nocc_a, nocc_b = nelec_sp
+        wave_data["mo_coeff"] = (jnp.eye(norb)[:,:nocc_a],
+                                 jnp.eye(norb)[:,:nocc_b])
 
         if options["trial"] == "uhf":
             trial = wavefunctions_unrestricted.uhf(norb, nelec_sp, n_batch=options["n_batch"])
 
         elif options["trial"] == "ucisd":
+            wave_data = load_ci_amplitude(wave_data, amp_file)
             trial = wavefunctions_unrestricted.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
-            nocc_a, nocc_b = trial.nelec[0], trial.nelec[1]
-            try:
-                amplitudes = np.load(amp_file)
-                t1a = jnp.array(amplitudes["t1a"])
-                t1b = jnp.array(amplitudes["t1b"])
-                t2aa = jnp.array(amplitudes["t2aa"])
-                t2ab = jnp.array(amplitudes["t2ab"])
-                t2bb = jnp.array(amplitudes["t2bb"])
-                ci2aa = t2aa + 2 * jnp.einsum("ia,jb->iajb", t1a, t1a)
-                ci2ab = t2ab + jnp.einsum("ia,jb->iajb", t1a, t1b)
-                ci2bb = t2bb + 2 * jnp.einsum("ia,jb->iajb", t1b, t1b)
-                ci2aa = (ci2aa - ci2aa.transpose(0, 3, 2, 1)) / 2
-                ci2bb = (ci2bb - ci2bb.transpose(0, 3, 2, 1)) / 2
-                wave_data["ci1A"] = t1a
-                wave_data["ci1B"] = t1b
-                wave_data["ci2AA"] = ci2aa
-                wave_data["ci2AB"] = ci2ab
-                wave_data["ci2BB"] = ci2bb
-            except:
-                raise ValueError("Trial specified as ucisd, but amplitudes.npz not found.")
+            # amplitudes = np.load(amp_file)
+            # t1a = jnp.array(amplitudes["t1a"])
+            # t1b = jnp.array(amplitudes["t1b"])
+            # t2aa = jnp.array(amplitudes["t2aa"])
+            # t2ab = jnp.array(amplitudes["t2ab"])
+            # t2bb = jnp.array(amplitudes["t2bb"])
+            # ci2aa = t2aa + 2 * oe.contract("ia,jb->iajb", t1a, t1a, backend='jax')
+            # ci2ab = t2ab + oe.contract("ia,jb->iajb", t1a, t1b, backend='jax')
+            # ci2bb = t2bb + 2 * oe.contract("ia,jb->iajb", t1b, t1b, backend='jax')
+            # ci2aa = (ci2aa - ci2aa.transpose(0, 3, 2, 1)) / 2
+            # ci2bb = (ci2bb - ci2bb.transpose(0, 3, 2, 1)) / 2
+            # wave_data["ci1A"] = t1a
+            # wave_data["ci1B"] = t1b
+            # wave_data["ci2AA"] = ci2aa
+            # wave_data["ci2AB"] = ci2ab
+            # wave_data["ci2BB"] = ci2bb
 
         elif options["trial"] == "uptccsd":
+            wave_data = load_cc_amplitude(wave_data, amp_file)
             trial = wavefunctions_unrestricted.uptccsd(norb, nelec_sp, n_batch = options["n_batch"])
-            noccA, noccB = trial.nelec[0], trial.nelec[1]
-            wave_data["mo_coeff"] = [
-                mo_coeff[0][:, : noccA],
-                mo_coeff[1][:, : noccB],
-            ]
-            ham_data['h1_mod'] = h1_mod
-            amplitudes = np.load(amp_file)
-            t1a = jnp.array(amplitudes["t1a"])
-            t1b = jnp.array(amplitudes["t1b"])
-            t2aa = jnp.array(amplitudes["t2aa"])
-            t2ab = jnp.array(amplitudes["t2ab"])
-            t2bb = jnp.array(amplitudes["t2bb"])
-            wave_data['t1a'] = t1a
-            wave_data['t1b'] = t1b
-            wave_data["t2aa"] = t2aa
-            wave_data["t2bb"] = t2bb
-            wave_data["t2ab"] = t2ab
             if "ad" in options["trial"]:
                 trial = wavefunctions_unrestricted.uptccsd_ad(
                     norb, nelec_sp, n_batch=options["n_batch"])
-                mo_a_A = wave_data['mo_coeff'][0]
-                mo_b_B = wave_data['mo_coeff'][1]
-                wave_data["rot_t1A"] = mo_a_A[:noccA,:noccA].T @ t1a
-                wave_data["rot_t2AA"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_a_A[:noccA,:noccA].T,mo_a_A[:noccA,:noccA].T,t2aa)
-                wave_data["rot_t1B"] = mo_b_B[:noccB,:noccB].T @ t1b
-                wave_data["rot_t2BB"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_b_B[:noccB,:noccB].T,mo_b_B[:noccB,:noccB].T,t2bb)
-                wave_data["rot_t2AB"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_a_A[:noccA,:noccA].T,mo_b_B[:noccB,:noccB].T,t2ab)
+                
+
+                wave_data["rot_t1a"] = wave_data['mo_coeff'][0][:nocc_a,:nocc_a].T @ wave_data["t1a"]
+                wave_data["rot_t1b"] = wave_data['mo_coeff'][1][:nocc_b,:nocc_b].T @ wave_data["t1b"]
+                
+                wave_data["rot_t2aa"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_coeff'][0][:nocc_a,:nocc_a].T,
+                                                    wave_data['mo_coeff'][1][:nocc_a,:nocc_a].T,
+                                                    wave_data["t2aa"], 
+                                                    backend='jax')
+                wave_data["rot_t2ab"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_coeff'][0][:nocc_a,:nocc_a].T,
+                                                    wave_data['mo_coeff'][1][:nocc_b,:nocc_b].T,
+                                                    wave_data["t2ab"], 
+                                                    backend='jax')
+                wave_data["rot_t2bb"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_coeff'][0][:nocc_b,:nocc_b].T,
+                                                    wave_data['mo_coeff'][1][:nocc_b,:nocc_b].T,
+                                                    wave_data["t2bb"], 
+                                                    backend='jax')
 
         elif "upt2ccsd" in options["trial"]:
+            wave_data = load_cc_amplitude(wave_data, amp_file)
+            (wave_data['mo_ta'], wave_data['mo_tb']) = slater_tools.thouless(
+                wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
             trial = wavefunctions_unrestricted.upt2ccsd(
                 norb, nelec_sp, 
                 n_batch=options["n_batch"], 
                 nchol_chunk=options["nchol_chunk"],
                 mix_precision=options["mix_precision"],
                 )
-            noccA, noccB = trial.nelec[0], trial.nelec[1]
-            ham_data['h1_mod'] = h1_mod
-            amplitudes = np.load(amp_file)
-            t1a = jnp.array(amplitudes["t1a"])
-            t1b = jnp.array(amplitudes["t1b"])
-            t2aa = jnp.array(amplitudes["t2aa"])
-            t2ab = jnp.array(amplitudes["t2ab"])
-            t2bb = jnp.array(amplitudes["t2bb"])
-            # mo_ta = trial.thouless_trans(t1a)[:,:noccA]
-            # mo_tb = trial.thouless_trans(t1b)[:,:noccB]
-            # wave_data['mo_ta'] = mo_ta
-            # wave_data['mo_tb'] = mo_tb
-            [mo_ta, mo_tb] = thouless(wave_data['mo_coeff'], [t1a, t1b])
-            wave_data['mo_ta'] = mo_ta
-            wave_data['mo_tb'] = mo_tb
-            wave_data["t2aa"] = t2aa
-            wave_data["t2bb"] = t2bb
-            wave_data["t2ab"] = t2ab
-            # wave_data['tau'] = trial.decompose_t2([t2aa,t2ab,t2bb])
+
             if "ad" in options["trial"]:
                 trial = wavefunctions_unrestricted.upt2ccsd_ad(
                     norb, nelec_sp, n_batch=options["n_batch"])
-                wave_data["rot_t2aa"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_ta[:noccA,:noccA].T,mo_ta[:noccA,:noccA].T,t2aa)
-                wave_data["rot_t2bb"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_tb[:noccB,:noccB].T,mo_tb[:noccB,:noccB].T,t2bb)
-                wave_data["rot_t2ab"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_ta[:noccA,:noccA].T,mo_tb[:noccB,:noccB].T,t2ab)
+                wave_data["rot_t2aa"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_ta'][:nocc_a,:nocc_a].T,
+                                                    wave_data['mo_ta'][:nocc_a,:nocc_a].T,
+                                                    wave_data["t2aa"], 
+                                                    backend='jax')
+                wave_data["rot_t2ab"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_ta'][:nocc_a,:nocc_a].T,
+                                                    wave_data['mo_tb'][:nocc_b,:nocc_b].T,
+                                                    wave_data["t2ab"], 
+                                                    backend='jax')
+                wave_data["rot_t2bb"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_tb'][:nocc_b,:nocc_b].T,
+                                                    wave_data['mo_tb'][:nocc_b,:nocc_b].T,
+                                                    wave_data["t2bb"], 
+                                                    backend='jax')
+                
             if "eff" in options["trial"]:
                 trial = wavefunctions_unrestricted.upt2ccsd_eff(
                     norb, nelec_sp, n_batch=options["n_batch"])
-                wave_data["rot_t2aa"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_ta[:noccA,:noccA].T,mo_ta[:noccA,:noccA].T,t2aa)
-                wave_data["rot_t2bb"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_tb[:noccB,:noccB].T,mo_tb[:noccB,:noccB].T,t2bb)
-                wave_data["rot_t2ab"] = jnp.einsum('ik,jl,kalb->iajb',
-                    mo_ta[:noccA,:noccA].T,mo_tb[:noccB,:noccB].T,t2ab)
+                wave_data["rot_t2aa"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_ta'][:nocc_a,:nocc_a].T,
+                                                    wave_data['mo_ta'][:nocc_a,:nocc_a].T,
+                                                    wave_data["t2aa"], 
+                                                    backend='jax')
+                wave_data["rot_t2ab"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_ta'][:nocc_a,:nocc_a].T,
+                                                    wave_data['mo_tb'][:nocc_b,:nocc_b].T,
+                                                    wave_data["t2ab"], 
+                                                    backend='jax')
+                wave_data["rot_t2bb"] = oe.contract('ik,jl,kalb->iajb',
+                                                    wave_data['mo_tb'][:nocc_b,:nocc_b].T,
+                                                    wave_data['mo_tb'][:nocc_b,:nocc_b].T,
+                                                    wave_data["t2bb"], 
+                                                    backend='jax')
 
         elif options["trial"] == "ustoccsd2":
+            wave_data = load_cc_amplitude(wave_data, amp_file)
+            (wave_data['mo_ta'], wave_data['mo_tb']) = slater_tools.thouless(
+                wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
+            wave_data['tau'] = t2_tools.decompose_t2((wave_data["t2aa"],
+                                                      wave_data["t2ab"],
+                                                      wave_data["t2bb"]))
             trial = wavefunctions_unrestricted.ustoccsd2(
                 norb,
                 nelec_sp,
                 n_batch = options["n_batch"],
                 nslater = options['nslater']
-                )
-            nocc_a, nocc_b = nelec_sp
-            amplitudes = np.load(amp_file)
-            t1a = jnp.array(amplitudes["t1a"])
-            t1b = jnp.array(amplitudes["t1b"])
-            t2aa = jnp.array(amplitudes["t2aa"])
-            t2ab = jnp.array(amplitudes["t2ab"])
-            t2bb = jnp.array(amplitudes["t2bb"])
-            # mo = [mo_coeff[0][:,:nocc_a], mo_coeff[1][:,:nocc_b]]
-            [mo_ta, mo_tb] = thouless(wave_data['mo_coeff'], [t1a, t1b])
-            wave_data['mo_ta'] = mo_ta
-            wave_data['mo_tb'] = mo_tb
-            wave_data["t2aa"] = t2aa
-            wave_data["t2bb"] = t2bb
-            wave_data["t2ab"] = t2ab
-            wave_data['tau'] = trial.decompose_t2([t2aa,t2ab,t2bb])
-            wave_data["mo_coeff"] = [mo_coeff[0][:, : nocc_a], mo_coeff[1][:, : nocc_b]]
-
-            sampler = sampling.sampler_stoccsd2(
-                n_prop_steps = options["n_prop_steps"],
-                n_blocks = options["n_blocks"],
-                n_chol = nchol,
                 )
     
 

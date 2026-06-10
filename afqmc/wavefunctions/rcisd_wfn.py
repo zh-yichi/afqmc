@@ -3,22 +3,22 @@ from jax import lax, jit
 from jax import numpy as jnp, vmap
 import opt_einsum as oe
 from functools import partial
-from afqmc.wavefunctions import rhf_wfn
+from .. import slater_tools
 
-def r_overlap(trial, walker: jax.Array, wave_data: dict) -> complex:
+def calc_overlap(trial, walker: jax.Array, wave_data: dict) -> complex:
     nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
-    green = rhf_wfn.r_slater_delta_green(wave_data["mo_coeff"], walker)
+    green = slater_tools.r_delta_green(wave_data["mo_coeff"], walker)
     o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
     o1 = oe.contract("ia,ia", ci1, green[:,nocc:], backend="jax")
     o2 = 2 * oe.contract("iajb, ia, jb", ci2, green[:,nocc:], green[:,nocc:], backend="jax") \
         - oe.contract("iajb, ib, ja", ci2, green[:,nocc:], green[:,nocc:], backend="jax")
     return (1.0 + 2 * o1 + o2) * o0
 
-def r_force_bias(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
+def calc_force_bias(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
     """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker >"""
     nocc, norb, nchol = trial.nelec[0], trial.norb, trial.nchol
     ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
-    green = rhf_wfn.r_slater_delta_green(wave_data["mo_coeff"], walker)
+    green = slater_tools.r_delta_green(wave_data["mo_coeff"], walker)
     green_occ = green[:, nocc:].copy()
     greenp = jnp.vstack((green_occ, -jnp.eye(norb - nocc)))
 
@@ -57,10 +57,10 @@ def r_force_bias(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> j
     return (fb_0 + fb_1 + fb_2) / overlap
 
 @partial(jit, static_argnums=0)
-def r_energy(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> complex:
+def calc_energy(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> complex:
     nocc, norb, nchol = trial.nelec[0], trial.norb, trial.nchol
     ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
-    green = rhf_wfn.r_slater_delta_green(wave_data["mo_coeff"], walker)
+    green = slater_tools.r_delta_green(wave_data["mo_coeff"], walker)
     green_occ = green[:, nocc:].copy()
     greenp = jnp.vstack((green_occ, -jnp.eye(norb - nocc)))
 
@@ -163,3 +163,12 @@ def r_energy(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> compl
     overlap_2 = gci2g
     overlap = 1.0 + overlap_1 + overlap_2
     return (e1 + e2) / overlap + e0
+
+def build_measurement_intermediates(trial, ham_data: dict, wave_data: dict):
+    ham_data["lci1"] = oe.contract(
+        "git,pt->gip",
+        ham_data["chol"].reshape(-1, trial.norb, trial.norb)[:, :, trial.nelec[0] :],
+        wave_data["ci1"],
+        backend="jax")
+    
+    return ham_data
