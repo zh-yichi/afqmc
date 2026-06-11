@@ -376,7 +376,7 @@ def load_ci_amplitude(wave_data=None, amp_file="amplitudes.npz"):
 
 
 def init_hf_prop_data(
-    trial,
+    wave,
     wave_data,
     ham_data,
     options
@@ -389,15 +389,43 @@ def init_hf_prop_data(
 
     weights0 = jnp.ones(options["n_walkers"], dtype=jnp.float64)
     walkers0 = walker_tools.replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
-    overlaps0 = trial.calc_overlap(walkers0, wave_data)
-    energies0 = trial.calc_energy(walkers0, ham_data, wave_data)
+    overlaps0 = wave.calc_overlap(walkers0, wave_data)
+    energies0 = wave.calc_energy(walkers0, ham_data, wave_data)
     energy0 = jnp.sum(overlaps0 * energies0) / jnp.sum(overlaps0)
 
     prop_data["walkers"] = walkers0
     prop_data["weights"] = weights0
     prop_data["overlaps"] = overlaps0
     prop_data["e_estimate"] = jnp.real(energy0)
-    prop_data["pop_control_ene_shift"] = jnp.real(energy0)
+    prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+
+    return prop_data
+
+def init_hf_prop_data_exp(
+    wave,
+    wave_data,
+    ham_data,
+    options
+    ):
+
+    print("\nInitalize QMC walkers by HF")
+    prop_data = {}
+    prop_data["n_killed_walkers"] = 0
+    prop_data["key"] = random.PRNGKey(options["seed"])
+
+    prop_data["weights"] = jnp.ones(options["n_walkers"], dtype=jnp.float64)
+    walkers0 = walker_tools.replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
+    g_overlaps0 = wave.calc_overlap(walkers0, wave_data)
+    t_overlaps0 = wave.calc_trial_overlap(walkers0, wave_data)
+    weights0 = prop_data["weights"] * t_overlaps0 / g_overlaps0
+    samples0 = wave.calc_energy(walkers0, ham_data, wave_data)
+    weight0_mean, energy0_mean, energy0_err \
+            = wave.calc_sample_energy(weights0, samples0, ham_data)
+
+    prop_data["walkers"] = walkers0
+    prop_data["overlaps"] = g_overlaps0
+    prop_data["e_estimate"] = jnp.real(energy0_mean)
+    prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
 
     return prop_data
 
@@ -458,15 +486,17 @@ def get_qmc_options(options=None, option_file="options.bin"):
     options["n_blocks"] = options.get("n_blocks", 500)
     options["seed"] = options.get("seed", np.random.randint(1, int(1e6)))
     options["eql_time"] = options.get("eql_time", 20)
-    options["walker_type"] = options.get("walker_type", "rhf")
-    options["save_walkers"] = options.get("save_walkers", False)
     options["trial"] = options.get("trial", None)
-    options["free_projection"] = options.get("free_projection", False)
+    if "u" not in options["trial"]:
+        options["walker_type"] = options.get("walker_type", "rhf")
+    elif "u" in options["trial"]:
+        options["walker_type"] = options.get("walker_type", "uhf")
     options["n_batch"] = options.get("n_batch", 1)
     options["max_error"] = options.get("max_error", 0.0)
     options["nchol_chunk"] = options.get("nchol_chunk", 100)
     options["max_memory"] = options.get("max_memory", 2000) # MB
     options["mix_precision"] = options.get("mix_precision", True)
+    options["free_projection"] = options.get("free_projection", False)
 
     return options
 
@@ -786,7 +816,7 @@ def init_afqmc_exp(
         amp_file="amplitudes.npz",
         chol_file="FCIDUMP_chol"
         ):
-    from .wavefunctions import wfn_exp, rhf_wfn, uhf_wfn, rcisd_wfn, ucisd_wfn
+    from .wavefunctions import wfn_exp, rhf_wfn, uhf_wfn, rcisd_wfn, ucisd_wfn, rpt2ccsd_wfn, upt2ccsd_wfn
     
     options = get_qmc_options(options, option_file)
 
@@ -798,7 +828,6 @@ def init_afqmc_exp(
         h0 = jnp.array(fh5.get("energy_core"))
         h1 = jnp.array(fh5.get("hcore"))
         chol = jnp.array(fh5.get("chol"))
-        # h1_mod = jnp.array(fh5.get("hcore_mod"))
     
     if isinstance(spin_type, bytes):
         spin_type = spin_type.decode()
@@ -850,6 +879,11 @@ def init_afqmc_exp(
             print(f"{str(op):<15s} - {str(options[op]):>10s}")
 
     wave_data = {}
+    if "ci" in options["trial"] or "ci" in options["guide"]:
+        wave_data = load_ci_amplitude(wave_data, amp_file)
+    if "cc" in options["trial"] or "cc" in options["guide"]:
+        wave_data = load_cc_amplitude(wave_data, amp_file)
+
     if spin_type == "restricted":
         wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec_sp[0]]
         wave_data["rdm1"] = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
@@ -857,7 +891,7 @@ def init_afqmc_exp(
         if options["guide"] == "rhf":
             guide_overlap_fn = rhf_wfn.calc_overlap
             guide_force_bias_fn = rhf_wfn.calc_rot_force_bias
-        if options["guide"] == "cisd":
+        if options["guide"] == "rcisd":
             guide_overlap_fn = rcisd_wfn.calc_overlap
             guide_force_bias_fn = rcisd_wfn.calc_force_bias
 
@@ -866,12 +900,18 @@ def init_afqmc_exp(
             trial_overlap_fn = rhf_wfn.calc_overlap
             trial_energy_fn = rhf_wfn.calc_rot_energy
             trial_intermediate_fn = rhf_wfn.calc_intermediate
-
-        elif options["trial"] == "cisd":
-            wave_data = load_ci_amplitude(wave_data, amp_file)
+            energy_formula_fn = rhf_wfn.energy_formula
+        elif options["trial"] == "rcisd":
             trial_overlap_fn = rcisd_wfn.calc_overlap
             trial_energy_fn = rcisd_wfn.calc_energy
             trial_intermediate_fn = rcisd_wfn.calc_intermediate
+            energy_formula_fn = rcisd_wfn.energy_formula
+        elif options["trial"] == "rpt2ccsd":
+            trial_overlap_fn = rpt2ccsd_wfn.calc_overlap
+            trial_energy_fn = rpt2ccsd_wfn.calc_energy
+            trial_intermediate_fn = rpt2ccsd_wfn.calc_intermediate
+            energy_formula_fn = rpt2ccsd_wfn.energy_formula
+            wave_data["mo_t"] = slater_tools.thouless(wave_data["mo_coeff"], wave_data["t1"])
 
     
     elif spin_type == "unrestricted":
@@ -891,14 +931,21 @@ def init_afqmc_exp(
         # trial
         if options["trial"] == "uhf":
             trial_overlap_fn = uhf_wfn.calc_overlap
-            trial_energy_fn = uhf_wfn.calc_energy
+            trial_energy_fn = uhf_wfn.calc_rot_energy
             trial_intermediate_fn = uhf_wfn.calc_intermediate
-
+            energy_formula_fn = uhf_wfn.energy_formula
         elif options["trial"] == "ucisd":
-            wave_data = load_ci_amplitude(wave_data, amp_file)
             trial_overlap_fn = ucisd_wfn.calc_overlap
             trial_energy_fn = ucisd_wfn.calc_energy
             trial_intermediate_fn = ucisd_wfn.calc_intermediate
+            energy_formula_fn = ucisd_wfn.energy_formula
+        elif options["trial"] == "upt2ccsd":
+            trial_overlap_fn = upt2ccsd_wfn.calc_overlap
+            trial_energy_fn = upt2ccsd_wfn.calc_energy
+            trial_intermediate_fn = upt2ccsd_wfn.calc_intermediate
+            energy_formula_fn = upt2ccsd_wfn.energy_formula
+            (wave_data['mo_ta'], wave_data['mo_tb']) \
+                = slater_tools.thouless(wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
 
     if options["walker_type"] == "rhf":
         prop = propagation.propagator_restricted(
@@ -907,7 +954,6 @@ def init_afqmc_exp(
                 options["n_exp_terms"],
                 options["n_batch"]
             )
-
     elif options["walker_type"] == "uhf":
         prop = propagation.propagator_unrestricted(
                 options["dt"],
@@ -922,6 +968,7 @@ def init_afqmc_exp(
         trial_overlap_fn=trial_overlap_fn,
         trial_energy_fn=trial_energy_fn,
         trial_intermediate_fn=trial_intermediate_fn,
+        energy_formula_fn=energy_formula_fn,
         nelec=nelec_sp,
         norb=norb,
         nchol=nchol,

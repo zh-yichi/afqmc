@@ -1,16 +1,26 @@
 from jax import numpy as jnp
+import opt_einsum as oe
 from .. import slater_tools
+from . import rhf_wfn
+
+from jax import jit
+from functools import partial
+
+energy_formula = rhf_wfn.energy_formula
 
 # implementation of above functions in QMC sampling
+@partial(jit, static_argnums=0)
 def calc_overlap(trial, walker, wave_data):
     return slater_tools.u_overlap(wave_data["mo_coeff"], walker)
 
+@partial(jit, static_argnums=0)
 def calc_force_bias(trial, walker, ham_data, wave_data):
     chol_a = ham_data["chol"][0].reshape(trial.nchol, trial.norb, trial.norb)
     chol_b = ham_data["chol"][1].reshape(trial.nchol, trial.norb, trial.norb)
     chol = (chol_a, chol_b)
     return slater_tools.u_force_bias(wave_data["mo_coeff"], walker, chol)
 
+@partial(jit, static_argnums=0)
 def calc_energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     h1 = ham_data["h1"]
@@ -27,17 +37,19 @@ def calc_energy(trial, walker, ham_data, wave_data):
     chol = (chol_a, chol_b)
     return slater_tools.u_energy(wave_data["mo_coeff"], walker, h0, h1, chol)
 
+@partial(jit, static_argnums=0)
 def calc_rot_force_bias(trial, walker, ham_data, wave_data):
     rot_chol_a = ham_data["rot_chol"][0]
     rot_chol_b = ham_data["rot_chol"][1]
     rot_chol = (rot_chol_a, rot_chol_b)
     return slater_tools.u_rot_force_bias(wave_data["mo_coeff"], walker, rot_chol)
 
+@partial(jit, static_argnums=0)
 def calc_rot_energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     rot_h1 = ham_data["rot_h1"]
-    rot_chol_a = ham_data["rot_chol"][0].reshape(trial.nchol, trial.norb, trial.norb)
-    rot_chol_b = ham_data["rot_chol"][1].reshape(trial.nchol, trial.norb, trial.norb)
+    rot_chol_a = ham_data["rot_chol"][0]
+    rot_chol_b = ham_data["rot_chol"][1]
     nchol = rot_chol_a.shape[0]
     nchol_chunk = trial.nchol_chunk
     nchunks = -(-nchol // nchol_chunk)
@@ -48,3 +60,31 @@ def calc_rot_energy(trial, walker, ham_data, wave_data):
     rot_chol_b = rot_chol_b.reshape(nchunks, nchol_chunk, *rot_chol_b.shape[1:])
     rot_chol = (rot_chol_a, rot_chol_b)
     return slater_tools.u_rot_energy(wave_data["mo_coeff"], walker, h0, rot_h1, rot_chol)
+
+@partial(jit, static_argnums=0)
+def calc_intermediate(trial, ham_data: dict, wave_data: dict) -> dict:
+    ham_data["rot_h1"] = (wave_data["mo_coeff"][0].T.conj() @ ham_data["h1"][0],
+                          wave_data["mo_coeff"][1].T.conj() @ ham_data["h1"][1])
+    ham_data["rot_chol"] = (
+        oe.contract(
+            "ip,gpq->giq",
+            wave_data["mo_coeff"][0].T.conj(),
+            ham_data["chol"][0].reshape(-1, trial.norb, trial.norb), 
+            backend="jax"
+            ),
+        oe.contract(
+            "ip,gpq->giq",
+            wave_data["mo_coeff"][1].T.conj(),
+            ham_data["chol"][1].reshape(-1, trial.norb, trial.norb), 
+            backend="jax"
+            )
+        )
+    return ham_data
+
+# def energy_formula(weights, samples, ham_data):
+#     # energy_terms shape: (nsamples, terms)
+#     weight_mean, sample_mean, sample_err = sampling.weighted_average(weights, samples)
+#     weight = weight_mean.real
+#     energy = sample_mean[0].real
+#     energy_err = sample_err[0].real
+#     return weight, energy, energy_err

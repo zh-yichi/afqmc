@@ -27,7 +27,7 @@ w_init = jnp.sum(prop_data["weights"])
 e_init = prop_data["e_estimate"]
 w_init = jnp.sum(prop_data["weights"])
 
-print(wave_data["rdm1"])
+# print(wave_data["rdm1"])
 
 print("\nEquilibration")
 

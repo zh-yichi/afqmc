@@ -3,7 +3,11 @@ from jax import lax, jit
 from jax import numpy as jnp, vmap
 import opt_einsum as oe
 from functools import partial
-from afqmc.wavefunctions import uhf_wfn
+# from afqmc.wavefunctions import uhf_wfn
+from .. import slater_tools
+from . import rhf_wfn
+
+energy_formula = rhf_wfn.energy_formula
 
 @partial(jit, static_argnums=0)
 def calc_overlap(
@@ -15,7 +19,7 @@ def calc_overlap(
     noccA, ci1A, ci2AA = trial.nelec[0], wave_data["ci1A"], wave_data["ci2AA"]
     noccB, ci1B, ci2BB = trial.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
     ci2AB = wave_data["ci2AB"]
-    (green_a, green_b) = uhf_wfn.u_slater_delta_green(wave_data["mo_coeff"], walker)
+    (green_a, green_b) = slater_tools.u_delta_green(wave_data["mo_coeff"], walker)
     green_a, green_b = green_a[:, noccA:], green_b[:, noccB:]
     o0 = jnp.linalg.det(walker_a[:noccA, :]) * jnp.linalg.det(walker_b[:noccB, :])
     o1 = oe.contract("ia,ia", ci1A, green_a, backend="jax") \
@@ -37,7 +41,7 @@ def calc_force_bias(
     nocc_b, ci1_b, ci2_bb = trial.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
     ci2_ab = wave_data["ci2AB"]
     norb = trial.norb
-    (green_a, green_b) = uhf_wfn.u_slater_delta_green(wave_data["mo_coeff"], walker)
+    (green_a, green_b) = slater_tools.u_delta_green(wave_data["mo_coeff"], walker)
     green_occ_a = green_a[:, nocc_a:].copy()
     green_occ_b = green_b[:, nocc_b:].copy()
     greenp_a = jnp.vstack((green_occ_a, -jnp.eye(norb - nocc_a)))
@@ -103,7 +107,7 @@ def calc_energy(
     nocc_b, ci1_b, ci2_bb = trial.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
     ci2_ab = wave_data["ci2AB"]
     norb = trial.norb
-    (green_a, green_b) = uhf_wfn.u_slater_delta_green(wave_data["mo_coeff"], walker)
+    (green_a, green_b) = slater_tools.u_delta_green(wave_data["mo_coeff"], walker)
     green_occ_a = green_a[:, nocc_a:].copy()
     green_occ_b = green_b[:, nocc_b:].copy()
     greenp_a = jnp.vstack((green_occ_a, -jnp.eye(norb - nocc_a)))
@@ -259,3 +263,24 @@ def calc_energy(
     overlap_2 = gci2g
     overlap = 1.0 + overlap_1 + overlap_2
     return (e1 + e2) / overlap + e0
+
+def calc_intermediate(trial, ham_data: dict, wave_data: dict) -> dict:
+    ham_data["lci1_a"] = oe.contract(
+        "git,pt->gip",
+        ham_data["chol"][0].reshape(-1, trial.norb, trial.norb)[:,:,trial.nelec[0]:],
+        wave_data["ci1A"],
+        backend="jax")
+    ham_data["lci1_b"] = oe.contract(
+        "git,pt->gip",
+        ham_data["chol"][1].reshape(-1, trial.norb, trial.norb)[:,:,trial.nelec[1]:],
+        wave_data["ci1B"],
+        backend="jax")
+    return ham_data
+
+# def energy_formula(weights, samples, ham_data):
+#     # energy_terms shape: (nsamples, terms)
+#     weight_mean, sample_mean, sample_err = sampling.weighted_average(weights, samples)
+#     weight = weight_mean.real
+#     energy = sample_mean[0].real
+#     energy_err = sample_err[0].real
+#     return weight, energy, energy_err

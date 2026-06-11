@@ -50,12 +50,14 @@ class wfn:
     guide_force_bias_fn: Callable    # defined by guide
     trial_overlap_fn: Callable       # defined by trial
     trial_energy_fn: Callable        # defined by trial
-    trial_intermediate_fn: Callable    # defined by trial
+    trial_intermediate_fn: Callable  # defined by trial
+    energy_formula_fn: Callable      # defined by trial
     nelec: tuple[int, int]
     norb: int | tuple[int, int]
     nchol: int
     nchol_chunk: int
     nwalker_batch: int = 1
+    mix_precision: bool = False
 
     def __post_init__(self):
         
@@ -73,20 +75,28 @@ class wfn:
             f"energy_fn ({self.trial_energy_fn.__module__}) must come from the same module"
         )
 
+    @partial(jit, static_argnums=0)
     def _guide_overlap(self, walker, wave_data):
         return self.guide_overlap_fn(self, walker, wave_data)
     
+    @partial(jit, static_argnums=0)
     def _guide_force_bias(self, walker, ham_data, wave_data):
         return self.guide_force_bias_fn(self, walker, ham_data, wave_data)
 
+    @partial(jit, static_argnums=0)
     def _trial_overlap(self, walker, wave_data):
         return self.trial_overlap_fn(self, walker, wave_data)
     
+    @partial(jit, static_argnums=0)
     def _trial_energy(self, walker, ham_data, wave_data):
         return self.trial_energy_fn(self, walker, ham_data, wave_data)
     
+    @partial(jit, static_argnums=0)
     def build_trial_intermediate(self, ham_data, wave_data):
         return self.trial_intermediate_fn(self, ham_data, wave_data)
+    
+    def calc_sample_energy(self, weights, samples, ham_data):
+        return self.energy_formula_fn(weights, samples, ham_data)
     
     @partial(jit, static_argnums=0)
     def calc_overlap(self, walkers, wave_data):

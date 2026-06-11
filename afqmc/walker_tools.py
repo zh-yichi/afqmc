@@ -5,6 +5,7 @@ import opt_einsum as oe
 from . import slater_tools, t2_tools
 from functools import partial
 
+@partial(jit, static_argnums=(0, 2))
 def map_over_walkers(single_fn, walkers, nbatch, *broadcast_args):
     """Lift a single-walker function to all walkers via batched scan + vmap.
 

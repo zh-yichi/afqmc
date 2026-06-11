@@ -4,7 +4,11 @@ from jax import numpy as jnp, vmap
 import opt_einsum as oe
 from functools import partial
 from .. import slater_tools
+from . import rhf_wfn
 
+energy_formula = rhf_wfn.energy_formula
+
+@partial(jit, static_argnums=0)
 def calc_overlap(trial, walker: jax.Array, wave_data: dict) -> complex:
     nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
     green = slater_tools.r_delta_green(wave_data["mo_coeff"], walker)
@@ -14,6 +18,7 @@ def calc_overlap(trial, walker: jax.Array, wave_data: dict) -> complex:
         - oe.contract("iajb, ib, ja", ci2, green[:,nocc:], green[:,nocc:], backend="jax")
     return (1.0 + 2 * o1 + o2) * o0
 
+@partial(jit, static_argnums=0)
 def calc_force_bias(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
     """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker >"""
     nocc, norb, nchol = trial.nelec[0], trial.norb, trial.nchol
@@ -164,6 +169,7 @@ def calc_energy(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> co
     overlap = 1.0 + overlap_1 + overlap_2
     return (e1 + e2) / overlap + e0
 
+@partial(jit, static_argnums=0)
 def calc_intermediate(trial, ham_data: dict, wave_data: dict):
     ham_data["lci1"] = oe.contract(
         "git,pt->gip",

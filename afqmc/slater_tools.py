@@ -92,6 +92,15 @@ def r_overlap(bra: jax.Array, ket: jax.Array):
     return olp
 
 @jit
+def r_delta_overlap(bra: jax.Array, ket: jax.Array):
+    ''' 
+    <bra|ket> when bra is the identity
+    '''
+    nocc = ket.shape[1]
+    olp = jnp.linalg.det(ket[:nocc,:nocc]) ** 2
+    return olp
+
+@jit
 def r_green(bra: jax.Array, ket: jax.Array) -> jax.Array:
     '''<bra|a^dagger_p a_q|ket>/<bra|ket>'''
     green = (ket @ (jnp.linalg.inv(bra.T.conj() @ ket)) @ bra.T.conj()).T
@@ -184,11 +193,20 @@ def r_rot_energy(
 
     return energy
 
+# unrestricted
 
 @jit
 def u_overlap(bra: tuple, ket: tuple):
     olp = jnp.linalg.det(bra[0].T.conj() @ ket[0]) \
         * jnp.linalg.det(bra[1].T.conj() @ ket[1])
+    return olp
+
+@jit
+def u_delta_overlap(bra: tuple, ket: tuple):
+    # when bra is identity
+    nocc_a, nocc_b = ket[0].shape[1], ket[1].shape[1]
+    olp = jnp.linalg.det(ket[0][:nocc_a,:nocc_a]) \
+        * jnp.linalg.det(ket[1][:nocc_b,:nocc_b])
     return olp
 
 @jit
@@ -206,7 +224,7 @@ def u_delta_green(bra: tuple, ket: tuple):
 @jit
 def u_green(bra: tuple, ket: tuple):
     green_a = (ket[0] @ (jnp.linalg.inv(bra[0].T.conj() @ ket[0])) @ bra[0].T.conj()).T
-    green_b = (ket[1] @ (jnp.linalg.inv(bra[1].T.conj() @ ket[1])) @ bra[0].T.conj()).T
+    green_b = (ket[1] @ (jnp.linalg.inv(bra[1].T.conj() @ ket[1])) @ bra[1].T.conj()).T
     return (green_a, green_b)
 
 @jit
