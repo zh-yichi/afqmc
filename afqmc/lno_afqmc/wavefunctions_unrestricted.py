@@ -1203,19 +1203,41 @@ class upt2ccsd(uhf):
             carry[0] += e2_0_c + e2_0_e
 
             # double excitations
-            lt2g_a = oe.contract("gpq,pq->g", chol_a_c, t2_green_a_tot, backend="jax")
-            lt2g_b = oe.contract("gpq,pq->g", chol_b_c, t2_green_b_tot, backend="jax")
-            carry[1] += -oe.contract('g,g->', lt2g_a + lt2g_b, gl_c, backend="jax") / 2.0
+            lt2g_a = oe.contract("gpq,pq->g", 
+                                 chol_a_c.astype(rtype), 
+                                 t2_green_a_tot.astype(ctype), 
+                                 backend="jax").astype(jnp.complex128)
+            lt2g_b = oe.contract("gpq,pq->g", 
+                                 chol_b_c.astype(rtype), 
+                                 t2_green_b_tot.astype(ctype), 
+                                 backend="jax").astype(jnp.complex128)
+            carry[1] += -oe.contract('g,g->', 
+                                     (lt2g_a+lt2g_b).astype(ctype), 
+                                     gl_c.astype(ctype), 
+                                     backend="jax"
+                                     ).astype(jnp.complex128) / 2.0
 
-            lt2_green_a = oe.contract("gpi,ji->gpj", rot_chol_a_c, t2_green_a_tot, backend="jax")
-            lt2_green_b = oe.contract("gpi,ji->gpj", rot_chol_b_c, t2_green_b_tot, backend="jax")
+            lt2_green_a = oe.contract("gpi,ji->gpj", 
+                                      rot_chol_a_c.astype(rtype), 
+                                      t2_green_a_tot.astype(ctype), 
+                                      backend="jax")
+            lt2_green_b = oe.contract("gpi,ji->gpj", 
+                                      rot_chol_b_c.astype(rtype), 
+                                      t2_green_b_tot.astype(ctype), 
+                                      backend="jax")
             carry[2] += (
                 (oe.contract("gip,gip->", gl_a.astype(ctype), lt2_green_a.astype(ctype), backend="jax")
                 + oe.contract("gip,gip->", gl_b.astype(ctype), lt2_green_b.astype(ctype), backend="jax")) / 2
                 ).astype(jnp.complex128)
 
-            glgp_a = oe.contract("gip,pa->gia", gl_a, greenp_a, backend="jax")
-            glgp_b = oe.contract("gip,pa->gia", gl_b, greenp_b, backend="jax")
+            glgp_a = oe.contract("gip,pa->gia", 
+                                 gl_a.astype(ctype), 
+                                 greenp_a.astype(ctype), 
+                                 backend="jax")
+            glgp_b = oe.contract("gip,pa->gia", 
+                                 gl_b.astype(ctype), 
+                                 greenp_b.astype(ctype), 
+                                 backend="jax")
 
             l2t2_aa_a = oe.contract("gia,iajb->gjb", glgp_a.astype(ctype), t2aa.astype(rtype), backend="jax")
             l2t2_ab_a = oe.contract("gia,iajb->gjb", glgp_a.astype(ctype), t2ab.astype(rtype), backend="jax")

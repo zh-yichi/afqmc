@@ -39,7 +39,6 @@ def run_lnoafqmc(options, option_file='options.bin'):
 
 def run_afqmc(mf,
               lo_coeff = None, 
-            #   lo_coeff_file = 'lo_coeff.npz',
               frag_lolist = None,
               nfrozen = 0,
               thresh = 1e-6,
