@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import jit, jvp, lax, vmap, random
+from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 import opt_einsum as oe
 
 class uwfn(ABC):
@@ -1441,6 +1442,43 @@ class upt2ccsd(uhf):
         e1 = (e1_2 + e2_2) * t1 # <exp(T1)HF|T2 (h1+h2)|walker>/<HF|walker>
 
         return t1, t2, e0, e1
+    
+    # @partial(jit, static_argnums=0)
+    # def _mapped_energy_pt(self, walker_up, walker_dn, ham_data, wave_data):
+    #     return vmap(self._calc_energy_pt, in_axes=(0, 0, None, None))(
+    #         walker_up, walker_dn, ham_data, wave_data)
+    
+    # def calc_energy_pt(self, walkers, ham_data, wave_data):
+    #     devices = jax.devices()
+    #     n_dev = len(devices)
+
+    #     # 1D mesh over all GPUs; name the axis "walkers"
+    #     mesh = Mesh(np.array(devices), axis_names=("walkers",))
+    #     walker_sharding = NamedSharding(mesh, P("walkers"))  # split axis 0
+    #     replicated      = NamedSharding(mesh, P())           # copy to every GPU
+
+    #     walker_up, walker_dn = walkers[0], walkers[1]
+    #     n_walkers = walker_up.shape[0]
+
+    #     # The walker axis must be divisible by n_dev. Pad by duplicating
+    #     # valid walkers (safe — won't make mo_a.T@walker_up singular), slice off later.
+    #     pad = (-n_walkers) % n_dev
+    #     if pad:
+    #         walker_up = jnp.concatenate([walker_up, walker_up[:pad]], axis=0)
+    #         walker_dn = jnp.concatenate([walker_dn, walker_dn[:pad]], axis=0)
+
+    #     # Distribute the data
+    #     walker_up = jax.device_put(walker_up, walker_sharding)
+    #     walker_dn = jax.device_put(walker_dn, walker_sharding)
+    #     ham_data  = jax.device_put(ham_data,  replicated)
+    #     wave_data = jax.device_put(wave_data, replicated)
+
+    #     t1, t2, e0, e1 = self._mapped_energy_pt(
+    #         walker_up, walker_dn, ham_data, wave_data)
+
+    #     if pad:
+    #         t1, t2, e0, e1 = (x[:n_walkers] for x in (t1, t2, e0, e1))
+    #     return t1, t2, e0, e1
 
     def calc_energy_pt(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
         t1, t2, e0, e1 = vmap(
