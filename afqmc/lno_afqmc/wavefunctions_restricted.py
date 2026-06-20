@@ -983,25 +983,38 @@ class pt2ccsd(rhf):
             e2_0_e = -oe.contract("gij,gji->", gl[:, :, :nocc], gl[:, :, :nocc], backend="jax")
             carry[0] += e2_0_c + e2_0_e
 
-            lt2g = oe.contract("gpr,pr->g", chol_c, t2_green, backend="jax")
-            carry[1] += -oe.contract("g,g->", lt2g, gl_c, backend="jax")
+            lt2g = oe.contract("gpr,pr->g", 
+                               chol_c.astype(rtype), 
+                               t2_green.astype(ctype), 
+                               backend="jax")
+            carry[1] += -oe.contract("g,g->", 
+                                     lt2g.astype(ctype), 
+                                     gl_c.astype(ctype), 
+                                     backend="jax")
 
-            lt2_green = oe.contract("gir,qr->giq", rot_chol_c, t2_green, backend="jax")
+            lt2_green = oe.contract("gir,qr->giq", 
+                                    rot_chol_c.astype(rtype), 
+                                    t2_green.astype(ctype), 
+                                    backend="jax")
             # t_iajb |G_ia G_js Gp_pb| G_qr L_pr L_qs
-            carry[2] += 0.5 * oe.contract("giq,giq->", gl, lt2_green, backend="jax")
+            carry[2] += 0.5 * oe.contract("giq,giq->", 
+                                          gl.astype(ctype), 
+                                          lt2_green.astype(ctype), 
+                                          backend="jax")
 
             # t_iajb G_ir G_js Gp_pa Gp_qb L_pr L_qs type
-            glgp = oe.contract("gir,rb->gib", gl, greenp, backend="jax")
-            # if self.mix_precision:
-            #     glgp_mp = glgp.astype(jnp.complex64)
-            #     t2_mp = t2.astype(jnp.float32)
-            # else:                
-            #     glgp_mp = glgp
-            #     t2_mp = t2
-            # l2t2_c = oe.contract("gia,iajb,gjb->", glgp_mp, t2_mp, glgp_mp, backend="jax")
-            # l2t2_e = oe.contract("gib,iajb,gja->", glgp_mp, t2_mp, glgp_mp, backend="jax")
-            lt2_c = oe.contract("gia,iajb->gjb", glgp.astype(ctype), t2.astype(rtype), backend="jax")
-            lt2_e = oe.contract("gib,iajb->gja", glgp.astype(ctype), t2.astype(rtype), backend="jax")
+            glgp = oe.contract("gir,rb->gib", 
+                               gl.astype(ctype), 
+                               greenp.astype(ctype), 
+                               backend="jax")
+            lt2_c = oe.contract("gia,iajb->gjb", 
+                                glgp.astype(ctype), 
+                                t2.astype(rtype), 
+                                backend="jax")
+            lt2_e = oe.contract("gib,iajb->gja", 
+                                glgp.astype(ctype), 
+                                t2.astype(rtype), 
+                                backend="jax")
             
             l2t2_c = oe.contract("gjb,gjb->", 
                                  lt2_c.astype(ctype), 
