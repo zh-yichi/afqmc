@@ -22,8 +22,8 @@ ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 h0 = ham_data['h0']
 
-# prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
-prop_data = prep.init_ccsd_prop_data(trial, wave_data, ham_data, options)
+prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
+# prop_data = prep.init_ccsd_prop_data(trial, wave_data, ham_data, options)
 
 init_e = prop_data["e_estimate"]
 init_w = np.sum(prop_data["weights"])
@@ -34,8 +34,8 @@ print(f"{'inv_T':>5s}  "
       f"{'weight':>12s}  {'killW':>5s}  "
       f"{'energy':>12s}  {'runTime':>8s}")
 print(f"{0.:5.2f}  "
-      f"{init_w:12.6f}  {0:5d}  "
-      f"{init_e:12.6f}  {time.time() - init_time:8.2f}")
+      f"{init_w:12.5f}  {0:5d}  "
+      f"{init_e:12.5f}  {time.time() - init_time:8.2f}")
 
 sampler_eq = sampling.sampler(
     n_prop_steps=50, 
@@ -52,8 +52,8 @@ for n in range(1, neql_block+1):
     if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
         nkill = prop_data["n_killed_walkers"]
         print(f"{(n+1)*block_time:5.2f}  "
-              f"{wt:12.6f}  {nkill:5d}  "
-              f"{e:12.6f}  {time.time() - init_time:8.2f}")
+              f"{wt:12.5f}  {nkill:5d}  "
+              f"{e:12.5f}  {time.time() - init_time:8.2f}")
 
 print("\nSampling")
 
@@ -62,7 +62,7 @@ print(f"{'blocks':>6s}  "
       f"{'E_Guide':>12s}  {'error':>8s}  "
       f"{'E_Trial':>12s}  {'error':>8s}  "
       f"{'olp_T/G':>10s}  {'error':>8s}  "
-      f"{'Walltime':>8s}")
+      f"{'Walltime':>10s}")
 
 wt_sp = np.zeros(sampler.n_blocks, dtype="float64")
 eg_sp = np.zeros(sampler.n_blocks, dtype="float64")
@@ -119,11 +119,11 @@ for n in range(sampler.n_blocks):
         prop_data["e_estimate"] = 0.8 * prop_data["e_estimate"] + 0.2 * eg
         
         print(f"{n+1:6d}  "
-              f"{weight:12.6f}  {tot_kw:5d}  "
-              f"{eg:12.6f}  {eg_err:8.6f}  "
-              f"{ept:12.6f}  {ept_err:8.6f}  "
-              f"{otg.real:10.6f}  {otg_err.real:8.6f}"
-              f"{time.time() - init_time:8.2f}")
+              f"{weight:12.5f}  {tot_kw:5d}  "
+              f"{eg:12.5f}  {eg_err:8.5f}  "
+              f"{ept:12.5f}  {ept_err:8.5f}  "
+              f"{otg.real:10.6f}  {otg_err.real:8.5f}"
+              f"{time.time() - init_time:10.2f}")
         
         if ept_err < 0.75 * options["max_error"] and n > 100:
             break
@@ -161,10 +161,10 @@ ept_cov_err = (np.sqrt(dE @ cov_te0e1 @ dE) / np.sqrt(len(wt_sp))).real
 ept_sp_err = np.std(ept_sp) / np.sqrt(nsamples)
 # t1_err = np.sqrt(np.sum(wt_sp * (t1_sp - t1)**2) / wt / nsamples).real
 
-print(f"Raw AFQMC/HF (Guide) energy:           {eg:.6f} ± {eg_err:.6f}")
-print(f"Raw Trial/Guide overlap ratio:          {t1.real:.6f} ± {t1_err:.6f}")
-print(f"Raw AFQMC/pt2CCSD energy (covariance): {ept:.6f} ± {ept_cov_err:.6f}")
-print(f"Raw AFQMC/pt2CCSD energy (dir sample): {ept:.6f} ± {ept_sp_err:.6f}")
+print(f"Raw AFQMC/HF (Guide) energy:           {eg:.5f} ± {eg_err:.5f}")
+print(f"Raw Trial/Guide overlap ratio:          {t1.real:.5f} ± {t1_err:.5f}")
+print(f"Raw AFQMC/pt2CCSD energy (covariance): {ept:.5f} ± {ept_cov_err:.5f}")
+print(f"Raw AFQMC/pt2CCSD energy (dir sample): {ept:.5f} ± {ept_sp_err:.5f}")
 
 print("\nRemove Outliers")
 
@@ -175,7 +175,7 @@ def filter_outliers(ept_sp, zeta=10):
     bound = zeta * mad
     mask = np.abs(ept_sp - median) < bound
     print(f"removing energies outside zeta > {zeta}")
-    print(f"Outlier energy bound [{median-bound:.6f}, {median+bound:.6f}]")
+    print(f"Outlier energy bound [{median-bound:.5f}, {median+bound:.5f}]")
     return mask
 
 mask = filter_outliers(ept_sp, zeta=30)
@@ -208,9 +208,9 @@ cov_te0e1 = np.cov([t1_clean, t2_clean, e0_clean, e1_clean])
 ept_cov_err = (np.sqrt(dE @ cov_te0e1 @ dE) / np.sqrt(nclean)).real
 ept_sp_err = np.std(ept_clean) / np.sqrt(nclean)
 
-print(f"Clean AFQMC/pt2CCSD overlap ratio:        {t1.real:.6f} ± {t1_err:.6f}")
-print(f"Clean AFQMC/pt2CCSD energy (covariance): {ept:.6f} ± {ept_cov_err:.6f}")
-print(f"Clean AFQMC/ptCCSD energy (dir sample):  {ept:.6f} ± {ept_sp_err:.6f}")
+print(f"Clean AFQMC/pt2CCSD overlap ratio:        {t1.real:.5f} ± {t1_err:.5f}")
+print(f"Clean AFQMC/pt2CCSD energy (covariance): {ept:.5f} ± {ept_cov_err:.5f}")
+print(f"Clean AFQMC/ptCCSD energy (dir sample):  {ept:.5f} ± {ept_sp_err:.5f}")
 
 print("\nBlocking Analysis")
 
@@ -219,8 +219,8 @@ ept_err = sampler.pt2blocking_analysis(
     wt_clean, t1_clean, t2_clean, e0_clean, e1_clean, h0, min_nblocks=40
     )
 
-print(f"Final AFQMC/pt2CCSD overlap ratio: {t1.real:.6f} ± {t1_err:.6f}")
+print(f"Final AFQMC/pt2CCSD overlap ratio: {t1.real:.5f} ± {t1_err:.5f}")
 # print(f"Final AFQMC/pt2CCSD energy: {eg:.6f} ± {eg_err:.6f}")
-print(f"Final AFQMC/pt2CCSD energy: {ept:.6f} ± {ept_err:.6f}")
+print(f"Final AFQMC/pt2CCSD energy: {ept:.5f} ± {ept_err:.5f}")
 print(f"Total run time: {time.time() - init_time:.2f}")
 print(f"\nAFQMC Sampling Finished\n")
