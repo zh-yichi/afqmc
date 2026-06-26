@@ -1122,8 +1122,8 @@ class pt2ccsd(rhf):
         e0 = self._calc_energy_restricted(walker, ham_data, wave_data)
         walker_bar = wave_data['exp_t1'] @ walker
         o0 = jnp.linalg.det(walker[:walker.shape[1], :]) ** 2
-        o_bar = jnp.linalg.det(walker_bar[:walker_bar.shape[1], :]) ** 2
-        t1olp = o_bar/o0 # <exp(T1)HF|walker>/<HF|walker>
+        obar = jnp.linalg.det(walker_bar[:walker_bar.shape[1], :]) ** 2
+        t1olp = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
         eorb = self._calc_eorb_bar(walker_bar, ham_data, wave_data)
         t2eorb, t2orb, e12bar = self._t2eorb_tc(walker_bar, ham_data, wave_data)
 

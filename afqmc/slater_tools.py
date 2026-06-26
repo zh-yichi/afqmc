@@ -12,7 +12,7 @@ For both restricted and unrestricted determinant
 import jax
 import jax.numpy as jnp
 from jax import scipy as jsp
-from jax import jit, lax
+from jax import jit, lax, jvp
 import opt_einsum as oe
 
 @jit
@@ -291,6 +291,12 @@ def u_energy(
     # into shape (nchunk, nchol_chunk, nocc, norb)
     # before calling this function
 
+    chola, cholb = chol
+    if len(chola.shape) == 3:
+        chola = chola.reshape(1,*chola.shape)
+    if len(cholb.shape) == 3:
+        cholb = cholb.reshape(1,*cholb.shape)
+
     green = u_green(bra, ket)
     e1 = oe.contract("pq,pq->", h1[0], green[0]) \
         + oe.contract("pq,pq->", h1[1], green[1])
@@ -315,7 +321,223 @@ def u_energy(
         carry += (e2aa_c + e2ab_c + e2bb_c) / 2
         return carry, 0.0
 
-    e2, _ = lax.scan(scanned_fun, 0.0, (chol[0], chol[1]))
+    e2, _ = lax.scan(scanned_fun, 0.0, (chola, cholb))
+
+    return h0 + e1 + e2
+
+@jit
+def u_energy_corr_nofock(bra, ket, chol):
+    '''
+    correlation energy E_corr = <bra|H-E0|ket>/<bra|ket> 
+    for mean-field bra
+    '''
+    chola, cholb = chol
+    if len(chola.shape) == 3:
+        chola = chola.reshape(1,*chola.shape)
+    if len(cholb.shape) == 3:
+        cholb = cholb.reshape(1,*cholb.shape)
+
+    norba, nocca = ket[0].shape
+    norbb, noccb = ket[1].shape
+    rot_chola = chola[:,:,:nocca,nocca:] # shape(nchol,nocc,nvir)
+    rot_cholb = cholb[:,:,:noccb,noccb:]
+
+    greena = (ket[0].dot(jnp.linalg.inv(ket[0][:nocca,:]))).T
+    greenb = (ket[1].dot(jnp.linalg.inv(ket[1][:noccb,:]))).T
+    greena = greena[:nocca, nocca:]
+    greenb = greenb[:noccb, noccb:]
+
+    def scan_chol(carry, x):
+        rot_chola_c, rot_cholb_c = x
+        lga_c = oe.contract('gia,ja->gij', rot_chola_c, greena, backend="jax")
+        lgb_c = oe.contract('gia,ja->gij', rot_cholb_c, greenb, backend="jax")
+        tr_lga_c = oe.contract('gii->g',lga_c, backend="jax")
+        tr_lgb_c = oe.contract('gii->g',lgb_c, backend="jax")
+        tr_lg_c = tr_lga_c + tr_lgb_c
+        e_col_c = jnp.sum(tr_lg_c**2) / 2
+        e_exc_c = (oe.contract('gij,gji->',lga_c,lga_c, backend="jax")
+                    + oe.contract('gij,gji->',lgb_c,lgb_c, backend="jax")) / 2
+        ecorr_c = e_col_c - e_exc_c
+        carry += ecorr_c
+        return carry, 0.0
+    
+    e2, _ = lax.scan(scan_chol, 0.0, (rot_chola, rot_cholb))
+
+    return e2
+
+@jit
+def u_energy_corr(bra, ket, fock, chol):
+    '''
+    correlation energy E_corr = <bra|H-E0|ket>/<bra|ket> 
+    '''
+    chola, cholb = chol
+    if len(chola.shape) == 3:
+        chola = chola.reshape(1,*chola.shape)
+    if len(cholb.shape) == 3:
+        cholb = cholb.reshape(1,*cholb.shape)
+
+    norba, nocca = ket[0].shape
+    norbb, noccb = ket[1].shape
+    rot_focka = fock[0][:nocca,nocca:]
+    rot_fockb = fock[1][:noccb,noccb:]
+    rot_chola = chola[:,:,:nocca,nocca:] # shape(nchol,nocc,nvir)
+    rot_cholb = cholb[:,:,:noccb,noccb:]
+
+    greena = (ket[0].dot(jnp.linalg.inv(ket[0][:nocca,:]))).T
+    greenb = (ket[1].dot(jnp.linalg.inv(ket[1][:noccb,:]))).T
+    greena = greena[:nocca, nocca:]
+    greenb = greenb[:noccb, noccb:]
+
+    e1a = oe.contract('ia,ia->', greena, rot_focka, backend="jax")
+    e1b = oe.contract('ia,ia->', greenb, rot_fockb, backend="jax")
+    e1 = e1a + e1b # should be zero for mean-field solution bra
+
+    def scan_chol(carry, x):
+        rot_chola_c, rot_cholb_c = x
+        lga_c = oe.contract('gia,ja->gij', rot_chola_c, greena, backend="jax")
+        lgb_c = oe.contract('gia,ja->gij', rot_cholb_c, greenb, backend="jax")
+        tr_lga_c = oe.contract('gii->g',lga_c, backend="jax")
+        tr_lgb_c = oe.contract('gii->g',lgb_c, backend="jax")
+        tr_lg_c = tr_lga_c + tr_lgb_c
+        e_col_c = jnp.sum(tr_lg_c**2) / 2
+        e_exc_c = (oe.contract('gij,gji->',lga_c,lga_c, backend="jax")
+                    + oe.contract('gij,gji->',lgb_c,lgb_c, backend="jax")) / 2
+        ecorr_c = e_col_c - e_exc_c
+        carry += ecorr_c
+        return carry, 0.0
+    
+    e2, _ = lax.scan(scan_chol, 0.0, (rot_chola, rot_cholb))
+
+    return e1 + e2
+
+@jit
+def u_energy_corr_frag(bra, ket, fock, chol, pfrag):
+    '''
+    fragment correlation energy 
+    E_frag = <bra|P_frag (H-E0)|ket>/<bra|ket> 
+    '''
+
+    chola, cholb = chol
+    if len(chola.shape) == 3:
+        chola = chola.reshape(1,*chola.shape)
+    if len(cholb.shape) == 3:
+        cholb = cholb.reshape(1,*cholb.shape)
+
+    norba, nocca = ket[0].shape 
+    norbb, noccb = ket[1].shape
+    pfraga, pfragb = pfrag
+    rot_focka = fock[0][:nocca,nocca:]
+    rot_fockb = fock[1][:noccb,noccb:]
+    rot_chola = chola[:,:,:nocca,nocca:] # shape(nchunk,nchol_chunk,nocc,nvir)
+    rot_cholb = cholb[:,:,:noccb,noccb:]
+
+    gfa = (ket[0].dot(jnp.linalg.inv(ket[0][:nocca,:]))).T
+    gfb = (ket[1].dot(jnp.linalg.inv(ket[1][:noccb,:]))).T
+    gfa = gfa[:nocca, nocca:]
+    gfb = gfb[:noccb, noccb:]
+    e1a = oe.contract('ia,ik,ka->', gfa, pfraga, rot_focka, backend="jax")
+    e1b = oe.contract('ia,ik,ka->', gfb, pfragb, rot_fockb, backend="jax")
+    e1 = e1a + e1b
+
+    def scan_chunk(carry, x):
+        rot_chola_c, rot_cholb_c = x
+        # explicit contraction within the chunk (g is chunk-local aux index)
+        lga = oe.contract('gia,ja->gij', rot_chola_c, gfa, backend="jax")
+        lgb = oe.contract('gia,ja->gij', rot_cholb_c, gfb, backend="jax")
+        tr_lga = oe.contract('gii->g', lga, backend="jax")
+        tr_lgb = oe.contract('gii->g', lgb, backend="jax")
+        lga_frag = oe.contract('gik,ik->g', lga, pfraga, backend="jax")
+        lgb_frag = oe.contract('gik,ik->g', lgb, pfragb, backend="jax")
+        e2aa = oe.contract('g,g->', lga_frag, tr_lga, backend="jax") \
+            - oe.contract('gij,gjk,ik->', lga, lga, pfraga, backend="jax")
+        e2ab = oe.contract('g,g->', lga_frag, tr_lgb, backend="jax")
+        e2ba = oe.contract('g,g->', lgb_frag, tr_lga, backend="jax")
+        e2bb = oe.contract('g,g->', lgb_frag, tr_lgb, backend="jax") \
+            - oe.contract('gij,gjk,ik->', lgb, lgb, pfragb, backend="jax")
+        carry += 0.5 * (e2aa + e2ab + e2ba + e2bb)
+        return carry, 0.0
+
+    e2, _ = lax.scan(scan_chunk, 0.0, (rot_chola, rot_cholb))
+
+    return e1 + e2
+
+# automatic differetiation energy good for debugging
+@jit
+def u_olp_exp1(x: float, h1_mod: tuple, bra:tuple, ket:tuple):
+    '''
+    <bra|exp(x*h1_mod)|ket>
+    '''
+    ket_up_1x = ket[0] + x * h1_mod[0].dot(ket[0])
+    ket_dn_1x = ket[1] + x * h1_mod[1].dot(ket[1])
+    ket1x = (ket_up_1x, ket_dn_1x)
+    o1x = u_overlap(bra, ket1x)
+
+    return o1x
+
+@jit
+def u_olp_exp2_i(x: float, chol_i: tuple, bra: tuple, ket: tuple) -> complex:
+    '''
+    <bra|exp(x*chol_i)|ket>
+    '''
+    ket_up_2x = (
+        ket[0] + x * chol_i[0].dot(ket[0]) 
+        + x**2 / 2.0 * chol_i[0].dot(chol_i[0].dot(ket[0]))
+        )
+    ket_dn_2x = (
+        ket[1] + x * chol_i[1].dot(ket[1])
+        + x**2 / 2.0 * chol_i[1].dot(chol_i[1].dot(ket[1]))
+        )
+    
+    ket2x = (ket_up_2x, ket_dn_2x)
+    o2x = u_overlap(bra, ket2x)
+    
+    return o2x
+
+@jit
+def d2_u_olp_exp2_i(chol_i, bra, ket):
+    x = 0.0
+    f = lambda a: u_olp_exp2_i(a, chol_i, bra, ket)
+    _, d2f = jax.jvp(lambda x: jax.jvp(f, [x], [1.0])[1], [x], [1.0])
+    return d2f
+
+@jit
+def d2_u_olp_exp2(chol, bra, ket):
+
+    def scan_chol(carry, chol_i):
+        d2_exp2_i = d2_u_olp_exp2_i(chol_i, bra, ket)
+        return carry + d2_exp2_i, None
+    
+    init = 0.0
+    e2_sum, _ = jax.lax.scan(scan_chol, init, chol)
+    return e2_sum / 2 
+
+@jit
+def u_energy_ad(bra, ket, h0, h1mod, chol):
+    '''
+    energy = e0 + e1 +e2
+    e0 = h0
+    e1 = partial_x <bra|exp(xh1mod)|ket>/<bra|ket>
+    e2 = 1/2 partial_x2 <bra|exp(xchol)|ket>/<bra|ket>
+    h1mod = h1 - 1/2 v_gpr v_gqr from commutator
+    '''
+    # AD chol can't be chunked in the current implementation
+    chola, cholb = chol
+    if len(chola.shape) == 4:
+        nc, nchol_c, _, _ = chola.shape
+        chola = chola.reshape(nc*nchol_c,*chola.shape[-2:])
+    if len(cholb.shape) == 4:
+        nc, nchol_c, _, _ = cholb.shape
+        cholb = cholb.reshape(nc*nchol_c,*cholb.shape[-2:])
+
+    # one body
+    x = 0.0
+    f1 = lambda a: u_olp_exp1(a, h1mod, bra, ket)
+    o0, dexp1 = jvp(f1, [x], [1.0])
+    e1 = dexp1/o0
+
+    # two body
+    ddexp2 = d2_u_olp_exp2(chol, bra, ket)
+    e2 = ddexp2/o0
 
     return h0 + e1 + e2
 

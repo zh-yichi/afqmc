@@ -18,9 +18,6 @@ init_time = time.time()
 
 ham_data, prop, trial, wave_data, sampler, options = (prep.prep_afqmc_run())
 
-print(f"Trial: {trial}")
-print(f"Sampler: {sampler}")
-
 ### initialize propagation
 trial_rdm1 = trial.get_rdm1(wave_data)
 if "rdm1" not in wave_data:

@@ -168,9 +168,7 @@ class sampler_pt2(sampler):
             = trial.calc_eorb_pt2(prop_data["walkers"],ham_data,wave_data)
         
         e0 = jnp.real(e0)
-        # e0 = jnp.where(jnp.abs(e0 - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt), prop_data["e_estimate"], e0)
         outlier = jnp.abs(e0 - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        e0 = jnp.where(outlier, prop_data["e_estimate"], e0)
         weights = jnp.where(outlier, 0.0, prop_data["weights"])
 
         eorb = t1olp * eorb

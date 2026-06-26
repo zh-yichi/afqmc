@@ -49,13 +49,6 @@ def run_afqmc(mf,
               atom_group = None,
               plot_las = False,
               ):
-    
-    # if lo_coeff is None:
-    #     try:
-    #         lo_coeff = np.load(lo_coeff_file)["lo_coeff"]
-    #     except:
-    #         raise ValueError(
-    #             f"lo_coeff was not provided and could not be loaded from '{lo_coeff_file}'")
 
     spin_type = prep.kind(lo_coeff)
 
@@ -96,7 +89,6 @@ def run_afqmc(mf,
 
     las_center = [None]*nfrag_run
     las_size = [None]*nfrag_run
-    # las_size = np.zeros(nfrag, dtype='int32')
     lno_emp2 = np.zeros(nfrag_run, dtype='float64')
     lno_ecc  = np.zeros(nfrag_run, dtype='float64')
     lno_eqmc = np.zeros(nfrag_run, dtype='float64')

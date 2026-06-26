@@ -6,6 +6,7 @@ jax.config.update("jax_enable_x64", True)
 
 from jax import numpy as jnp
 import opt_einsum as oe
+from jax import jit
 
 import h5py
 import numpy as np
@@ -166,6 +167,21 @@ def h1e_uas(mf, mo_coeff, ncas, ncore, useDF=False):
     # print(f"build ecore time: {time2 - time1:.6f} s")
     # print(f"build h1eff time: {time3 - time0:.6f} s")
     return h1eff, energy_core
+
+@partial(jit, static_argnums=0)
+def get_ufock(nocc, h1, chol):
+    nocca, noccb = nocc
+    h1a, h1b = h1
+    chola, cholb = chol
+    la = oe.contract('gii->g', chola[:,:nocca,:nocca], backend="jax")
+    lb = oe.contract('gii->g', cholb[:,:noccb,:noccb], backend="jax")
+    jeffa = oe.contract('gpq,g->pq', chola, la+lb, backend="jax")
+    jeffb = oe.contract('gpq,g->pq', cholb, la+lb, backend="jax")
+    keffa = oe.contract('gpj,gjq->pq', chola[:,:,:nocca], chola[:,:nocca,:], backend="jax")
+    keffb = oe.contract('gpj,gjq->pq', cholb[:,:,:noccb], cholb[:,:noccb,:], backend="jax")
+    focka = h1a + jeffa - keffa
+    fockb = h1b + jeffb - keffb
+    return (focka, fockb)
 
 def prjmo(prj, s1e, mo):
     # prj and reconstruct mo
