@@ -117,7 +117,6 @@ def calc_intermediate(trial, ham_data: dict, wave_data: dict):
 
     return ham_data
 
-
 def energy_formula(weights, samples, ham_data):
     # samples shape: (nsamples, nterms)
     h0 = ham_data["h0"]

@@ -10,7 +10,7 @@ import opt_einsum as oe
 
 import jax
 import jax.numpy as jnp
-# from jax import scipy as jsp
+from jax import scipy as jsp
 # from jax import jit, lax, random, vmap
 from jax import random
 
@@ -38,310 +38,6 @@ def print_start():
 """
     print(banner)
 
-# def replicate_walker(walker, nwalker):
-#     if isinstance(walker, jax.Array):
-#         walkers = jnp.array([walker] * nwalker, dtype=jnp.complex128)
-#     elif isinstance(walker, (tuple, list)):
-#         walkers_a = jnp.array([walker[0]] * nwalker, dtype=jnp.complex128)
-#         walkers_b = jnp.array([walker[1]] * nwalker, dtype=jnp.complex128)
-#         walkers = [walkers_a, walkers_b]
-#     return walkers
-
-# def init_walkers_1rdm(
-#         trial,
-#         wave_data: dict, 
-#         n_walkers: int, 
-#         restricted: bool = False
-#         ):
-#     """Initialize walkers by rdm1 natural orbitals.
-
-#     Args:
-#         trial: trial wavefunction object
-#         wave_data: The trial wave function data.
-#         n_walkers: The number of walkers.
-#         restricted: Whether the walkers should be restricted.
-
-#     Returns:
-#         walkers: The initial walkers.
-#             If restricted, a single jax.Array of shape (nwalkers, norb, nelec[0]).
-#             If unrestricted, a list of two jax.Arrays each of shape (nwalkers, norb, nelec[sigma]).
-#     """
-#     rdm1 = trial.get_rdm1(wave_data)
-#     natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : trial.nelec[0]]
-#     natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : trial.nelec[1]]
-    
-#     if restricted:
-#         if trial.nelec[0] == trial.nelec[1]:
-#             det_overlap = np.linalg.det(
-#                 natorbs_up[:, : trial.nelec[0]].T @ natorbs_dn[:, : trial.nelec[1]]
-#             )
-#             if (
-#                 np.abs(det_overlap) > 1e-3
-#             ):  # probably should scale this threshold with number of electrons
-#                 return jnp.array([natorbs_up + 0.0j] * n_walkers)
-#             else:
-#                 overlaps = np.array(
-#                     [
-#                         natorbs_up[:, i].T @ natorbs_dn[:, i]
-#                         for i in range(trial.nelec[0])
-#                     ]
-#                 )
-#                 new_vecs = natorbs_up[:, : trial.nelec[0]] + np.einsum(
-#                     "ij,j->ij", natorbs_dn[:, : trial.nelec[1]], np.sign(overlaps)
-#                 )
-#                 new_vecs = np.linalg.qr(new_vecs)[0]
-#                 det_overlap = np.linalg.det(
-#                     new_vecs.T @ natorbs_up[:, : trial.nelec[0]]
-#                 ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : trial.nelec[1]])
-#                 if np.abs(det_overlap) > 1e-3:
-#                     return jnp.array([new_vecs + 0.0j] * n_walkers)
-#                 else:
-#                     raise ValueError(
-#                         "Cannot find a set of RHF orbitals with good trial overlap."
-#                     )
-#         else:
-#             # bring the dn orbital projection onto up space to the front
-#             dn_proj = natorbs_up.T.conj() @ natorbs_dn
-#             proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
-#             orbs = natorbs_up @ proj_orbs
-#             return jnp.array([orbs + 0.0j] * n_walkers)
-#     else:
-#         return [
-#             jnp.array([natorbs_up + 0.0j] * n_walkers),
-#             jnp.array([natorbs_dn + 0.0j] * n_walkers),
-#         ]
-
-#### restricted ####
-# def decompose_rt2(t2, thresh=1e-8):
-#     # adapted from Yann
-
-#     # nO = self.nelec[0]
-#     # nV = self.norb - nO
-
-#     nocc, nvir, _, _ = t2.shape
-#     npair = nocc * nvir
-
-#     # assert t2.shape == (nO, nV, nO, nV)
-    
-#     t2 = t2.reshape(npair, npair)
-#     e_val, e_vec = jnp.linalg.eigh(t2)
-
-#     # Keep only important modes
-#     mask = jnp.abs(e_val) > thresh
-#     e_val_trunc = e_val[mask]
-#     e_vec_trunc = e_vec[:, mask]
-
-#     tau = e_vec_trunc @ jnp.diag(jnp.sqrt(e_val_trunc + 0.0j))
-    
-#     err = jnp.linalg.norm(t2 - tau @ tau.T)
-#     assert err < 10 * thresh
-
-#     # print(f'Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
-#     # print(f'cutoff = {thresh:.2e} | error = {err:.2e}')
-#     # print(f'number of T2 decomposition vectors {len(e_val_trunc)}')
-
-#     tau = tau.T.reshape(-1, nocc, nvir)
-
-#     return tau
-
-# @jit
-# def rthouless(init_slater, t):
-#     '''
-#     restricted thouless transformation
-#     |psi'> = exp(t_ia a+ i)|psi>
-#     use the block form of t, no need to apply full exp(t)
-#     equivalent to the function below
-#     '''
-#     # norb, nocc = self.norb, self.nelec[0]
-#     # nvir = norb - nocc
-#     nocc, nvir = t.shape
-#     norb = nocc + nvir
-#     assert init_slater.shape == (norb, nocc)
-#     t_full = jnp.eye(norb, dtype=jnp.complex128)
-#     exp_t = t_full.at[:nocc, nocc:].set(t)
-#     return exp_t.T @ init_slater
-
-# @jit
-# def rthouless_full(init_slater, t):
-#     '''
-#     restricted thouless transformation
-#     |psi'> = exp(t_ia a+ i)|psi>
-#     apply full exp(t)
-#     equivalent to the function above
-#     '''
-#     nocc, nvir = t.shape
-#     norb = nocc + nvir
-#     assert init_slater.shape == (norb, nocc)
-#     t_full = jnp.zeros((norb, norb), dtype=jnp.complex128)
-#     t_full = t_full.at[:nocc, nocc:].set(t)
-#     exp_t = jsp.linalg.expm(t_full)
-#     return exp_t.T @ init_slater
-
-# @partial(jit, static_argnames=("n_walkers"))
-# def get_rccsd_walkers(prop_data, wave_data, n_walkers):
-#     prop_data["key"], subkey = random.split(prop_data["key"])
-    
-#     fieldy = random.normal(
-#         subkey,
-#         shape=(
-#             n_walkers,
-#             wave_data['tau'].shape[0],
-#         ),
-#     )
-#     # ytaus shape (nwalker, nocc, nvir)
-#     ytaus = oe.contract("wg,gia->wia", fieldy, wave_data['tau'], backend='jax')
-
-#     slaters = vmap(lambda y: rthouless(wave_data['mo_t'], y))(ytaus)
-
-#     # mo_t = wave_data['mo_t']
-
-#     # def scan_body(carry, ytau):
-#     #     # ytau_up, ytau_dn = ytau
-#     #     slater = rthouless(wave_data['mo_t'], ytau)
-#     #     return carry, slater
-
-#     # # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
-#     # _, slaters = lax.scan(scan_body, None, ytaus)
-
-#     return slaters, prop_data
-
-
-# def decompose_ut2(t2, thresh=1e-8):
-#     # adapted from Yann
-#     # norb = trial.norb
-#     # nocca, noccb = trial.nelec
-#     # nvira, nvirb = (norb - nocca, norb - noccb)
-
-#     t2aa, t2ab, t2bb = t2
-#     nocca, nvira, noccb, nvirb = t2ab.shape
-#     # Number of excitation pairs
-#     npaira = nocca * nvira
-#     npairb = noccb * nvirb
-
-#     assert t2aa.shape == (nocca, nvira, nocca, nvira)
-#     # assert t2ab.shape == (nocca, nvira, noccb, nvirb)
-#     assert t2bb.shape == (noccb, nvirb, noccb, nvirb)
-
-#     # print('Decomposing Unrestricted T2 amplitudes')
-
-#     t2aa = t2aa.reshape(npaira, npaira)
-#     t2ab = t2ab.reshape(npaira, npairb)
-#     t2bb = t2bb.reshape(npairb, npairb)
-
-#     # Symmetric full t2 
-#     # [[ t2aa/2  t2ab   ]]
-#     # [[ t2ab^T  t2bb/2 ]]
-#     t2full = np.zeros((npaira + npairb, npaira + npairb))
-#     t2full[:npaira, :npaira] = 0.5 * t2aa
-#     t2full[npaira:, :npaira] = t2ab.T
-#     t2full[:npaira, npaira:] = t2ab
-#     t2full[npaira:, npaira:] = 0.5 * t2bb
-#     t2full = jnp.array(t2full)
-
-#     # t2 = LL^T
-#     e_val, e_vec = jnp.linalg.eigh(t2full)
-
-#     # Keep only important modes
-#     mask = jnp.abs(e_val) > thresh
-#     e_val_trunc = e_val[mask]
-#     e_vec_trunc = e_vec[:, mask]
-    
-#     tau = e_vec_trunc @ jnp.diag(np.sqrt(e_val_trunc + 0.0j))
-#     err = jnp.linalg.norm(t2full - tau @ tau.T)
-#     assert err < 10 * thresh
-#     # print(f'Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
-#     # print(f'SVD cutoff = {thresh:.2e} | error = {err:.2e}')
-#     # print(f'number of T2 decomposition vectors {len(e_val_trunc)}')
-
-#     # alpha/beta operators for HS
-#     # Summation on the left to have a list of operators
-#     taua = tau.T[:,:npaira]
-#     taub = tau.T[:, npaira:]
-#     taua = taua.reshape(-1, nocca, nvira)
-#     taub = taub.reshape(-1, noccb, nvirb)
-
-#     return [taua, taub]
-
-# @jit
-# def uthouless(slater, tau):
-#     # calculate |psi'> = exp(t_ia a+ i)|psi>
-    
-#     slater_a, slater_b = slater
-#     ta, tb = tau
-#     nocc_a, nvir_a = ta.shape
-#     nocc_b, nvir_b = tb.shape
-    
-#     norb_a = nocc_a + nvir_a
-#     norb_b = nocc_b + nvir_b
-    
-#     assert norb_a == norb_b
-#     norb = norb_a
-    
-#     assert slater_a.shape == (norb, nocc_a)
-#     assert slater_b.shape == (norb, nocc_b)
-
-#     ta_full = jnp.eye(norb, dtype=jnp.complex128)
-#     tb_full = jnp.eye(norb, dtype=jnp.complex128)
-#     exp_ta = ta_full.at[:nocc_a, nocc_a:].set(ta)
-#     exp_tb = tb_full.at[:nocc_b, nocc_b:].set(tb)
-
-#     slater_ta = exp_ta.T @ slater_a
-#     slater_tb = exp_tb.T @ slater_b
-
-#     return [slater_ta, slater_tb]
-
-# def thouless(slater, tau):
-#     if isinstance(slater, jax.Array) and len(slater.shape) == 2:
-#         return rthouless(slater, tau)
-#     elif isinstance(slater, (tuple, list)) and isinstance(tau, (tuple, list)):
-#         return uthouless(slater, tau)
-
-# @partial(jit, static_argnames=("n_walkers"))
-# def get_uccsd_walkers(prop_data, wave_data, n_walkers):
-#     prop_data["key"], subkey = random.split(prop_data["key"])
-    
-#     fieldy = random.normal(
-#         subkey,
-#         shape=(
-#             n_walkers,
-#             wave_data['tau'][0].shape[0],
-#         ),
-#     )
-#     # ytaus shape (nwalker, nocc, nvir)
-#     ytaus_up = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][0], backend='jax')
-#     ytaus_dn = oe.contract("wg,gia->wia", fieldy, wave_data['tau'][1], backend='jax')
-
-#     mo_t = (wave_data["mo_ta"], wave_data["mo_tb"])
-    
-#     slaters_up, slaters_dn = vmap(
-#         lambda yu, yd: uthouless(mo_t, (yu, yd)))(ytaus_up, ytaus_dn)
-
-#     # mo_t = [wave_data['mo_ta'], wave_data['mo_tb']]
-
-#     # def scan_body(carry, ytau):
-#     #     ytau_up, ytau_dn = ytau
-#     #     slater_up, slater_dn = uthouless(mo_t, [ytau_up, ytau_dn])
-#     #     return carry, (slater_up, slater_dn)
-
-#     # # scan iterates over leading axis (n_walkers) of (ytaus_up, ytaus_dn)
-#     # _, (slaters_up, slaters_dn) = lax.scan(scan_body, None, (ytaus_up, ytaus_dn),)
-
-#     return [slaters_up, slaters_dn], prop_data
-
-
-# def get_ccsd_walkers(prop_data, wave_data, n_walkers, walker_type):
-#     if walker_type == "rhf":
-#         if "tau" not in wave_data:
-#             wave_data["tau"] = decompose_rt2(wave_data["t2"])
-#         return get_rccsd_walkers(prop_data, wave_data, n_walkers)
-#     elif walker_type == "uhf":
-#         if "tau" not in wave_data:
-#             wave_data["tau"] = decompose_ut2([wave_data["t2aa"],
-#                                               wave_data["t2ab"],
-#                                               wave_data["t2bb"]])
-#         return get_uccsd_walkers(prop_data, wave_data, n_walkers)
-#     else:
-#         raise ValueError(f"unsupport CCSD initial walker_type: {walker_type}")
 
 def load_cc_amplitude(wave_data=None, amp_file="amplitudes.npz"):
     if wave_data is None:
@@ -373,7 +69,6 @@ def load_ci_amplitude(wave_data=None, amp_file="amplitudes.npz"):
         wave_data["ci2AB"] = ci2[1]
         wave_data["ci2BB"] = ci2[2]
     return wave_data
-
 
 def init_hf_prop_data(
     wave,
@@ -679,7 +374,24 @@ def init_afqmc(options=None,
                 nchol_chunk=options["nchol_chunk"],
                 mix_precision=options["mix_precision"],
                 )
-
+            if "bar" in options["trial"]:
+                trial = wavefunctions_unrestricted.upt2ccsd_bar(
+                    norb, nelec_sp, 
+                    n_batch=options["n_batch"], 
+                    nchol_chunk=options["nchol_chunk"],
+                    mix_precision=options["mix_precision"],
+                    )
+                wave_data['mo_ta'] = None
+                wave_data['mo_tb'] = None
+                t1a, t1b = wave_data["t1a"], wave_data["t1b"]
+                t1a_full = np.zeros((norb, norb), dtype=np.float64)
+                t1b_full = np.zeros((norb, norb), dtype=np.float64)
+                t1a_full[:nocc_a, nocc_a:] = t1a
+                t1b_full[:nocc_b, nocc_b:] = t1b
+                wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
+                wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
+                wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
+                wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
             if "ad" in options["trial"]:
                 trial = wavefunctions_unrestricted.upt2ccsd_ad(
                     norb, nelec_sp, n_batch=options["n_batch"])
@@ -698,7 +410,6 @@ def init_afqmc(options=None,
                                                     wave_data['mo_tb'][:nocc_b,:nocc_b].T,
                                                     wave_data["t2bb"], 
                                                     backend='jax')
-                
             if "eff" in options["trial"]:
                 trial = wavefunctions_unrestricted.upt2ccsd_eff(
                     norb, nelec_sp, n_batch=options["n_batch"])
@@ -911,7 +622,7 @@ def init_afqmc_exp(
             trial_energy_fn = rpt2ccsd_wfn.calc_energy
             trial_intermediate_fn = rpt2ccsd_wfn.calc_intermediate
             energy_formula_fn = rpt2ccsd_wfn.energy_formula
-            wave_data["mo_t"] = slater_tools.thouless(wave_data["mo_coeff"], wave_data["t1"])
+            # wave_data["mo_t"] = slater_tools.thouless(wave_data["mo_coeff"], wave_data["t1"])
 
     
     elif spin_type == "unrestricted":
@@ -944,8 +655,11 @@ def init_afqmc_exp(
             trial_energy_fn = upt2ccsd_wfn.calc_energy
             trial_intermediate_fn = upt2ccsd_wfn.calc_intermediate
             energy_formula_fn = upt2ccsd_wfn.energy_formula
-            (wave_data['mo_ta'], wave_data['mo_tb']) \
-                = slater_tools.thouless(wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
+        elif options["trial"] == "upt2ccsd_bar":
+            trial_overlap_fn = upt2ccsd_wfn.calc_overlap_bar
+            trial_energy_fn = upt2ccsd_wfn.calc_energy_bar
+            trial_intermediate_fn = upt2ccsd_wfn.calc_intermediate_bar
+            energy_formula_fn = upt2ccsd_wfn.energy_formula
 
     if options["walker_type"] == "rhf":
         prop = propagation.propagator_restricted(

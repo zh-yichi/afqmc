@@ -1,10 +1,15 @@
 import jax
 import jax.numpy as jnp
+from jax import jit, lax, jvp
+
 import opt_einsum as oe
 import numpy as np
 
 from pyscf.cc.ccsd import CCSD
 from pyscf.cc.uccsd import UCCSD
+
+from functools import partial
+from afqmc import slater_tools
 
 def decompose_rt2(t2, thresh=1e-8):
     nocc, nvir, _, _ = t2.shape
@@ -165,3 +170,440 @@ def cc2ci(t1, t2):
     else:
         raise TypeError(f"restricted T1 T2 should be jax.array "
                         f"and tuple for unrestricted case")
+    
+@partial(jit, static_argnums=(5,6))
+def ut2h12(bra, ket, t2, h1, chol, mix_precision=False, nchol_chunk=1):
+    '''
+    calculate <bra|T2(h1+h2)|ket>/<bra|ket>
+    general form of the unrestricted bra state
+    return <bra|ket> <T2> <h1+h2> <T2(h1+h2)> 
+    '''
+    if mix_precision:
+        rtype = jnp.float32
+        ctype = jnp.complex64
+    else:
+        rtype = jnp.float64
+        ctype = jnp.complex128
+
+    ket_up, ket_dn = ket
+    norb_a, nocc_a = ket_up.shape
+    norb_b, nocc_b = ket_dn.shape
+    t2aa, t2ab, t2bb = t2
+    h1_a, h1_b = h1
+    chol_a, chol_b = chol
+
+    green_a, green_b = slater_tools.u_green(bra, ket)
+    greenp_a = (green_a - jnp.eye(norb_a))[:,nocc_a:]
+    greenp_b = (green_b - jnp.eye(norb_b))[:,nocc_b:]
+
+    hg_a = oe.contract("pq,pq->", h1_a, green_a, backend="jax")
+    hg_b = oe.contract("pq,pq->", h1_b, green_b, backend="jax")
+    e1_0 = hg_a + hg_b # <bra|h1|ket>/<bra|ket>
+
+    # <bra|T2 h1|ket>/<bra|ket>
+    # double excitations
+    t2g_a = oe.contract("iajb,ia->jb", t2aa, green_a[:nocc_a,nocc_a:], backend="jax") / 4
+    t2g_b = oe.contract("iajb,ia->jb", t2bb, green_b[:nocc_b,nocc_b:], backend="jax") / 4
+    t2g_ab_a = oe.contract("iajb,jb->ia", t2ab, green_b[:nocc_b,nocc_b:], backend="jax")
+    t2g_ab_b = oe.contract("iajb,ia->jb", t2ab, green_a[:nocc_a,nocc_a:], backend="jax")
+    # t_iajb (G_ia G_jb - G_ib G_ja)
+    gt2g_a = oe.contract("jb,jb->", t2g_a, green_a[:nocc_a,nocc_a:], backend="jax")
+    gt2g_b = oe.contract("jb,jb->", t2g_b, green_b[:nocc_b,nocc_b:], backend="jax")
+    gt2g_ab = oe.contract("ia,ia->", t2g_ab_a, green_a[:nocc_a,nocc_a:], backend="jax")
+    gt2g = 2 * (gt2g_a + gt2g_b) + gt2g_ab # <bra|T2|ket>/<bra|ket>
+    e1_2_1 = e1_0 * gt2g
+    
+    t2_green_aaa = (greenp_a @ t2g_a.T) @ green_a[:nocc_a,:] # Gp_pb t_iajb G_ia G_jq
+    t2_green_aba = (greenp_a @ t2g_ab_a.T) @ green_a[:nocc_a,:]
+    t2_green_bbb = (greenp_b @ t2g_b.T) @ green_b[:nocc_b,:]
+    t2_green_abb = (greenp_b @ t2g_ab_b.T) @ green_b[:nocc_b,:]
+    t2_green_a_a = 4 * t2_green_aaa + t2_green_aba # connect a->a
+    t2_green_b_b = 4 * t2_green_bbb + t2_green_abb # connect b->b
+
+    e1_2_2_a = -oe.contract("pq,pq->", h1_a, t2_green_a_a, backend="jax")
+    e1_2_2_b = -oe.contract("pq,pq->", h1_b, t2_green_b_b, backend="jax")
+    e1_2_2 = e1_2_2_a + e1_2_2_b
+    e1_2 = e1_2_1 + e1_2_2  # <bra|T2 h1|ket>/<bra|ket>
+
+    # <bra|T2 h2|ket>/<bra|ket>
+    nchol = chol_a.shape[0]
+    nchunks = -(-nchol // nchol_chunk)
+    pad = nchunks * nchol_chunk - nchol
+    chol_a = jnp.pad(chol_a, ((0, pad), (0, 0), (0, 0)))
+    chol_b = jnp.pad(chol_b, ((0, pad), (0, 0), (0, 0)))
+    chol_a = chol_a.reshape(nchunks, nchol_chunk, *chol_a.shape[-2:])
+    chol_b = chol_b.reshape(nchunks, nchol_chunk, *chol_b.shape[-2:])
+
+    def scanned_fun(carry, x):
+        chol_a_c, chol_b_c = x
+
+        # e2_0
+        gl_a_c = oe.contract("pr,gqr->gpq",
+                            green_a.astype(jnp.complex128),
+                            chol_a_c.astype(jnp.float64), 
+                            backend="jax").astype(jnp.complex128)
+        gl_b_c = oe.contract("pr,gqr->gpq", 
+                            green_b.astype(jnp.complex128),
+                            chol_b_c.astype(jnp.float64), 
+                            backend="jax")
+        tr_gl_a = oe.contract("gpp->g", 
+                            gl_a_c.astype(jnp.complex128), 
+                            backend="jax").astype(jnp.complex128)
+        tr_gl_b = oe.contract("gpp->g", 
+                            gl_b_c.astype(jnp.complex128), 
+                            backend="jax").astype(jnp.complex128)
+        ex_gl_a = oe.contract("gpq,gqp->g", 
+                            gl_a_c.astype(jnp.complex128), 
+                            gl_a_c.astype(jnp.complex128), 
+                            backend="jax").astype(jnp.complex128)
+        ex_gl_b = oe.contract("gpq,gqp->g", 
+                            gl_b_c.astype(jnp.complex128), 
+                            gl_b_c.astype(jnp.complex128), 
+                            backend="jax").astype(jnp.complex128)
+        e2_0_1_c = jnp.sum((tr_gl_a + tr_gl_b) ** 2) / 2.0
+        e2_0_2_c = -jnp.sum(ex_gl_a + ex_gl_b) / 2.0
+
+        carry[0] += (e2_0_1_c + e2_0_2_c).astype(jnp.complex128)
+
+        # e2_2
+        lt2g_a_c = oe.contract("gpr,qr->gpq", 
+                                chol_a_c.astype(jnp.float64), 
+                                (2*t2_green_a_a).astype(jnp.complex128), 
+                                backend="jax")
+        lt2g_b_c = oe.contract("gpr,qr->gpq", 
+                                chol_b_c.astype(jnp.float64), 
+                                (2*t2_green_b_b).astype(jnp.complex128), 
+                                backend="jax")
+        tr_lt2g_a_c = oe.contract("gqq->g", lt2g_a_c.astype(jnp.complex128), backend="jax")
+        tr_lt2g_b_c = oe.contract("gqq->g", lt2g_b_c.astype(jnp.complex128), backend="jax")
+        carry[1] += -(((tr_lt2g_a_c.astype(ctype) + tr_lt2g_b_c.astype(ctype)) 
+                        @ (tr_gl_a.astype(ctype) + tr_gl_b.astype(ctype))
+                        ) / 2.0).astype(jnp.complex128)
+        carry[2] += ((oe.contract("gpq,gpq->", 
+                                    gl_a_c.astype(ctype), 
+                                    lt2g_a_c.astype(ctype), 
+                                    backend="jax")
+                    + oe.contract("gpq,gpq->", 
+                                    gl_b_c.astype(ctype), 
+                                    lt2g_b_c.astype(ctype), 
+                                    backend="jax")) 
+                    / 2).astype(jnp.complex128)
+
+        glgp_a_c = oe.contract("giq,qa->gia",
+                            gl_a_c[:,:nocc_a,:].astype(jnp.complex128), 
+                            greenp_a.astype(jnp.complex128), 
+                            backend="jax")
+        glgp_b_c = oe.contract("giq,qa->gia", 
+                            gl_b_c[:,:nocc_b,:].astype(jnp.complex128), 
+                            greenp_b.astype(jnp.complex128), 
+                            backend="jax")
+        
+        lt2_aa = oe.contract("gia,iajb->gjb", 
+                                glgp_a_c.astype(ctype), 
+                                t2aa.astype(rtype), 
+                                backend="jax")
+        lt2_bb = oe.contract("gia,iajb->gjb", 
+                                glgp_b_c.astype(ctype), 
+                                t2bb.astype(rtype), 
+                                backend="jax")
+        lt2_ab = oe.contract("gia,iajb->gjb", 
+                                glgp_a_c.astype(ctype), 
+                                t2ab.astype(rtype), 
+                                backend="jax")
+        
+        l2t2_aa = 0.5 * oe.contract("gjb,gjb->",
+                                    lt2_aa.astype(ctype),
+                                    glgp_a_c.astype(ctype), 
+                                    backend="jax").astype(jnp.complex128)
+        l2t2_bb = 0.5 * oe.contract("gjb,gjb->",
+                                    lt2_bb.astype(ctype),
+                                    glgp_b_c.astype(ctype), 
+                                    backend="jax").astype(jnp.complex128)
+        l2t2_ab = oe.contract("gjb,gjb->",
+                                lt2_ab.astype(ctype),
+                                glgp_b_c.astype(ctype), 
+                                backend="jax").astype(jnp.complex128)
+        
+        carry[3] += (l2t2_aa + l2t2_bb + l2t2_ab).astype(jnp.complex128)
+        return carry, 0.0
+
+    [e2_0, e2_2_2_1, e2_2_2_2, e2_2_3], _ = lax.scan(
+        scanned_fun, [0.0, 0.0, 0.0, 0.0], (chol_a, chol_b)
+    )
+
+    e2_2_1 = e2_0 * gt2g
+    e2_2_2 = e2_2_2_1 + e2_2_2_2
+    e2_2 = e2_2_1 + e2_2_2 + e2_2_3 # <bra|T2 h2|ket>/<bra|ket>
+
+    # <bra|ket>
+    olp = slater_tools.u_overlap(bra, ket) 
+    t2o = gt2g # <bra|T2|ket>/<bra|ket>
+    e0 = (e1_0 + e2_0) # <bra|h1+h2|ket>/<bra|ket>
+    t2e12 = (e1_2 + e2_2) # <bra|T2 (h1+h2)|ket>/<bra|ket>
+
+    return jnp.array([olp, t2o, e0, t2e12])
+
+@partial(jit, static_argnums=(5,6))
+def ut2h12_delta(bra, ket, t2, h1, chol, mix_precision=False, nchol_chunk=1):
+    '''
+    calculate terms related to <bra|T2(h1+h2)|ket>/<bra|ket>
+    bra is assumed to be an identity in its mo_coeff
+    return <bra|ket> <T2> <h1+h2> <T2(h1+h2)> 
+    '''
+    if mix_precision:
+        rtype = jnp.float32
+        ctype = jnp.complex64
+    else:
+        rtype = jnp.float64
+        ctype = jnp.complex128
+
+    ket_up, ket_dn = ket
+    norb_a, nocc_a = ket_up.shape
+    norb_b, nocc_b = ket_dn.shape
+    t2aa, t2ab, t2bb = t2
+    h1_a, h1_b = h1
+    chol_a, chol_b = chol
+
+    green_a, green_b = slater_tools.u_delta_green(bra, ket)
+    greenov_a = green_a[:nocc_a,nocc_a:]
+    greenov_b = green_b[:nocc_b,nocc_b:]
+    greenp_a = jnp.vstack((greenov_a, -jnp.eye(norb_a-nocc_a)))
+    greenp_b = jnp.vstack((greenov_b, -jnp.eye(norb_b-nocc_b)))
+
+    hg_a = oe.contract("pq,pq->", h1_a[:nocc_a,:], green_a, backend="jax")
+    hg_b = oe.contract("pq,pq->", h1_b[:nocc_b,:], green_b, backend="jax")
+    e1_0 = hg_a + hg_b # <bra|h1|ket>/<bra|ket>
+
+    # <bra|T2 h1|ket>/<bra|ket>
+    t2g_a = oe.contract("iajb,ia->jb", t2aa, greenov_a, backend="jax") / 4
+    t2g_b = oe.contract("iajb,ia->jb", t2bb, greenov_b, backend="jax") / 4
+    t2g_ab_a = oe.contract("iajb,jb->ia", t2ab, greenov_b, backend="jax")
+    t2g_ab_b = oe.contract("iajb,ia->jb", t2ab, greenov_a, backend="jax")
+    # t_iajb (G_ia G_jb - G_ib G_ja)
+    gt2g_a = oe.contract("jb,jb->", t2g_a, greenov_a, backend="jax")
+    gt2g_b = oe.contract("jb,jb->", t2g_b, greenov_b, backend="jax")
+    gt2g_ab = oe.contract("ia,ia->", t2g_ab_a, greenov_a, backend="jax")
+    gt2g = 2 * (gt2g_a + gt2g_b) + gt2g_ab # <bra|T2|ket>/<bra|ket>
+    e1_2_1 = e1_0 * gt2g
+    
+    t2_green_aaa = (greenp_a @ t2g_a.T) @ green_a[:nocc_a,:] # Gp_pb t_iajb G_ia G_jq (-)
+    t2_green_aba = (greenp_a @ t2g_ab_a.T) @ green_a[:nocc_a,:]
+    t2_green_bbb = (greenp_b @ t2g_b.T) @ green_b[:nocc_b,:]
+    t2_green_abb = (greenp_b @ t2g_ab_b.T) @ green_b[:nocc_b,:]
+    t2_green_a_a = 4 * t2_green_aaa + t2_green_aba # connect a->a
+    t2_green_b_b = 4 * t2_green_bbb + t2_green_abb # connect b->b
+
+    e1_2_2_a = -oe.contract("pq,pq->", h1_a, t2_green_a_a, backend="jax")
+    e1_2_2_b = -oe.contract("pq,pq->", h1_b, t2_green_b_b, backend="jax")
+    e1_2_2 = e1_2_2_a + e1_2_2_b
+    e1_2 = e1_2_1 + e1_2_2  # <bra|T2 h1|ket>/<bra|ket>
+
+    # <bra|T2 h2|ket>/<bra|ket>
+    nchol = chol_a.shape[0]
+    nchunks = -(-nchol // nchol_chunk)
+    pad = nchunks * nchol_chunk - nchol
+    chol_a = jnp.pad(chol_a, ((0, pad), (0, 0), (0, 0)))
+    chol_b = jnp.pad(chol_b, ((0, pad), (0, 0), (0, 0)))
+    chol_a = chol_a.reshape(nchunks, nchol_chunk, *chol_a.shape[-2:])
+    chol_b = chol_b.reshape(nchunks, nchol_chunk, *chol_b.shape[-2:])
+
+    def scanned_fun(carry, x):
+        chol_a_c, chol_b_c = x
+
+        # e2_0 = <h2>
+        gl_a_c = oe.contract("ir,gpr->gip",
+                            green_a.astype(jnp.complex128),
+                            chol_a_c.astype(jnp.float64), 
+                            backend="jax").astype(jnp.complex128)
+        gl_b_c = oe.contract("ir,gpr->gip", 
+                            green_b.astype(jnp.complex128),
+                            chol_b_c.astype(jnp.float64), 
+                            backend="jax")
+        tr_gl_a = oe.contract("gii->g", 
+                            gl_a_c[:,:nocc_a,:nocc_a].astype(jnp.complex128), 
+                            backend="jax").astype(jnp.complex128)
+        tr_gl_b = oe.contract("gii->g", 
+                            gl_b_c[:,:nocc_b,:nocc_b].astype(jnp.complex128), 
+                            backend="jax").astype(jnp.complex128)
+        ex_gl_a = oe.contract("gij,gji->g", 
+                            gl_a_c[:,:nocc_a,:nocc_a].astype(jnp.complex128), 
+                            gl_a_c[:,:nocc_a,:nocc_a].astype(jnp.complex128), 
+                            backend="jax").astype(jnp.complex128)
+        ex_gl_b = oe.contract("gij,gji->g", 
+                            gl_b_c[:,:nocc_b,:nocc_b].astype(jnp.complex128), 
+                            gl_b_c[:,:nocc_b,:nocc_b].astype(jnp.complex128), 
+                            backend="jax").astype(jnp.complex128)
+        e2_0_1_c = jnp.sum((tr_gl_a + tr_gl_b) ** 2) / 2.0
+        e2_0_2_c = -jnp.sum(ex_gl_a + ex_gl_b) / 2.0
+
+        carry[0] += (e2_0_1_c + e2_0_2_c).astype(jnp.complex128)
+
+        # e2_2 = <T2 h2>
+        lt2g_a_c = oe.contract("gpr,qr->gpq", 
+                                chol_a_c.astype(jnp.float64), 
+                                (2*t2_green_a_a).astype(jnp.complex128), 
+                                backend="jax")
+        lt2g_b_c = oe.contract("gpr,qr->gpq", 
+                                chol_b_c.astype(jnp.float64), 
+                                (2*t2_green_b_b).astype(jnp.complex128), 
+                                backend="jax")
+        tr_lt2g_a_c = oe.contract("gqq->g", lt2g_a_c.astype(jnp.complex128), backend="jax")
+        tr_lt2g_b_c = oe.contract("gqq->g", lt2g_b_c.astype(jnp.complex128), backend="jax")
+        carry[1] += -(((tr_lt2g_a_c.astype(ctype) + tr_lt2g_b_c.astype(ctype)) 
+                        @ (tr_gl_a.astype(ctype) + tr_gl_b.astype(ctype))
+                        ) / 2).astype(jnp.complex128)
+        carry[2] += ((oe.contract("giq,giq->", 
+                                    gl_a_c.astype(ctype), 
+                                    lt2g_a_c[:,:nocc_a,:].astype(ctype), 
+                                    backend="jax")
+                    + oe.contract("giq,giq->", 
+                                    gl_b_c.astype(ctype), 
+                                    lt2g_b_c[:,:nocc_b,:].astype(ctype), 
+                                    backend="jax")) / 2).astype(jnp.complex128)
+
+        glgp_a_c = oe.contract("giq,qa->gia",
+                            gl_a_c.astype(jnp.complex128), 
+                            greenp_a.astype(jnp.complex128), 
+                            backend="jax")
+        glgp_b_c = oe.contract("giq,qa->gia", 
+                            gl_b_c.astype(jnp.complex128), 
+                            greenp_b.astype(jnp.complex128), 
+                            backend="jax")
+        
+        lt2_aa = oe.contract("gia,iajb->gjb", 
+                                glgp_a_c.astype(ctype), 
+                                t2aa.astype(rtype), 
+                                backend="jax")
+        lt2_bb = oe.contract("gia,iajb->gjb", 
+                                glgp_b_c.astype(ctype), 
+                                t2bb.astype(rtype), 
+                                backend="jax")
+        lt2_ab = oe.contract("gia,iajb->gjb", 
+                                glgp_a_c.astype(ctype), 
+                                t2ab.astype(rtype), 
+                                backend="jax")
+        
+        l2t2_aa = 0.5 * oe.contract("gjb,gjb->",
+                                    lt2_aa.astype(ctype),
+                                    glgp_a_c.astype(ctype), 
+                                    backend="jax").astype(jnp.complex128)
+        l2t2_bb = 0.5 * oe.contract("gjb,gjb->",
+                                    lt2_bb.astype(ctype),
+                                    glgp_b_c.astype(ctype), 
+                                    backend="jax").astype(jnp.complex128)
+        l2t2_ab = oe.contract("gjb,gjb->",
+                                lt2_ab.astype(ctype),
+                                glgp_b_c.astype(ctype), 
+                                backend="jax").astype(jnp.complex128)
+        
+        carry[3] += (l2t2_aa + l2t2_bb + l2t2_ab).astype(jnp.complex128)
+        return carry, 0.0
+
+    [e2_0, e2_2_2_1, e2_2_2_2, e2_2_3], _ = lax.scan(
+        scanned_fun, [0.0, 0.0, 0.0, 0.0], (chol_a, chol_b)
+    )
+
+    e2_2_1 = e2_0 * gt2g
+    e2_2_2 = e2_2_2_1 + e2_2_2_2
+    e2_2 = e2_2_1 + e2_2_2 + e2_2_3 # <bra|T2 h2|ket>/<bra|ket>
+
+    olp = slater_tools.u_delta_overlap(bra, ket) # <bra|ket>
+    t2o = gt2g # <bra|T2|ket>/<bra|ket>
+    e0 = (e1_0 + e2_0) # <bra|h1+h2|ket>/<bra|ket>
+    t2e12 = (e1_2 + e2_2) # <bra|T2 (h1+h2)|ket>/<bra|ket>
+
+    return jnp.array([olp, t2o, e0, t2e12])
+
+@jit
+def ut2_overlap(bra: tuple, ket: tuple, t2: tuple):
+    '''<bra|T2|ket>'''
+    bra_up, bra_dn = bra
+    ket_up, ket_dn = ket
+    norb_a, nocc_a = ket_up.shape
+    norb_b, nocc_b = ket_dn.shape
+    t2aa, t2ab, t2bb = t2
+    green_a, green_b = slater_tools.u_green(bra, ket)
+    green_a, green_b = green_a[:nocc_a, nocc_a:], green_b[:nocc_b, nocc_b:]
+    o0 = slater_tools.u_overlap(bra, ket)
+    o2 = (0.5 * oe.contract("iajb,ia,jb->", t2aa, green_a, green_a, backend="jax")
+        + 0.5 * oe.contract("iajb,ia,jb->", t2bb, green_b, green_b, backend="jax")
+        + oe.contract("iajb,ia,jb->", t2ab, green_a, green_b, backend="jax"))
+    return o2 * o0
+
+@jit
+def ut2_olp_exp1(x: float, h1_mod: tuple, bra:tuple, ket:tuple, t2:tuple):
+    '''
+    <bra|T2 exp(x*h1_mod)|ket>/<bra|ket>
+    this function has to be differentiable
+    '''
+    ket_up_1x = ket[0] + x * h1_mod[0].dot(ket[0])
+    ket_dn_1x = ket[1] + x * h1_mod[1].dot(ket[1])
+    ket1x = (ket_up_1x, ket_dn_1x)
+    o1x = ut2_overlap(bra, ket1x, t2)
+    o0 = slater_tools.u_overlap(bra, ket)
+    return o1x / o0
+
+@jit
+def ut2_olp_exp2_i(x: float, chol_i: tuple, bra: tuple, ket: tuple, t2:tuple):
+    '''
+    <bra|T2 exp(x*chol_i)|ket>/<bra|ket>
+    '''
+    ket_up_2x = (
+        ket[0] + x * chol_i[0].dot(ket[0]) 
+        + x**2 / 2.0 * chol_i[0].dot(chol_i[0].dot(ket[0]))
+        )
+    ket_dn_2x = (
+        ket[1] + x * chol_i[1].dot(ket[1])
+        + x**2 / 2.0 * chol_i[1].dot(chol_i[1].dot(ket[1]))
+        )
+    
+    ket2x = (ket_up_2x, ket_dn_2x)
+    o2x = ut2_overlap(bra, ket2x, t2)
+    o0 = slater_tools.u_overlap(bra, ket)
+    return o2x / o0
+
+@jit
+def d2_ut2_olp_exp2_i(chol_i, bra, ket, t2):
+    x = 0.0
+    f = lambda a: ut2_olp_exp2_i(a, chol_i, bra, ket, t2)
+    _, d2f = jax.jvp(lambda x: jax.jvp(f, [x], [1.0])[1], [x], [1.0])
+    return d2f
+
+@jit
+def d2_ut2_olp_exp2(chol, bra, ket, t2):
+
+    def scan_chol(carry, chol_i):
+        d2_exp2_i = d2_ut2_olp_exp2_i(chol_i, bra, ket, t2)
+        return carry + d2_exp2_i, None
+    
+    init = 0.0
+    e2_sum, _ = jax.lax.scan(scan_chol, init, chol)
+    return e2_sum / 2 
+
+@jit
+def ut2h12_ad(bra, ket, t2, h1mod, chol):
+    '''
+    t2olp = <bra|T2|ket>
+    energy = e1 + e2
+    e1 = partial_x <bra|T2 exp(xh1mod)|ket>/<bra|ket>
+    e2 = 1/2 partial_x2 <bra|T2 exp(xchol)|ket>/<bra|ket>
+    h1mod = h1 - 1/2 v_gpr v_gqr from commutator
+    '''
+    # AD chol can't be chunked in the current implementation
+    chola, cholb = chol
+    if len(chola.shape) == 4:
+        nc, nchol_c, _, _ = chola.shape
+        chola = chola.reshape(nc*nchol_c,*chola.shape[-2:])
+    if len(cholb.shape) == 4:
+        nc, nchol_c, _, _ = cholb.shape
+        cholb = cholb.reshape(nc*nchol_c,*cholb.shape[-2:])
+
+    # one body
+    x = 0.0
+    f1 = lambda a: ut2_olp_exp1(a, h1mod, bra, ket, t2)
+    t2olp, e1 = jvp(f1, [x], [1.0])
+
+    # two body
+    e2 = d2_ut2_olp_exp2(chol, bra, ket, t2)
+
+    return jnp.array([t2olp, e1 + e2])
