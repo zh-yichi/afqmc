@@ -49,20 +49,15 @@ for nc in nc_list:
     mycc = cc.CCSD(mf,frozen=nfrozen)
     mycc.kernel()
 
-    from afqmc import prep, launch_afqmc
-    prep.prep_afqmc(mycc, chol_cut=1e-5)
-
-    # RHF Trial
-    options = {'n_prop_steps': 50,
-               'n_eql': 160, # 1 eql step = dt*n_prop_steps (here 160 = 40 au)
-               'n_blocks': 1000, # tune this for how many samples you want
+    options = {'n_blocks': 300,
                'n_walkers': 300,
-               'dt':0.005, # time every trot step
-               'max_error': 0.0, # set to 0 to run the calculation till n_blocks
+               'nchol_chunk': 30,
+               'max_memory': 3000,
                'seed': 17,
                'walker_type': 'rhf',
-               'trial': 'cisd', # use cisd trial
-               'free_projection': False,
-               'use_gpu': True}
+               'trial': 'cisd',
+               }
 
-    launch_afqmc.run_afqmc(options) # For H2 this should be exact!
+    from afqmc import integral, launch_afqmc
+    integral.prep_integral(mycc)
+    launch_afqmc.ph_afqmc(options)

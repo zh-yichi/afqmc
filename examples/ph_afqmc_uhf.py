@@ -9,7 +9,7 @@ import os
 import numpy as np
 
 #### test O2 monomers ####
-m_list = [3] # number of monomers
+m_list = [1] # number of monomers
 d = 100 # distance between monomers
 unit = 'A' # angstron 
 for nc in m_list:
@@ -40,20 +40,14 @@ for nc in m_list:
             print(f'mf energy: {mf.e_tot}, stability {stable}')
             break
 
-    from afqmc import prep, launch_afqmc
-    prep.prep_afqmc(mf, chol_cut=1e-5)
-
-    # RHF Trial
-    options = {'n_prop_steps': 50,
-               'n_eql': 160, # 1 eql step = dt*n_prop_steps (here 160 = 40 au)
-               'n_blocks': 1000, # tune this for how many samples you want
+    options = {'n_blocks': 300,
                'n_walkers': 300,
-               'dt':0.005, # time every trot step
-               'max_error': 0.0, # set to 0 to run the calculation till n_blocks
+               'nchol_chunk': 30,
+               'max_memory': 3000,
                'seed': 17,
-               'walker_type': 'uhf',
                'trial': 'uhf',
-               'free_projection': False,
-               'use_gpu': True}
+               }
 
-    launch_afqmc.run_afqmc(options)
+    from afqmc import integral, launch_afqmc
+    integral.prep_integral(mf)
+    launch_afqmc.ph_afqmc(options)

@@ -1,3 +1,4 @@
+import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
 
 import jax
@@ -12,7 +13,7 @@ a = 2 # bond length in a cluster
 d = 100 # distance between each cluster
 unit = 'b' # unit of length
 na = 2 # size of a cluster (monomer)
-nc_list = [4] # set as integer multiple of monomers
+nc_list = [1] # set as integer multiple of monomers
 spin = 0 # spin per monomer
 frozen = 0 # frozen orbital per monomer
 elmt = 'H'
@@ -45,20 +46,14 @@ for nc in nc_list:
             print(f'mf energy: {mf.e_tot}, stability {stable}')
             break
 
-    from afqmc import prep, launch_afqmc
-    prep.prep_afqmc(mf, chol_cut=1e-5)
-
-    # RHF Trial
-    options = {'n_prop_steps': 50,
-               'n_eql': 160, # 1 eql step = dt*n_prop_steps (here 160 = 40 au)
-               'n_blocks': 1000, # tune this for how many samples you want
+    options = {'n_blocks': 300,
                'n_walkers': 300,
-               'dt':0.005, # time every trot step
-               'max_error': 0.0, # set to 0 to run the calculation till n_blocks
+               'nchol_chunk': 30,
+               'max_memory': 3000,
                'seed': 17,
-               'walker_type': 'rhf',
                'trial': 'rhf',
-               'free_projection': False,
-               'use_gpu': True}
+               }
 
-    launch_afqmc.run_afqmc(options)
+    from afqmc import integral, launch_afqmc
+    integral.prep_integral(mf)
+    launch_afqmc.ph_afqmc(options)
