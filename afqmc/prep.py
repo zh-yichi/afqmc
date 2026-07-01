@@ -494,17 +494,17 @@ def init_afqmc(options=None,
 
     if spin_type == 'restricted':
         ham_data["h1"] = jnp.array([h1, h1])
-        ham_data["h1_mod"] = jnp.array(h1_mod)
+        # ham_data["h1_mod"] = jnp.array(h1_mod)
         nchol = chol.shape[0]
         ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
     elif spin_type == 'unrestricted':
-        ham_data["h1"] = (jnp.array(h1[0]), 
-                          jnp.array(h1[1]))
-        ham_data["h1_mod"] = (jnp.array(h1_mod[0]),
-                              jnp.array(h1_mod[1]))
+        ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2.0, 
+                          jnp.array(h1[1] + h1[1].T) / 2.0)
+        # ham_data["h1_mod"] = (jnp.array(h1_mod[0]),
+        #                       jnp.array(h1_mod[1]))
         nchol = chol[0].shape[0]
-        ham_data["chol"] = (jnp.array(chol[0].reshape(chol[0].shape[0], -1),
-                            jnp.array(chol[1].reshape(chol[1].shape[0], -1))))
+        ham_data["chol"] = (jnp.array(chol[0].reshape(nchol, -1)),
+                            jnp.array(chol[1].reshape(nchol, -1)))
 
     options["nchol_chunk"] = cholesky.chunk_chol(
         chol, options["nchol_chunk"], options["max_memory"]/options["n_walkers"])

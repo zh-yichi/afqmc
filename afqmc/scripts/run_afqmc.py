@@ -23,22 +23,14 @@ ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 
 prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
 
-# prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers)
-# if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
-#     raise ValueError("Initial overlaps are zero. Pass walkers with non-zero overlap.")
-# prop_data["key"] = random.PRNGKey(options["seed"])
-
-# prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-# prop_data["n_killed_walkers"] = 0
-# prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
-
+w_init = jnp.sum(prop_data["weights"])
 e_init = prop_data["e_estimate"]
 
 
 print("\nEquilibration")
 
-print(f"{'inv_T':>5s}  {'energy':>10s}  {'runTime':>8s}")
-print(f"{0.:5.2f}  {e_init:10.6f}  {time.time() - init_time:8.2f}")
+print(f"{'inv_T':>5s}  {'weight':>10s}  {'energy':>10s}  {'runTime':>8s}")
+print(f"{0.:5.2f}  {w_init:10.5}  {e_init:10.5f}  {time.time() - init_time:8.2f}")
 
 sampler_eq = sampling.sampler(
     n_prop_steps=50,
@@ -54,7 +46,7 @@ for n in range(1,neql_block+1):
     prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * e
 
     if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
-        print(f"{(n+1)*block_time:5.2f}  {e:10.6f}  {time.time() - init_time:8.2f}")
+        print(f"{(n+1)*block_time:5.2f}  {wt:10.5f}  {e:10.5f}  {time.time() - init_time:8.2f}")
 
 print("\nSampling")
 print(f"{'N':>4s}  {'weight':>12s}  {'killW':>5s}  "

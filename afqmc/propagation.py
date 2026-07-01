@@ -499,13 +499,16 @@ class propagator_unrestricted(propagator_restricted):
                 ham_data["chol"][1].reshape(-1, trial.norb, trial.norb),
             )
         )
-        h1_mod = ham_data["h1"] - jnp.array([v0_a + v1_a, v0_b + v1_b])
-        ham_data["exp_h1"] = jnp.array(
-            [
-                jsp.linalg.expm(-self.dt * h1_mod[0] / 2.0),
-                jsp.linalg.expm(-self.dt * h1_mod[1] / 2.0),
-            ]
-        )
+        h1_mod = (jnp.array(ham_data["h1"][0] - v0_a - v1_a),
+                  jnp.array(ham_data["h1"][1] - v0_b - v1_b))
+        ham_data["exp_h1"] = (jsp.linalg.expm(-self.dt * h1_mod[0] / 2.0),
+                              jsp.linalg.expm(-self.dt * h1_mod[1] / 2.0))
+        # ham_data["exp_h1"] = jnp.array(
+        #     [
+        #         jsp.linalg.expm(-self.dt * h1_mod[0] / 2.0),
+        #         jsp.linalg.expm(-self.dt * h1_mod[1] / 2.0),
+        #     ]
+        # )
         return ham_data
 
     def __hash__(self) -> int:
