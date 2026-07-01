@@ -4,9 +4,9 @@ from typing import Tuple
 import jax
 import jax.numpy as jnp
 from jax import jit, lax, random, vmap
-from ad_afqmc.hamiltonian import hamiltonian
-from ad_afqmc.prop_unrestricted.propagation import propagator
-from ad_afqmc import linalg_utils
+from afqmc.hamiltonian import hamiltonian
+from afqmc.prop_unrestricted.propagation import propagator
+from afqmc import linalg_utils
 
 @dataclass
 class sampler:

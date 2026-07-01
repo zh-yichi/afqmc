@@ -569,8 +569,8 @@ def init_afqmc_exp(
         nchol = chol.shape[0]
         ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
     elif spin_type == 'unrestricted':
-        ham_data["h1"] = (jnp.array(h1[0]), 
-                          jnp.array(h1[1]))
+        ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2, 
+                          jnp.array(h1[1] + h1[0].T) / 2)
         nchol = chol[0].shape[0]
         ham_data["chol"] = (jnp.array(chol[0].reshape(chol[0].shape[0], -1)),
                             jnp.array(chol[1].reshape(chol[1].shape[0], -1)))

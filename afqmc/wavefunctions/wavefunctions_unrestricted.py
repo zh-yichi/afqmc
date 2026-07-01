@@ -417,15 +417,18 @@ class uhf(uwfn):
 
     @partial(jit, static_argnums=(0,))
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
-        # ham_data["h1"] = ((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0,
-        #                   (ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
+        moa, mob = wave_data["mo_coeff"]
+        chola, cholb = ham_data["chol"]
+        chola = chola.reshape(-1, self.norb, self.norb)
+        cholb = cholb.reshape(-1, self.norb, self.norb)
         ham_data["rot_h1"] = [
             wave_data["mo_coeff"][0].T.conj() @ ham_data["h1"][0],
             wave_data["mo_coeff"][1].T.conj() @ ham_data["h1"][1],
         ]
         ham_data["rot_chol"] = [
             oe.contract("pi,gij->gpj", moa.T.conj(), chola, backend="jax"),
-            oe.contract("pi,gij->gpj", mob.T.conj(), cholb, backend="jax")]
+            oe.contract("pi,gij->gpj", mob.T.conj(), cholb, backend="jax")
+            ]
         
         return ham_data
 

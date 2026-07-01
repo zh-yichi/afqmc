@@ -2,11 +2,11 @@ from functools import partial
 from jax import random, lax, vmap
 import numpy as np
 from jax import numpy as jnp
-from ad_afqmc import config
-from ad_afqmc.prop_unrestricted import prep
+from afqmc import config
+from afqmc.prop_unrestricted import prep
 import time
 import argparse
-from ad_afqmc import config
+from afqmc import config
 
 # def ratio_estimator_cov(num, den):
 #     """

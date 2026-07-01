@@ -4,8 +4,8 @@ import numpy as np
 from jax import random
 from jax import numpy as jnp
 from functools import partial
-from ad_afqmc import config, stat_utils
-from ad_afqmc.prop_unrestricted import prep, sampling
+from afqmc import config, stat_utils
+from afqmc.prop_unrestricted import prep, sampling
 
 init_time = time.time()
 print = partial(print, flush=True)

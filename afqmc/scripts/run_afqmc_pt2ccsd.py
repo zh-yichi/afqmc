@@ -11,13 +11,13 @@ from functools import partial
 print = partial(print, flush=True)
 init_time = time.time()
 
-# print("\nAFQMC Started")
 prep.print_start()
 config.setup_jax()
 
 ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
-wave_data["rdm1"] = trial.get_rdm1(wave_data)
+if "rdm1" not in wave_data:
+    wave_data["rdm1"] = trial.get_rdm1(wave_data)
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 h0 = ham_data['h0']
@@ -96,7 +96,7 @@ for n in range(sampler.n_blocks):
         e0 = np.mean(wt_sp[:n+1] * e0_sp[:n+1]) / weight
         e1 = np.mean(wt_sp[:n+1] * e1_sp[:n+1]) / weight
 
-        eg_err = sampler.blocking_analysis(wt_sp[:n+1], eg_sp[:n+1], min_nblocks=40, final=False)
+        eg_err = sampling.blocking_analysis(wt_sp[:n+1], eg_sp[:n+1], min_nblocks=40, final=False)
         
         ept = (h0 + 1/t1 * e0 + 1/t1 * e1 - 1/t1**2 * t2 * e0).real
         # (pE/pt1,pE/pt2,pE/pe0,pE/pe1)
@@ -113,7 +113,7 @@ for n in range(sampler.n_blocks):
 
         otg = t1.real
         # otg_err = np.sqrt(np.sum(wt_sp[:n+1] * (t1_sp[:n+1]-t1)**2) / wt / n).real
-        otg_err = sampler.blocking_analysis(wt_sp[:n+1], t1_sp[:n+1].real, min_nblocks=40, final=False)
+        otg_err = sampling.blocking_analysis(wt_sp[:n+1], t1_sp[:n+1].real, min_nblocks=40, final=False)
 
         tot_kw = np.sum(n_killed)
         prop_data["e_estimate"] = 0.8 * prop_data["e_estimate"] + 0.2 * eg
@@ -146,8 +146,8 @@ t2 = np.mean(wt_sp * t2_sp) / weight
 e0 = np.mean(wt_sp * e0_sp) / weight
 e1 = np.mean(wt_sp * e1_sp) / weight
 
-eg_err = sampler.blocking_analysis(wt_sp, eg_sp, min_nblocks=40, final=False)
-t1_err = sampler.blocking_analysis(wt_sp, t1_sp.real, min_nblocks=40, final=False)
+eg_err = sampling.blocking_analysis(wt_sp, eg_sp, min_nblocks=40, final=False)
+t1_err = sampling.blocking_analysis(wt_sp, t1_sp.real, min_nblocks=40, final=False)
 
 ept = (h0 + 1/t1 * e0 + 1/t1 * e1 - 1/t1**2 * t2 * e0).real
 # dE = (pE/pt1,pE/pt2,pE/pe0,pE/pe1)
@@ -196,7 +196,7 @@ t2 = np.sum(wt_clean * t2_clean) / wt
 e0 = np.sum(wt_clean * e0_clean) / wt
 e1 = np.sum(wt_clean * e1_clean) / wt
 
-t1_err = sampler.blocking_analysis(wt_clean, t1_clean.real, min_nblocks=40, final=False)
+t1_err = sampling.blocking_analysis(wt_clean, t1_clean.real, min_nblocks=40, final=False)
 
 ept = (h0 + 1/t1 * e0 + 1/t1 * e1 - 1/t1**2 * t2 * e0).real
 # dE = (pE/pt1,pE/pt2,pE/pe0,pE/pe1)
@@ -214,13 +214,12 @@ print(f"Clean AFQMC/ptCCSD energy (dir sample):  {ept:.5f} ± {ept_sp_err:.5f}")
 
 print("\nBlocking Analysis")
 
-t1_err = sampler.blocking_analysis(wt_clean, t1_clean.real, min_nblocks=40, final=True)
+t1_err = sampling.blocking_analysis(wt_clean, t1_clean.real, min_nblocks=40, final=True)
 ept_err = sampler.pt2blocking_analysis(
     wt_clean, t1_clean, t2_clean, e0_clean, e1_clean, h0, min_nblocks=40
     )
 
 print(f"Final AFQMC/pt2CCSD overlap ratio: {t1.real:.5f} ± {t1_err:.5f}")
-# print(f"Final AFQMC/pt2CCSD energy: {eg:.6f} ± {eg_err:.6f}")
 print(f"Final AFQMC/pt2CCSD energy: {ept:.5f} ± {ept_err:.5f}")
 print(f"Total run time: {time.time() - init_time:.2f}")
 print(f"\nAFQMC Sampling Finished\n")

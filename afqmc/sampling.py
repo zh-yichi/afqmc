@@ -148,106 +148,24 @@ class sampler:
             x, y, ham_data, prop, trial, wave_data
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
 
         prop_data = prop.orthonormalize_walkers(prop_data)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         energies = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
         outlier = jnp.abs(energies - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
         energies = jnp.where(outlier, prop_data["e_estimate"], energies)
-        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        weights = jnp.where(outlier, 0.0, prop_data["weights"])
 
-        block_weight = jnp.sum(prop_data["weights"])
-        block_energy = jnp.sum(prop_data["weights"] * energies) / block_weight
+        block_weight = jnp.sum(weights)
+        block_energy = jnp.sum(weights * energies) / block_weight
 
-        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
-        prop_data["pop_control_ene_shift"] = 0.9 * prop_data["pop_control_ene_shift"] + 0.1 * block_energy
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
 
         return prop_data, (block_weight, block_energy)
-    
-    def blocking_analysis(self, wt_sp, en_sp, min_nblocks=20, final=False,):
-        
-        nsample = len(wt_sp)
-        max_size = nsample // min_nblocks
-        if max_size < 10:
-            min_nblocks = max(nsample // 10, 3)
-            max_size = nsample // min_nblocks
-            if final:
-                print(f"Warning: small dataset, relaxed min_nblocks to {min_nblocks}")
-        block_sizes = np.arange(1, max_size + 1)
-        block_vars = np.zeros(max_size)
-        block_var_errs = np.zeros(max_size)
-        block_means = np.zeros(max_size)
-        if final:
-            print(f"nsample = {nsample}, max_block_size = {max_size}, min_nblocks = {min_nblocks}")
-            print(f"{'B':>4s}  {'NB':>4s}  {'NS':>4s}  {'Observable':>10s}  {'Error':>8s}  {'dError':>8s}")
-        for i, block_size in enumerate(block_sizes):
-            n_blocks = nsample // block_size
-            sl = slice(0, n_blocks * block_size)
-            wt = (wt_sp[sl]).reshape(n_blocks, block_size)
-            wt_en = (wt_sp[sl] * en_sp[sl]).reshape(n_blocks, block_size)
-            block_weight = np.sum(wt, axis=1)
-            block_energy = np.sum(wt_en, axis=1) / block_weight
-            block_mean = np.mean(block_energy)
-            block_var = np.var(block_energy, ddof=1) / n_blocks  # variance of the mean
-            block_error = np.sqrt(block_var)
-            var_of_var = block_var * np.sqrt(2.0 / (n_blocks - 1))
-            err_of_err = block_error / np.sqrt(2.0 * (n_blocks - 1))
-            block_means[i] = block_mean
-            block_vars[i] = block_var
-            block_var_errs[i] = var_of_var
-            if final:
-                print(f'{block_size:4d}  {n_blocks:4d}  {block_size*n_blocks:4d}  '
-                      f'{block_mean:10.6f}  {block_error:8.6f}  {err_of_err:8.6f}')
-        
-        if final:
-            from scipy.optimize import curve_fit
-            def model(x, a, b, tau):
-                return a - b * np.exp(-x / tau)
-            p0 = [block_vars.max(), block_vars.max() - block_vars[0], 5.0]
-            try:
-                popt, pcov = curve_fit(model, block_sizes, block_vars,
-                                    sigma=block_var_errs, absolute_sigma=True,
-                                    p0=p0, maxfev=10000)
-                plateau_var = popt[0]
-                plateau_var_unc = np.sqrt(pcov[0, 0])
-                plateau_value = np.sqrt(plateau_var)
-                plateau_uncertainty = plateau_var_unc / (2.0 * plateau_value)
-                tau = popt[2]
-                ratio = 0.01 * popt[0] / popt[1]
-                if ratio > 0:
-                    plateau_block_size = int(np.ceil(-popt[2] * np.log(ratio)))
-                else:
-                    plateau_block_size = 1
-                print(f"Fit (variance): plateau_var = {plateau_var:.3e} ± {plateau_var_unc:.3e}")
-                print(f"Fit (error):    plateau = {plateau_value:.6f} ± {plateau_uncertainty:.6f}")
-                print(f"     autocorrelation length ~ {tau:.1f} blocks")
-                print(f"     plateau reached at block size ~ {plateau_block_size}")
-                if plateau_block_size > max_size:
-                    print(f"     !!!Failed to reach plateau in blocking")
-                    print(f"     Return max block error")
-                    plateau_value = np.sqrt(block_vars.max())
-            except RuntimeError as e:
-                print(f"\nFit failed: {e}")
-                plateau_value = np.sqrt(block_vars.max())
-                print(f"Fallback max error: {plateau_value:.6f}")
-        
-        else: 
-            plateau_value = np.sqrt(block_vars.max())
-        
-        return plateau_value
-    
-    # def filter_outliers(self, samples, zeta=20):
-
-    #     median = np.median(samples)
-    #     mad = 1.4826 * np.median(np.abs(samples - median))
-    #     bound = zeta * mad
-    #     mask = np.abs(samples - median) < bound
-    #     print(f"Remove samples outside Zeta > {zeta}")
-    #     print(f"Outlier bound [{median-bound:.6f}, {median+bound:.6f}]")
-        
-    #     return mask
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
@@ -308,79 +226,6 @@ class sampler_exp(sampler):
     
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
-
-
-# @dataclass
-# class sampler_mixed(sampler):
-
-#     @partial(jit, static_argnums=(0,3,4))
-#     def block_sample(
-#         self,
-#         prop_data,
-#         ham_data,
-#         prop,
-#         trial,
-#         wave_data,
-#         ):
-#         """Block scan function. Propagation and energy calculation."""
-#         prop_data["key"], subkey = random.split(prop_data["key"])
-#         fields = random.normal(
-#             subkey,
-#             shape=(
-#                 self.n_prop_steps,
-#                 prop.n_walkers,
-#                 self.n_chol,
-#             ),
-#         )
-#         _step_scan_wrapper = lambda x, y: self._step_scan(
-#             x, y, ham_data, prop, trial, wave_data
-#         )
-#         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
-#         prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(
-#             prop_data["weights"]
-#         )
-
-#         prop_data = prop.orthonormalize_walkers(prop_data)
-#         og = trial.calc_overlap(prop_data["walkers"], wave_data)
-#         prop_data["overlaps"] = og
-#         otg, eg, et = trial.calc_energy_mixed(prop_data["walkers"],ham_data,wave_data)
-#         de, do = trial.calc_stoccsd_cr(prop_data["walkers"], ham_data, wave_data)
-
-#         ot = otg * og
-#         ot_cr = ot + do
-#         et_cr = (et * ot + de) / ot_cr
-
-#         otg = jnp.real(otg)
-#         eg = jnp.real(eg)
-#         et = jnp.real(et)
-#         ot_cr = jnp.real(ot_cr)
-#         et_cr = jnp.real(et_cr)
-
-#         eg = jnp.where(
-#             jnp.abs(eg - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt),
-#             prop_data["e_estimate"],
-#             eg,
-#         )
-        
-#         wt = prop_data["weights"]
-#         wp = wt * otg
-#         wp_cr = wt * ot_cr / og
-
-#         blk_wt = jnp.sum(wt)
-#         blk_wp = jnp.sum(wp)
-#         blk_wp_cr = jnp.sum(wp_cr)
-#         blk_eg = jnp.sum(eg * wt) / blk_wt
-#         blk_et = jnp.sum(et * wp) / blk_wp
-#         blk_et_cr = jnp.sum(et_cr * wp_cr) / blk_wp_cr
-
-#         prop_data = prop.stochastic_reconfiguration_local(prop_data)
-#         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-#         prop_data["pop_control_ene_shift"] = 0.9 * prop_data["pop_control_ene_shift"] + 0.1 * blk_eg
-
-#         return prop_data, (blk_wt, blk_wp, blk_wp_cr, blk_eg, blk_et, blk_et_cr)
-    
-#     def __hash__(self) -> int:
-#         return hash(tuple(self.__dict__.values()))
 
 
 @dataclass
@@ -543,21 +388,21 @@ class sampler_pt2(sampler):
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
         prop_data = prop.orthonormalize_walkers(prop_data)
+        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
 
         e_guide = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
         outlier = jnp.abs(e_guide - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
         e_guide = jnp.where(outlier, prop_data["e_estimate"], e_guide)
-        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
-        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+        weights = jnp.where(outlier, 0.0, prop_data["weights"])
 
         t1, t2, e0, e1 = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
 
-        blk_wt = jnp.sum(prop_data["weights"])
-        blk_eg = jnp.sum(prop_data["weights"] * e_guide) / blk_wt
-        blk_t1 = jnp.sum(prop_data["weights"] * t1) / blk_wt
-        blk_t2 = jnp.sum(prop_data["weights"] * t2) / blk_wt
-        blk_e0 = jnp.sum(prop_data["weights"] * e0) / blk_wt
-        blk_e1 = jnp.sum(prop_data["weights"] * e1) / blk_wt
+        blk_wt = jnp.sum(weights)
+        blk_eg = jnp.sum(weights * e_guide) / blk_wt
+        blk_t1 = jnp.sum(weights * t1) / blk_wt
+        blk_t2 = jnp.sum(weights * t2) / blk_wt
+        blk_e0 = jnp.sum(weights * e0) / blk_wt
+        blk_e1 = jnp.sum(weights * e1) / blk_wt
 
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
         prop_data = prop.stochastic_reconfiguration_local(prop_data)

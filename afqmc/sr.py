@@ -29,6 +29,7 @@ def stochastic_reconfiguration(walkers, weights, zeta):
     average_weight = total_weight / nwalkers
     weights = jnp.ones(nwalkers) * average_weight
     z = total_weight * (jnp.arange(nwalkers) + zeta) / nwalkers
+    # indices = jnp.searchsorted(cumulative_weights, z)
     indices = vmap(jnp.searchsorted, in_axes=(None, 0))(cumulative_weights, z)
     walkers = walkers[indices]
     return walkers, weights

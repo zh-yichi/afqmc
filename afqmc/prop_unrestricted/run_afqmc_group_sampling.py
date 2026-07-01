@@ -3,12 +3,12 @@ from jax import random
 #from mpi4py import MPI
 import numpy as np
 from jax import numpy as jnp
-from ad_afqmc import config, stat_utils
-from ad_afqmc.prop_unrestricted import prep, sampling
+from afqmc import config, stat_utils
+from afqmc.prop_unrestricted import prep, sampling
 import time
 import argparse
 
-from ad_afqmc import config
+from afqmc import config
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -27,12 +27,10 @@ w_init = jnp.sum(prop_data["weights"])
 e_init = prop_data["e_estimate"]
 w_init = jnp.sum(prop_data["weights"])
 
-# print(wave_data["rdm1"])
-
 print("\nEquilibration")
 
 print(f"{'inv_T':>5s}  {'weight':>10s}  {'energy':>10s}  {'runTime':>8s}")
-print(f"{0.:5.2f}  {w_init:10.5}  {e_init:10.5f}  {time.time() - init_time:8.2f}")
+print(f"{0.:5.2f}  {w_init:10.5f}  {e_init:10.5f}  {time.time() - init_time:8.2f}")
 
 sampler_eq = sampling.sampler(
     n_prop_steps=50,
@@ -48,7 +46,6 @@ for n in range(1,neql_block+1):
     prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * e
 
     if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
-        print(f"{(n+1)*block_time:5.2f}  {wt:10.5f}  {e:10.5f}  {time.time() - init_time:8.2f}")
         print(f"{(n+1)*block_time:5.2f}  {wt:10.5f}  {e:10.5f}  {time.time() - init_time:8.2f}")
 
 print("\nSampling")
@@ -85,23 +82,6 @@ nsamples = n + 1
 print(f'total number of samples {nsamples}')
 wt_sp = wt_sp[:nsamples]
 e_sp = e_sp[:nsamples]
-
-# energy = np.sum(wt_sp * e_sp) / np.sum(wt_sp)
-# err = sampler.blocking_analysis(wt_sp, e_sp, min_nblocks=20,final=False)
-
-# print(f"Raw AFQMC: {energy:.6f} +/- {err:.6f}")
-
-# print("\nRemove Outliers")
-# def filter_outliers(e_sp, zeta=30):
-
-#     median = np.median(e_sp)
-#     mad = 1.4826 * np.median(np.abs(e_sp - median))
-#     bound = zeta * mad
-#     mask = np.abs(e_sp - median) < bound
-#     print(f"removing energies outside zeta > {zeta}")
-#     print(f"Energy bound [{median-bound:.6f}, {median+bound:.6f}]")
-    
-#     return mask
 
 mask = sampling.filter_outliers(e_sp, zeta=30)
 
