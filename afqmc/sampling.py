@@ -56,7 +56,7 @@ def blocking_analysis(wt_sp, en_sp, min_nblocks=20, final=False):
         block_var_errs[i] = var_of_var
         if final:
             print(f'{block_size:4d}  {n_blocks:4d}  {block_size*n_blocks:4d}  '
-                    f'{block_mean:10.6f}  {block_error:8.6f}  {err_of_err:8.6f}')
+                    f'{block_mean:10.5f}  {block_error:8.5f}  {err_of_err:8.5f}')
     
     if final:
         def model(x, a, b, tau):
@@ -77,7 +77,7 @@ def blocking_analysis(wt_sp, en_sp, min_nblocks=20, final=False):
             else:
                 plateau_block_size = 1
             print(f"Fit (variance): plateau_var = {plateau_var:.3e} ± {plateau_var_unc:.3e}")
-            print(f"Fit (error):    plateau = {plateau_value:.6f} ± {plateau_uncertainty:.6f}")
+            print(f"Fit (error):    plateau = {plateau_value:.5f} ± {plateau_uncertainty:.5f}")
             print(f"     autocorrelation length ~ {tau:.1f} blocks")
             print(f"     plateau reached at block size ~ {plateau_block_size}")
             if plateau_block_size > max_size:
@@ -87,7 +87,7 @@ def blocking_analysis(wt_sp, en_sp, min_nblocks=20, final=False):
         except RuntimeError as e:
             print(f"\nFit failed: {e}")
             plateau_value = np.sqrt(block_vars.max())
-            print(f"Fallback max error: {plateau_value:.6f}")
+            print(f"Fallback max error: {plateau_value:.5f}")
     
     else: 
         plateau_value = np.sqrt(block_vars.max())

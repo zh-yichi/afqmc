@@ -95,7 +95,7 @@ print("\nBlocking Analysis")
 energy = np.sum(wt_sp * e_sp) / np.sum(wt_sp)
 err = sampling.blocking_analysis(wt_sp, e_sp, min_nblocks=20, final=True)
 
-print(f"Final AFQMC: {energy:.6f} +/- {err:.6f}")
+print(f"Final AFQMC: {energy:.5f} +/- {err:.5f}")
 
 print(f"total run time: {time.time() - init_time:.2f}")
 print(f"\nAFQMC Sampling Finished\n")

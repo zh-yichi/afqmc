@@ -223,57 +223,38 @@ def common_as(mf, mo_coeff, ncas, ncore, torr=1e-10):
 
     return cas_coeff, a2c, b2c
 
+def save_cc_amplitude(cc, amp_file):
 
-def prep_integral(
-    mf_or_cc: Union[scf.rhf.RHF, scf.uhf.UHF, CCSD, UCCSD],
-    basis_coeff: Optional[np.ndarray] = None,
-    norb_frozen: int = 0,
-    chol_cut: float = 1e-5,
-    amp_file = "amplitudes.npz",
-    chol_file = "FCIDUMP_chol"
-):
+    if isinstance(cc, UCCSD):
+        # spin_type = 'unrestricted'
+        t1a = np.array(cc.t1[0])
+        t1b = np.array(cc.t1[1])
+        t2aa, t2ab, t2bb = cc.t2
+        t2aa = (t2aa - t2aa.transpose(0, 1, 3, 2)) / 2
+        t2bb = (t2bb - t2bb.transpose(0, 1, 3, 2)) / 2
+        t2aa = t2aa.transpose(0, 2, 1, 3)
+        t2bb = t2bb.transpose(0, 2, 1, 3)
+        t2ab = t2ab.transpose(0, 2, 1, 3)
+        np.savez(
+            amp_file,
+            t1a=t1a,
+            t1b=t1b,
+            t2aa=t2aa,
+            t2ab=t2ab,
+            t2bb=t2bb,
+        )
+    elif isinstance(cc, CCSD):
+        # spin_type = 'restricted'
+        t2 = cc.t2
+        t2 = t2.transpose(0, 2, 1, 3)
+        t1 = np.array(cc.t1)
+        np.savez(amp_file, t1=t1, t2=t2)
 
-    print("\nPreparing AFQMC calculation")
+    return None
 
-    if isinstance(mf_or_cc, (CCSD, UCCSD)):
-        mf = mf_or_cc._scf
-        cc = mf_or_cc
-        if cc.frozen is not None:
-            norb_frozen = cc.frozen
-        if isinstance(cc, UCCSD):
-            # spin_type = 'unrestricted'
-            t1a = np.array(cc.t1[0])
-            t1b = np.array(cc.t1[1])
-            t2aa, t2ab, t2bb = cc.t2
-            t2aa = (t2aa - t2aa.transpose(0, 1, 3, 2)) / 2
-            t2bb = (t2bb - t2bb.transpose(0, 1, 3, 2)) / 2
-            t2aa = t2aa.transpose(0, 2, 1, 3)
-            t2bb = t2bb.transpose(0, 2, 1, 3)
-            t2ab = t2ab.transpose(0, 2, 1, 3)
-            np.savez(
-                amp_file,
-                t1a=t1a,
-                t1b=t1b,
-                t2aa=t2aa,
-                t2ab=t2ab,
-                t2bb=t2bb,
-            )
-        elif isinstance(cc, CCSD):
-            # spin_type = 'restricted'
-            t2 = cc.t2
-            t2 = t2.transpose(0, 2, 1, 3)
-            t1 = np.array(cc.t1)
-            np.savez(amp_file, t1=t1, t2=t2)
-    else:
-        mf = mf_or_cc
-
-    if isinstance(mf, scf.rhf.RHF):
-        spin_type = 'restricted'
-    elif isinstance(mf, scf.uhf.UHF):
-        spin_type = 'unrestricted'
-
+def get_chol(mf, spin_type, norb_frozen = 0, chol_cut = 1e-5, basis_coeff = None):
     mol = mf.mol
-    nao = mf.mol.nao
+    nao = mol.nao
 
     if basis_coeff is None:
         basis_coeff = mf.mo_coeff
@@ -315,9 +296,8 @@ def prep_integral(
 
         chol = chol[:, norb_frozen:, norb_frozen:]
         print(f"Cholesky shape: {chol.shape} ")
-        v0 = 0.5 * oe.contract("gpr,gqr->pq", chol, chol, backend="jax")
-        h1e_mod = h1e - v0
-        chol = chol.reshape((chol.shape[0], -1))
+        nchol = chol.shape[0]
+        chol = jnp.array(chol.reshape((nchol, -1)))
             
     elif spin_type == 'unrestricted':
 
@@ -355,40 +335,80 @@ def prep_integral(
 
         chol_a = chol_a[:, ncore[0]:, ncore[0]:]
         chol_b = chol_b[:, ncore[1]:, ncore[1]:]
+        nchola = chol_a.shape[0]
+        ncholb = chol_b.shape[0]
+
+        assert nchola == ncholb
+        nchol = nchola
+
         print(f"Alpha Cholesky shape: {chol_a.shape} ")
         print(f" Beta Cholesky shape: {chol_b.shape} ")
-        v0_a = 0.5 * oe.contract("gpr,gqr->pq", chol_a, chol_a, backend="jax")
-        v0_b = 0.5 * oe.contract("gpr,gqr->pq", chol_b, chol_b, backend="jax")
-        h1e = jnp.array(h1e)
-        h1e_mod = jnp.array(h1e - jnp.array([v0_a,v0_b]))
-        chol = jnp.array([chol_a.reshape(chol_a.shape[0], -1), chol_b.reshape(chol_b.shape[0], -1)])
+
+        chol = (jnp.array(chol_a.reshape(nchola, -1)), 
+                jnp.array(chol_b.reshape(ncholb, -1)))
+
+    return enuc, h1e, chol, nelec, nbasis, nchol
+
+
+def prep_integral(
+    mf_or_cc: Union[scf.rhf.RHF, scf.uhf.UHF, CCSD, UCCSD],
+    basis_coeff: Optional[np.ndarray] = None,
+    norb_frozen: int = 0,
+    chol_cut: float = 1e-5,
+    amp_file = "amplitudes.npz",
+    chol_file = "FCIDUMP_chol"
+):
+
+    print("\nPreparing AFQMC calculation")
+
+    if isinstance(mf_or_cc, (CCSD, UCCSD)):
+        mf = mf_or_cc._scf
+        cc = mf_or_cc
+        if cc.frozen is not None:
+            norb_frozen = cc.frozen
+            save_cc_amplitude(cc, amp_file)
+
+    else:
+        mf = mf_or_cc
+
+    if isinstance(mf, scf.rhf.RHF):
+        spin_type = 'restricted'
+    elif isinstance(mf, scf.uhf.UHF):
+        spin_type = 'unrestricted'
+  
+    enuc, h1e, chol, nelec, nbasis, nchol \
+        = get_chol(mf, spin_type, norb_frozen, chol_cut, basis_coeff)
 
     print("Finished calculating Cholesky integrals")
     print("Size of the correlation space:")
     print(f"Number of electrons:        {nelec}")
     print(f"Number of basis functions:  {nbasis}")
-    print(f"Number of Cholesky vectors: {chol.shape[-2]}")
+    print(f"Number of Cholesky vectors: {nchol}")
 
     write_integral(
         enuc=enuc,
         hcore=h1e,
-        hcore_mod=h1e_mod,
         chol=chol,
         nelec=sum(nelec),
         nmo=nbasis,
-        ms=mol.spin,
+        ms=mf.mol.spin,
         spin_type=spin_type,
         filename=chol_file,
     )
 
-def write_integral(enuc, hcore, hcore_mod, chol,
-                   nelec, nmo, ms, spin_type,
-                   filename="FCIDUMP_chol",):
+def write_integral(enuc, 
+                   hcore, 
+                   chol,
+                   nelec, 
+                   nmo, 
+                   ms, 
+                   spin_type,
+                   filename="FCIDUMP_chol",
+                   ):
     
     with h5py.File(filename, "w") as fh5:
         fh5["header"] = np.array([nelec, nmo, ms])
         fh5["spin_type"] = spin_type
-        fh5["hcore"] = hcore.flatten()
-        fh5["hcore_mod"] = hcore_mod.flatten()
-        fh5["chol"] = chol.flatten()
+        fh5["hcore"] = hcore
+        fh5["chol"] = chol
         fh5["energy_core"] = enuc
