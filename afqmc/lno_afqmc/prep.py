@@ -22,6 +22,23 @@ from afqmc.lno_afqmc import wavefunctions_unrestricted as ulno_wavefunctions
 
 print = partial(print, flush=True)
 
+def pm_localize(mol, mo_coeff, max_cycle=10):
+    print("Localize cLAS")
+    from pyscf import lo
+    mlo = lo.PipekMezey(mol)
+    mlo.verbose = 1
+    mo = mlo.kernel(mo_coeff)
+    for _ in range(max_cycle):
+        isstable, mo1 = mlo.stability_jacobi()
+        if isstable:
+            break
+        mo = mlo.kernel(mo1)
+    else:
+        print(
+            f"clas localization did not stabilize within {max_cycle} cycles"
+        )
+    return mo
+
 def ao_comp(mf, orbloc, ao_threshold=1e-2, print_ao=False):
     mol = mf.mol
     S = mol.intor('int1e_ovlp')
@@ -247,6 +264,7 @@ def common_las(mf, lno_coeff, ncas, ncore, torr=1e-10, print_ao=False, ao_thresh
     print(f"cLAS projection loss: ({losa:.2e}, {losb:.2e})")
     # span{|C>} = span{|A>} U span{|B>}
     clas_coeff = lno_coeff[0] @ u[:,:idx] # in ao
+    clas_coeff = pm_localize(mf.mol, clas_coeff)
     print('True Common LAS Shape: ', clas_coeff.shape)
     a2c = clas_coeff.T @ s1e @ lno_acta # <C|A>
     b2c = clas_coeff.T @ s1e @ lno_actb # <C|B>
