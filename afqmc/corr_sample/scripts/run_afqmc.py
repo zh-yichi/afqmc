@@ -3,7 +3,9 @@ import numpy as np
 from jax import numpy as jnp
 
 from afqmc import config
-from afqmc.corr_sample import prep, sampling
+from afqmc.corr_sample import prep
+from afqmc.corr_sample import sampling as csp
+from afqmc import sampling as sp
 
 from functools import partial
 print = partial(print, flush=True)
@@ -49,7 +51,7 @@ eql_prop_steps = 50
 block_time = prop.dt * eql_prop_steps
 neql_block = int(-(-options["eql_time"] // block_time))
 
-sampler_eq = sampling.sampler(
+sampler_eq = csp.sampler(
     n_prop_steps = 50,
     n_blocks = neql_block,
     n_walkers = sampler.n_walkers,
@@ -109,41 +111,64 @@ for n in range(sampler.n_blocks):
     if (n+1) % (min(max(sampler.n_blocks // 10, 1), 20)) == 0 and n > 0:
         weight1 = np.mean(wt1_sp[:n+1])
         weight2 = np.mean(wt2_sp[:n+1])
-        rho1 = wt1_sp[:n+1] / weight1 
-        rho2 = wt2_sp[:n+1] / weight2
-        energy1 = np.mean(wt1_sp[:n+1] * en1_sp[:n+1]) / weight1
-        energy2 = np.mean(wt2_sp[:n+1] * en2_sp[:n+1]) / weight2
-        de12 = energy1 - energy2
-        err1 = sampling.blocking_analysis(wt1_sp[:n+1], en1_sp[:n+1], min_nblocks=20, final=False)
-        err2 = sampling.blocking_analysis(wt2_sp[:n+1], en2_sp[:n+1], min_nblocks=20, final=False)
-        cs_err = np.std(de12_sp[:n+1]) / np.sqrt(n)
+        # energy1 = np.mean(wt1_sp[:n+1] * en1_sp[:n+1]) / weight1
+        # energy2 = np.mean(wt2_sp[:n+1] * en2_sp[:n+1]) / weight2
+        # de12 = energy1 - energy2
+        energy1, err1 = sp.blocking(wt1_sp[:n+1], en1_sp[:n+1], min_nblocks=20, final=False)
+        energy2, err2 = sp.blocking(wt2_sp[:n+1], en2_sp[:n+1], min_nblocks=20, final=False)
+        de12, cs_err = csp.blocking(wt1_sp[:n+1], en1_sp[:n+1], 
+                              wt2_sp[:n+1], en2_sp[:n+1], 
+                              min_nblocks=20, final=False)
         print(f"{n+1:4d}  "
               f"{nodes1[n]:6d}  {weight1:10.5f}  {energy1:12.5f}  {err1:8.5f}  "
               f"{nodes2[n]:6d}  {weight2:10.5f}  {energy2:12.5f}  {err2:8.5f}  "
               f"{de12:10.5f}  {cs_err:8.5f}  {time.time() - init_time:10.2f}")
         
-        if cs_err < 0.75 * options["max_error"] and n > 100:
+        if cs_err < 6 * options["max_error"] and n > 120:
             break
 
-# print("\nPost Propagation Process")
-# nsamples = n + 1
-# print(f'total number of samples {nsamples}')
-# wt_sp = wt_sp[:nsamples]
-# e_sp = e_sp[:nsamples]
+print("\nPost Propagation Process")
 
-# mask = sampling.filter_outliers(e_sp, zeta=30)
+# --- valid-sample count: keep the pairing, so use a common cutoff ---
+nsamples1 = np.count_nonzero(wt1_sp)
+nsamples2 = np.count_nonzero(wt2_sp)
+if nsamples1 != nsamples2:
+    print(f"Warning: sample1 has {nsamples1} filled slots, sample2 has {nsamples2}; "
+          f"truncating both to {min(nsamples1, nsamples2)} to keep pairs aligned")
+nsamples = min(nsamples1, nsamples2)
+print(f'total number of paired samples {nsamples}')
 
-# wt_sp = wt_sp[mask]
-# nsample_clean = len(wt_sp)
-# print(f"Removed {nsamples-nsample_clean} Outliers")
-# print(f"Outliers AFQMC Energy {e_sp[~mask]}")
-# e_sp = e_sp[mask]
+wt1_sp = wt1_sp[:nsamples]
+en1_sp  = en1_sp[:nsamples]
+wt2_sp = wt2_sp[:nsamples]
+en2_sp  = en2_sp[:nsamples]
 
-# print("\nBlocking Analysis")
-# energy = np.sum(wt_sp * e_sp) / np.sum(wt_sp)
-# err = sampling.blocking_analysis(wt_sp, e_sp, min_nblocks=20, final=True)
+# --- correlated outlier removal: drop pair i if EITHER member is an outlier ---
+mask1 = sp.filter_outliers(en1_sp, zeta=30)
+mask2 = sp.filter_outliers(en2_sp, zeta=30)
+mask = mask1 & mask2                      # keep only pairs clean in BOTH sets
 
-# print(f"Final AFQMC: {energy:.5f} +/- {err:.5f}")
+nsample_clean = np.count_nonzero(mask)
+print(f"Removed {nsamples - nsample_clean} paired Outliers")
+print(f"  ({np.count_nonzero(~mask1)} flagged in sample1, "
+      f"{np.count_nonzero(~mask2)} in sample2)")
+print(f"Outlier AFQMC Energy sample1 {en1_sp[~mask]}")
+print(f"Outlier AFQMC Energy sample2 {en2_sp[~mask]}")
 
-# print(f"total run time: {time.time() - init_time:.2f}")
+wt1_sp = wt1_sp[mask]; en1_sp = en1_sp[mask]
+wt2_sp = wt2_sp[mask]; en2_sp = en2_sp[mask]
+
+print("\nBlocking Analysis")
+# energy1 = np.sum(wt1_sp * en1_sp) / np.sum(wt1_sp)
+# energy2 = np.sum(wt2_sp * en2_sp) / np.sum(wt2_sp)
+# dE12    = energy1 - energy2
+
+energy1, err1 = sp.blocking(wt1_sp, en1_sp, min_nblocks=20, final=True)
+energy2, err2 = sp.blocking(wt2_sp, en2_sp, min_nblocks=20, final=True)
+de12, cs_err = csp.blocking(wt1_sp, en1_sp, wt2_sp, en2_sp, min_nblocks=20, final=True)
+
+print(f"Final AFQMC E1:    {energy1:.5f} +/- {err1:.5f}")
+print(f"Final AFQMC E2:    {energy2:.5f} +/- {err2:.5f}")
+print(f"Final AFQMC dE:    {de12:.5f} +/- {cs_err:.5f}")
+print(f"total run time: {time.time() - init_time:.2f}")
 print(f"\nAFQMC Sampling Finished\n")

@@ -107,6 +107,41 @@ def match_nchol(chol1, chol2):
 
     return pad(chol1), pad(chol2)
 
+def align_gauge(L1, L2, report=False):
+    """
+    Orthogonal-Procrustes align L2's shared g-gauge to L1, return aligned L2.
+
+    L1, L2: 2D arrays (ng, np), OR tuples of such arrays that SHARE the g-index
+            (e.g. (alpha, beta) UHF Cholesky). One unitary O is applied to every
+            component, because cross-component contractions (alpha-beta Coulomb)
+            require a single common rotation.
+    """
+    single = not isinstance(L2, (tuple, list))
+    L1s = [L1] if single else list(L1)
+    L2s = [L2] if single else list(L2)
+    shapes = [b.shape for b in L2s]
+
+    F1 = [a.reshape(a.shape[0], -1) for a in L1s]      # flatten p-side, keep g
+    F2 = [b.reshape(b.shape[0], -1) for b in L2s]
+
+    M = sum(b @ a.conj().T for a, b in zip(F1, F2))    # summed over components
+    U, s, Vh = np.linalg.svd(M)
+    O = Vh.conj().T @ U.conj().T                        # one shared unitary
+    F2a = [O @ b for b in F2]
+
+    if report:
+        def _line(A, B, tag):
+            res = np.linalg.norm(A - B)
+            ov  = np.real(np.vdot(A, B)) / (np.linalg.norm(A) * np.linalg.norm(B))
+            print(f"{tag:8s}  ||L1-L2||_F = {res:.6e}   overlap = {ov:.6f}")
+        A  = np.concatenate([a.ravel() for a in F1])
+        Bb = np.concatenate([b.ravel() for b in F2])
+        Ba = np.concatenate([b.ravel() for b in F2a])
+        _line(A, Bb, "before"); _line(A, Ba, "after")
+
+    L2a = [b.reshape(sh) for b, sh in zip(F2a, shapes)]
+    return L2a[0] if single else tuple(L2a)
+
 def prep_integral(
     mf_cc1: Union[scf.rhf.RHF, scf.uhf.UHF, CCSD, UCCSD],
     mf_cc2: Union[scf.rhf.RHF, scf.uhf.UHF, CCSD, UCCSD],
@@ -137,7 +172,7 @@ def prep_integral(
         cc2 = mf_cc2
         if cc2.frozen is not None:
             norb_frozen2 = cc2.frozen
-            integral.save_cc_amplitude(cc2, amp_file1)
+            integral.save_cc_amplitude(cc2, amp_file2)
     else:
         mf2 = mf_cc2
 
@@ -159,26 +194,29 @@ def prep_integral(
         = integral.get_chol(mf1, spin_type1, norb_frozen1, chol_cut, basis_coeff1)
     enuc2, h1e2, chol2, nelec2, nbasis2, nchol2 \
         = integral.get_chol(mf2, spin_type2, norb_frozen2, chol_cut, basis_coeff2)
+      
+    print(f"Original number of Cholesky: {nchol1} vs {nchol2}")
     
-    print(f"Original number of Cholesky {nchol1} {nchol2}")
-    
-    if nchol1 != nchol2:
-        print("Pad the smaller Cholesky")
-        if spin_type1 == 'restricted':
+    if spin_type1 == 'restricted':
+        if nchol1 != nchol2:
+            print("Pad the smaller Cholesky")
             chol1, chol2 = match_nchol(chol1, chol2)
-            nchol1 = chol1.shape[0]
-            nchol2 = chol2.shape[0]
-            assert nchol1 == nchol2
-        elif spin_type1 == 'unrestricted':
-            chol1a, chol2a = match_nchol(chol1[0], chol2[0])
-            chol1b, chol2b = match_nchol(chol1[1], chol2[1])
-            assert chol1a.shape[0] == chol1b.shape[0]
-            assert chol2a.shape[0] == chol2b.shape[0]
-            assert chol1a.shape[0] == chol2a.shape[0]
-            nchol1 = chol1a.shape[0]
-            nchol2 = chol2a.shape[0]
-            chol1 = (chol1a, chol1b)
-            chol2 = (chol2a, chol2b)
+        nchol1 = chol1.shape[0]; nchol2 = chol2.shape[0]
+        assert nchol1 == nchol2
+        chol2 = align_gauge(chol1, chol2, report=True)
+
+    elif spin_type1 == 'unrestricted':
+        chol1a, chol1b = chol1
+        chol2a, chol2b = chol2
+        if nchol1 != nchol2:
+            print("Pad the smaller Cholesky")
+            chol1a, chol2a = match_nchol(chol1a, chol2a)
+            chol1b, chol2b = match_nchol(chol1b, chol2b)
+        assert chol1a.shape[0] == chol1b.shape[0] == chol2a.shape[0] == chol2b.shape[0]
+        nchol1 = nchol2 = chol1a.shape[0]
+        chol1 = (chol1a, chol1b)
+        chol2 = align_gauge(chol1, (chol2a, chol2b), report=True)   # ONE shared O
+        
 
     print("Finished calculating Cholesky integrals")
     print(f"{'Active Space:':<22}  {'System 1':>10}  {'System 2':>10}")

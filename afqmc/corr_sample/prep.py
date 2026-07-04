@@ -1,18 +1,29 @@
 from afqmc import prep, cholesky
-from afqmc.corr_sample import sampling
-
-from jax import jit
-from jax import numpy as jnp
+from afqmc.corr_sample import sampling as csp
 
 print_start = prep.print_start
 init_hf_prop_data = prep.init_hf_prop_data
 
-def init_afqmc(options=None,
-               option_file="options.bin",
-               amp_file1="amplitudes1.npz",
-               chol_file1="FCIDUMP_chol1",
-               amp_file2="amplitudes2.npz",
-               chol_file2="FCIDUMP_chol2",
+def get_sampler(options, nchol):
+
+    if  'pt2ccsd' in options['trial']:
+        sampler = csp.sampler_pt2(
+            n_prop_steps=options["n_prop_steps"],
+            n_blocks=options["n_blocks"],
+            n_walkers=options["n_walkers"],
+            n_chol=nchol)           
+    else:
+        sampler = csp.sampler(
+            n_prop_steps=options["n_prop_steps"],
+            n_blocks=options["n_blocks"],
+            n_walkers=options["n_walkers"],
+            n_chol=nchol)  
+    
+    return sampler
+
+def init_afqmc(options=None, option_file="options.bin",
+               amp_file1="amplitudes1.npz", chol_file1="FCIDUMP_chol1",
+               amp_file2="amplitudes2.npz", chol_file2="FCIDUMP_chol2",
                ):
     
     options = prep.get_qmc_options(options, option_file)
@@ -41,12 +52,7 @@ def init_afqmc(options=None,
 
 
     prop = prep.get_propagator(options)
-    # sampler = prep.get_sampler(options, nchol1)
-    sampler = sampling.sampler(
-        n_prop_steps=options["n_prop_steps"],
-        n_blocks=options["n_blocks"],
-        n_walkers=options["n_walkers"],
-        n_chol=nchol1)
+    sampler = get_sampler(options, nchol1)
 
     print(f"\n{'':<22}  {'QMC System 1':>14}  {'QMC System 2':>14}")
     print(f"{'Number of electrons:':<22}  {str(nelec_sp1):>14}  {str(nelec_sp2):>14}")
