@@ -20,6 +20,10 @@ from afqmc.lno_afqmc import propagation, sampling
 from afqmc.lno_afqmc import wavefunctions_restricted as lno_wavefunctions
 from afqmc.lno_afqmc import wavefunctions_unrestricted as ulno_wavefunctions
 
+from afqmc import prep
+
+init_hf_prop_data = prep.init_hf_prop_data
+
 print = partial(print, flush=True)
 
 def pm_localize(mol, mo_coeff, max_cycle=10):

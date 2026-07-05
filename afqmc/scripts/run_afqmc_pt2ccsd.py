@@ -55,7 +55,7 @@ for n in range(1, neql_block+1):
               f"{e:12.5f}  {time.time() - init_time:8.2f}")
 
 print("\nSampling")
-print(f"Target (raw) 0.6 x max_error = {0.6 * options["max_error"]:.5f})")
+print(f"Target (raw) 0.6 x max_error = {0.6 * options['max_error']:.5f})")
 print(f"{'blocks':>6s}  "
       f"{'weight':>12s}  {'nodes':>5s}  "
       f"{'E_Guide':>12s}  {'error':>8s}  "

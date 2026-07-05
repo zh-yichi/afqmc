@@ -49,7 +49,7 @@ for n in range(1,neql_block+1):
         print(f"{(n+1)*block_time:5.2f}  {wt:10.5f}  {e:10.5f}  {time.time() - init_time:8.2f}")
 
 print("\nSampling)")
-print(f"Target (raw) 0.6 x max_error = {0.6 * options["max_error"]:.5f}")
+print(f"Target (raw) 0.6 x max_error = {0.6 * options['max_error']:.5f}")
 print(f"{'N':>4s}  {'killW':>5s}  {'weight':>10s}  "
       f"{'energy':>10s}  {'error':>8s}  {'runTime':>10s}")
 

@@ -14,74 +14,79 @@ from jax import jit
 import numpy as np
 
 # @jit
-def procrustes_rotation(A, B):
-    # occ Procrustes
-    # min_R|AR-B|F the Frobenius norm
-    # rotate A to match B
-    m = B.T @ A
-    u, _, v = np.linalg.svd(m)
-    pcsts_r = v.T @ u.T
-    Ap = A @ pcsts_r
-    return Ap
+# def procrustes_rotation(A, B):
+#     # occ Procrustes
+#     # min_R|AR-B|F the Frobenius norm
+#     # rotate A to match B
+#     m = B.T @ A
+#     u, _, v = np.linalg.svd(m)
+#     pcsts_r = v.T @ u.T
+#     Ap = A @ pcsts_r
+#     return Ap
 
-# def procrustes_rotation(A, B, S):
-#     # orthogonal R minimizing ||A R - B|| in the S-metric,
-#     # i.e. maximizing the orbital overlap Tr(R^T A^T S B)
-#     M = A.T @ S @ B
-#     assert M.shape[0] == M.shape[1], "occ/vir counts must match between the two systems"
-#     U, _, Vt = np.linalg.svd(M)
-#     R = U @ Vt
-#     return A @ R
+@jit
+def right_procrustes(A, B):
+    '''
+    given matices A, B, find R s.t, min_R||A-BR||F the Frobenius norm
+    that is, R rotates (flips) the columns of B to match A element-wise
+    '''
+    m = B.T.conj() @ A
+    u, _, v_dag = jnp.linalg.svd(m)
+    R = u @ v_dag
+    return R
 
-def match_rmocoeff(mf1, mf2):
+@jit
+def left_procrustes(A, B):
+    '''
+    given matices A, B, find R s.t, min_R||A-RB||F the Frobenius norm
+    that is, R rotates (flips) the rows of B to match A element-wise
+    '''
+    m = A @ B.T.conj()
+    u, _, v_dag = jnp.linalg.svd(m)
+    R = u @ v_dag
+    return R
+
+def _report_line(A, B, tag):
+    res = np.linalg.norm(A - B)
+    denom = np.linalg.norm(A) * np.linalg.norm(B)
+    ov = np.real(np.vdot(A, B)) / denom if denom else 1.0
+    print(f"  {tag:18s} ||d||_F = {res:.6e}   overlap = {ov:.6f}")
+
+def _align_blocks(mo1, mo2, nocc1, nocc2, frozen, report, prefix=""):
+    names = ("frozen", "occ", "vir")
+    b1 = (mo1[:, :frozen], mo1[:, frozen:nocc1], mo1[:, nocc1:])
+    b2 = (mo2[:, :frozen], mo2[:, frozen:nocc2], mo2[:, nocc2:])
+    aligned = []
+    for name, a, b in zip(names, b1, b2):
+        ba = b @ np.array(right_procrustes(a, b))
+        if report and a.size:
+            tag = f"{prefix}{name}"
+            if a.shape == b.shape:                 # 'before' needs equal block sizes
+                _report_line(a, b,  f"{tag} before")
+            _report_line(a, ba, f"{tag} after")
+        aligned.append(ba)
+    return np.hstack(aligned)
+
+def align_rmo(mf1, mf2, frozen=0, report=False):
     nocc1 = np.count_nonzero(mf1.mo_occ)
     nocc2 = np.count_nonzero(mf2.mo_occ)
-    mo1 = mf1.mo_coeff
-    mo2 = mf2.mo_coeff
-    mo_occ1 = mo1[:,:nocc1]
-    mo_vir1 = mo1[:,nocc1:]
-    mo_occ2 = mo2[:,:nocc2]
-    mo_vir2 = mo2[:,nocc2:]
-    mo_occ1 = np.array(procrustes_rotation(mo_occ1, mo_occ2))
-    mo_vir1 = np.array(procrustes_rotation(mo_vir1, mo_vir2))
-    mo_coeff1 = np.hstack([mo_occ1, mo_vir1]) # match 1 with 2
+    return _align_blocks(mf1.mo_coeff, mf2.mo_coeff, nocc1, nocc2, frozen, report)
 
-    return mo_coeff1
+def align_umo(mf1, mf2, frozen=0, report=False):
+    matched = []
+    for s, name in ((0, "alpha "), (1, "beta  ")):
+        nocc1 = np.count_nonzero(mf1.mo_occ[s])
+        nocc2 = np.count_nonzero(mf2.mo_occ[s])
+        matched.append(_align_blocks(mf1.mo_coeff[s], mf2.mo_coeff[s],
+                                     nocc1, nocc2, frozen, report, prefix=name))
+    return np.array(matched)
 
-def match_umocoeff(mf1, mf2):
-    nocc1_a = np.count_nonzero(mf1.mo_occ[0])
-    nocc1_b = np.count_nonzero(mf1.mo_occ[1])
-    nocc2_a = np.count_nonzero(mf2.mo_occ[0])
-    nocc2_b = np.count_nonzero(mf2.mo_occ[1])
-    mo1 = mf1.mo_coeff
-    mo2 = mf2.mo_coeff
-
-    mo_occ1_a = mo1[0][:,:nocc1_a]
-    mo_vir1_a = mo1[0][:,nocc1_a:]
-    mo_occ1_b = mo1[1][:,:nocc1_b]
-    mo_vir1_b = mo1[1][:,nocc1_b:]
-
-    mo_occ2_a = mo2[0][:,:nocc2_a]
-    mo_vir2_a = mo2[0][:,nocc2_a:]
-    mo_occ2_b = mo2[1][:,:nocc2_b]
-    mo_vir2_b = mo2[1][:,nocc2_b:]
-
-    mo_occ1_a = np.array(procrustes_rotation(mo_occ1_a, mo_occ2_a))
-    mo_vir1_a = np.array(procrustes_rotation(mo_vir1_a, mo_vir2_a))
-    mo_occ1_b = np.array(procrustes_rotation(mo_occ1_b, mo_occ2_b))
-    mo_vir1_b = np.array(procrustes_rotation(mo_vir1_b, mo_vir2_b))
-
-    mo_coeff1 = [np.hstack([mo_occ1_a, mo_vir1_a]),
-                 np.hstack([mo_occ1_b, mo_vir1_b])]
-
-    return mo_coeff1
-
-def match_mocoeff(mf1, mf2):
-    print("Procrustes Rotation: mo1 -> mo2")
+def align_mo(mf1, mf2, frozen=0, report=False):
+    print("Procrustes Aligning mo2 -> mo1")
     if isinstance(mf1, scf.rhf.RHF):
-        return match_rmocoeff(mf1, mf2)
+        return align_rmo(mf1, mf2, frozen, report)
     elif isinstance(mf1, scf.uhf.UHF):
-        return match_umocoeff(mf1, mf2)
+        return align_umo(mf1, mf2, frozen, report)
 
 def match_nchol(chol1, chol2):
     """
@@ -110,7 +115,6 @@ def match_nchol(chol1, chol2):
 def align_gauge(L1, L2, report=False):
     """
     Orthogonal-Procrustes align L2's shared g-gauge to L1, return aligned L2.
-
     L1, L2: 2D arrays (ng, np), OR tuples of such arrays that SHARE the g-index
             (e.g. (alpha, beta) UHF Cholesky). One unitary O is applied to every
             component, because cross-component contractions (alpha-beta Coulomb)
@@ -120,13 +124,14 @@ def align_gauge(L1, L2, report=False):
     L1s = [L1] if single else list(L1)
     L2s = [L2] if single else list(L2)
     shapes = [b.shape for b in L2s]
-
-    F1 = [a.reshape(a.shape[0], -1) for a in L1s]      # flatten p-side, keep g
+    F1 = [a.reshape(a.shape[0], -1) for a in L1s]   # flatten p-side, keep g
     F2 = [b.reshape(b.shape[0], -1) for b in L2s]
 
-    M = sum(b @ a.conj().T for a, b in zip(F1, F2))    # summed over components
-    U, s, Vh = np.linalg.svd(M)
-    O = Vh.conj().T @ U.conj().T                        # one shared unitary
+    # One shared unitary via a single left-Procrustes over all components:
+    # min_O sum_i ||F1_i - O F2_i||_F  ==  min_O ||[F1_0|F1_1|...] - O [F2_0|F2_1|...]||_F
+    F1c = np.concatenate(F1, axis=1)
+    F2c = np.concatenate(F2, axis=1)
+    O = np.asarray(left_procrustes(F1c, F2c))       # min_O ||F1c - O F2c||
     F2a = [O @ b for b in F2]
 
     if report:

@@ -25,17 +25,7 @@ if "rdm1" not in wave_data:
     
 ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
 ham_data = prop._build_propagation_intermediates(ham_data, trial, wave_data)
-prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers = None)
-
-if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
-    raise ValueError(
-        "Initial overlaps are zero. Pass walkers with non-zero overlap."
-    )
-
-prop_data["key"] = random.PRNGKey(options["seed"])
-prop_data["n_killed_walkers"] = 0
-prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
-e_init = prop_data["e_estimate"]
+prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
 
 e0, t1olp, eorb, t2eorb, t2orb, e0bar \
     = trial.calc_eorb_pt2(prop_data['walkers'], ham_data, wave_data)
@@ -50,8 +40,9 @@ eorb_pt = jnp.real(eorb/t1olp + t2eorb/t1olp - t2orb*e0bar/t1olp**2)
 
 print("\nEquilibration")
 print(f"Initial Orbital energy: {eorb_pt:.6f}")
-print(f"{'inv_T':>5s}  {'energy':>12s}  {'runTime':>8s}")
-print(f"{0.:5.2f}  {e0:12.6f}  {time.time() - init_time:8.2f}")
+print(f"{'inv_T':>5s}  {'nodes':>5s}  {'weight':>10s}  {'energy':>10s}  {'runTime':>8s}")
+print(f"{0.:5.2f}  {prop_data["n_killed_walkers"]:5d}  {np.sum(prop_data["weights"]):10.5f}  "
+      f"{prop_data["e_estimate"]:10.5f}  {time.time()-init_time:8.2f}")
 
 sampler_eq = sampling.sampler(
     n_prop_steps=50,
@@ -64,18 +55,20 @@ neql_block = int(-(-options["eql_time"] // block_time))
 for n in range(1, neql_block+1):
     prop_data, (wt, e) \
         = sampler_eq.block_sample(prop_data, ham_data, prop, trial, wave_data)
+    
+    prop_data["n_killed_walkers"] = 0
 
     if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
-        nkill = prop_data["n_killed_walkers"]
-        print(f"{(n+1)*block_time:5.2f}  {e:12.6f}  {time.time() - init_time:8.2f}")
+        nodes = prop_data["n_killed_walkers"]
+        print(f"{(n+1)*block_time:5.2f}  {nodes:5d}  {wt:10.5f}  {e:10.5f}  {time.time() - init_time:8.2f}")
 
 print("\nSampling Blocks")
 
 print(f"Target Final Error ~ {options['max_error']:.6f}")
-print(f"{'N':>4s}  "
+print(f"{'N':>4s}  {'nodes':>5s}  {'weight':>10s}"
       f"{'E(Guide)':>12s}  {'Error':>8s}  "
       f"{'E(Orb)':>10s}  {'Error':>8s}  "
-      f"{'Kill_WK':>7s}  {'Time':>8s}")
+      f"{'Time':>8s}")
 
 wt_sp = np.zeros(sampler.n_blocks,dtype="float64")
 e0_sp = np.zeros(sampler.n_blocks,dtype="float64")
@@ -85,7 +78,8 @@ t2orb_sp = np.zeros(sampler.n_blocks,dtype="complex128") # "float64")
 e0bar_sp = np.zeros(sampler.n_blocks,dtype="complex128") # "float64")
 t1olp_sp = np.zeros(sampler.n_blocks,dtype="complex128") # "float64")
 ept_sp = np.zeros(sampler.n_blocks,dtype="float64")
-n_killed = 0
+
+nodes = 0
 
 for n in range(sampler.n_blocks):
     prop_data, (wt, e0, eorb, t2eorb, t2orb, e0bar, t1olp) = \
@@ -98,26 +92,26 @@ for n in range(sampler.n_blocks):
     t2orb_sp[n] = t2orb
     e0bar_sp[n] = e0bar
     t1olp_sp[n] = t1olp
-    n_killed += prop_data["n_killed_walkers"]
+    nodes += prop_data["n_killed_walkers"]
+    prop_data["n_killed_walkers"] = 0
 
     prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * e0
     
     ept_sp[n] = (eorb/t1olp + t2eorb/t1olp - t2orb*e0bar/t1olp**2).real
 
-    # if (n+1) % (max(sampler.n_blocks // 10, 1)) == 0 and n > 0:
     if (n+1) % (min(max(sampler.n_blocks // 10, 1), 20)) == 0 and n > 0:          
-        wt = np.sum(wt_sp[:n+1])
-        e0 = np.sum(wt_sp[:n+1] * e0_sp[:n+1]) / wt
-        eorb = np.sum(wt_sp[:n+1] * eorb_sp[:n+1]) / wt
-        t2eorb = np.sum(wt_sp[:n+1] * t2eorb_sp[:n+1]) / wt
-        t2orb = np.sum(wt_sp[:n+1] * t2orb_sp[:n+1]) / wt
-        e0bar = np.sum(wt_sp[:n+1] * e0bar_sp[:n+1]) / wt
-        t1olp = np.sum(wt_sp[:n+1] * t1olp_sp[:n+1]) / wt
+        wt = np.mean(wt_sp[:n+1])
+        e0 = np.mean(wt_sp[:n+1] * e0_sp[:n+1]) / wt
+        eorb = np.mean(wt_sp[:n+1] * eorb_sp[:n+1]) / wt
+        t2eorb = np.mean(wt_sp[:n+1] * t2eorb_sp[:n+1]) / wt
+        t2orb = np.mean(wt_sp[:n+1] * t2orb_sp[:n+1]) / wt
+        e0bar = np.mean(wt_sp[:n+1] * e0bar_sp[:n+1]) / wt
+        t1olp = np.mean(wt_sp[:n+1] * t1olp_sp[:n+1]) / wt
         
-        e0_err = (np.sqrt(np.sum(wt_sp[:n+1] * (e0_sp[:n+1] - e0)**2) / wt / (n+1))).real
+        e0_err = (np.sqrt(np.mean(wt_sp[:n+1] * (e0_sp[:n+1] - e0)**2) / wt / (n+1))).real
 
         eorb_pt = (eorb/t1olp + t2eorb/t1olp - t2orb*e0bar/t1olp**2).real
-        # (p_eorb,p_t2eorb,p_t2orb,p_t2orb,p_t1olp)
+
         dE = np.array([
             1/t1olp,
             1/t1olp,
@@ -135,10 +129,10 @@ for n in range(sampler.n_blocks):
         
         eorb_pt_err = ((np.sqrt(dE @ cov @ dE)) / np.sqrt(n+1)).real
         
-        print(f"{n+1:4d}  "
+        print(f"{n+1:4d}  {nodes:5d}  {wt:10.5f}  "
               f"{e0:12.6f}  {e0_err:8.6f}  "
               f"{eorb_pt:10.6f}  {eorb_pt_err:8.6f}  "
-              f"{n_killed:7d}  {time.time() - init_time:8.2f}")
+              f"{time.time() - init_time:8.2f}")
 
         if eorb_pt_err < 0.75 * options["max_error"] and n > 100:
             break
@@ -203,7 +197,7 @@ def filter_outliers(ept_sp, zeta=10):
     
     return mask
 
-mask = filter_outliers(ept_sp, zeta=20)
+mask = filter_outliers(ept_sp, zeta=30)
 
 wt_sp = wt_sp[mask]
 
