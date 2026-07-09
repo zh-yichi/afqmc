@@ -48,8 +48,8 @@ print(f"Initial Orbital energy: {ept2orb:.5f}")
 print(f"{'inv_T':>5s}  {'nodes':>5s}  {'weight':>10s}  {'energy':>10s}  {'error':>8s}  "
       f"{'runTime':>8s}")
 
-print(f"{0.:5.2f}  {prop_data["n_killed_walkers"]:5d}  {np.sum(prop_data["weights"]):10.5f}  "
-      f"{prop_data["e_estimate"]:10.5f}  {0.:8.5f}  {time.time()-init_time:8.2f}")
+print(f"{0.:5.2f}  {prop_data['n_killed_walkers']:5d}  {np.sum(prop_data['weights']):10.5f}  "
+      f"{prop_data['e_estimate']:10.5f}  {0.:8.5f}  {time.time()-init_time:8.2f}")
 
 block_time = prop.dt * options["n_prop_steps"]
 neql_block = int(-(-options["eql_time"] // block_time))
