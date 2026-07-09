@@ -218,8 +218,10 @@ def load_chol(chol_file="FCIDUMP_chol"):
         chol = jnp.array(chol).reshape(-1, norb, norb)
 
     elif spin_type == 'unrestricted':
-        h1 = jnp.array(h1).reshape(2, norb, norb)
-        chol = jnp.array(chol).reshape(2, -1, norb, norb)
+        h1 = (jnp.array(h1[0].reshape(norb, norb)),
+              jnp.array(h1[1].reshape(norb, norb)))
+        chol = (jnp.array(chol[0].reshape(-1, norb, norb)),
+                jnp.array(chol[1].reshape(-1, norb, norb)))
 
     assert type(ms) is np.int64
     assert type(nelec) is np.int64
@@ -230,20 +232,23 @@ def load_chol(chol_file="FCIDUMP_chol"):
 
     return h0, h1, chol, ms, nelec_sp, norb, spin_type
 
-def get_hamiltonian(h0, h1, chol, norb, spin_type):
+def get_hamiltonian(h0, h1, chol, norb):
 
     ham = hamiltonian.hamiltonian(norb)
     ham_data = {}
     ham_data["h0"] = h0
-
-    if spin_type == 'restricted':
-        ham_data["h1"] = jnp.array([h1, h1])
+    ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2.0, 
+                      jnp.array(h1[1] + h1[1].T) / 2.0)
+    
+    if isinstance(chol, (jax.Array, np.ndarray)):
         nchol = chol.shape[0]
         ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
-    elif spin_type == 'unrestricted':
-        ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2.0, 
-                          jnp.array(h1[1] + h1[1].T) / 2.0)
-        nchol = chol[0].shape[0]
+    
+    elif isinstance(chol, (list, tuple)):
+        nchola = chol[0].shape[0]
+        ncholb = chol[1].shape[0]
+        assert nchola == ncholb, f"nchol mismatch: alpha={nchola}, beta={ncholb}"
+        nchol = nchola
         ham_data["chol"] = (jnp.array(chol[0].reshape(nchol, -1)),
                             jnp.array(chol[1].reshape(nchol, -1)))
         
@@ -520,57 +525,10 @@ def init_afqmc(options=None,
 
     print("\nLoad system from Integral File")
 
-    # with h5py.File(chol_file, "r") as fh5:
-    #     [nelec, norb, ms] = fh5["header"]
-    #     spin_type = fh5["spin_type"][()]
-    #     h0 = jnp.array(fh5.get("energy_core"))
-    #     h1 = jnp.array(fh5.get("hcore"))
-    #     chol = jnp.array(fh5.get("chol"))
-    #     # h1_mod = jnp.array(fh5.get("hcore_mod"))
-    
-    # if isinstance(spin_type, bytes):
-    #     spin_type = spin_type.decode()
-
-    # assert spin_type in ["restricted", "unrestricted"]
-
-    # if spin_type == 'restricted':
-    #     h1 = jnp.array(h1).reshape(norb, norb)
-    #     # h1_mod = jnp.array(h1_mod).reshape(norb, norb)
-    #     chol = jnp.array(chol).reshape(-1, norb, norb)
-
-    # elif spin_type == 'unrestricted':
-    #     h1 = jnp.array(h1).reshape(2, norb, norb)
-    #     # h1_mod = jnp.array(h1_mod).reshape(2, norb, norb)
-    #     chol = jnp.array(chol).reshape(2, -1, norb, norb)
-
-    # assert type(ms) is np.int64
-    # assert type(nelec) is np.int64
-    # assert type(norb) is np.int64
-
-    # ms, nelec, norb = int(ms), int(nelec), int(norb)
-    # nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
 
     h0, h1, chol, ms, nelec_sp, norb, spin_type = load_chol(chol_file)
 
-    # ham = hamiltonian.hamiltonian(norb)
-    # ham_data = {}
-    # ham_data["h0"] = h0
-
-    # if spin_type == 'restricted':
-    #     ham_data["h1"] = jnp.array([h1, h1])
-    #     # ham_data["h1_mod"] = jnp.array(h1_mod)
-    #     nchol = chol.shape[0]
-    #     ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
-    # elif spin_type == 'unrestricted':
-    #     ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2.0, 
-    #                       jnp.array(h1[1] + h1[1].T) / 2.0)
-    #     # ham_data["h1_mod"] = (jnp.array(h1_mod[0]),
-    #     #                       jnp.array(h1_mod[1]))
-    #     nchol = chol[0].shape[0]
-    #     ham_data["chol"] = (jnp.array(chol[0].reshape(nchol, -1)),
-    #                         jnp.array(chol[1].reshape(nchol, -1)))
-
-    ham, ham_data, nchol = get_hamiltonian(h0, h1, chol, norb, spin_type)
+    ham, ham_data, nchol = get_hamiltonian(h0, h1, chol, norb)
 
     nchol_chunk = cholesky.chunk_chol(
         chol, options["nchol_chunk"], options["max_memory"]/options["n_walkers"])

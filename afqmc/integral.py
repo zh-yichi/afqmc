@@ -159,13 +159,10 @@ def h1e_uas(mf, mo_coeff, ncas, ncore, useDF=False):
         energy_core += oe.contract('ij,ji', core_dm[1], hcore[1], backend='jax')
         energy_core += oe.contract('ij,ji', core_dm[0], corevhf[0], backend='jax') * .5
         energy_core += oe.contract('ij,ji', core_dm[1], corevhf[1], backend='jax') * .5
-        # time2 = time.perf_counter()
+
     h1eff = [jnp.array(mo_cas[0].T @ (hcore[0]+corevhf[0]) @ mo_cas[0]),
              jnp.array(mo_cas[1].T @ (hcore[1]+corevhf[1]) @ mo_cas[1])]
-    # time3 = time.perf_counter()
-    # print(f"build JK time: {time1 - time0:.6f} s")
-    # print(f"build ecore time: {time2 - time1:.6f} s")
-    # print(f"build h1eff time: {time3 - time0:.6f} s")
+    
     return h1eff, energy_core
 
 @partial(jit, static_argnums=0)
@@ -223,13 +220,61 @@ def common_as(mf, mo_coeff, ncas, ncore, torr=1e-10):
 
     return cas_coeff, a2c, b2c
 
-def save_cc_amplitude(cc, amp_file):
+# def save_cc_amplitude(cc, t1, t2, amp_file):
 
-    if isinstance(cc, UCCSD):
-        # spin_type = 'unrestricted'
-        t1a = np.array(cc.t1[0])
-        t1b = np.array(cc.t1[1])
-        t2aa, t2ab, t2bb = cc.t2
+#     if isinstance(cc, UCCSD):
+#         # spin_type = 'unrestricted'
+#         t1a = np.array(cc.t1[0])
+#         t1b = np.array(cc.t1[1])
+#         t2aa, t2ab, t2bb = cc.t2
+#         t2aa = (t2aa - t2aa.transpose(0, 1, 3, 2)) / 2
+#         t2bb = (t2bb - t2bb.transpose(0, 1, 3, 2)) / 2
+#         t2aa = t2aa.transpose(0, 2, 1, 3)
+#         t2bb = t2bb.transpose(0, 2, 1, 3)
+#         t2ab = t2ab.transpose(0, 2, 1, 3)
+#         np.savez(
+#             amp_file,
+#             t1a=t1a,
+#             t1b=t1b,
+#             t2aa=t2aa,
+#             t2ab=t2ab,
+#             t2bb=t2bb,
+#         )
+#     elif isinstance(cc, CCSD):
+#         # spin_type = 'restricted'
+#         t2 = cc.t2
+#         t2 = t2.transpose(0, 2, 1, 3)
+#         t1 = np.array(cc.t1)
+#         np.savez(amp_file, t1=t1, t2=t2)
+
+#     return None
+
+def save_cc_amplitude(cc=None, t1=None, t2=None, amp_file=None):
+    if t1 is None:
+        try:
+            t1 = cc.t1
+        except AttributeError as e:
+            raise ValueError(
+                "t1 was not provided and could not be read from the cc object."
+            ) from e
+    if t2 is None:
+        try:
+            t2 = cc.t2
+        except AttributeError as e:
+            raise ValueError(
+                "t2 was not provided and could not be read from the cc object."
+            ) from e
+
+    if isinstance(t1, np.ndarray):
+        # restricted
+        t1 = np.array(t1)
+        t2 = t2.transpose(0, 2, 1, 3)
+        np.savez(amp_file, t1=t1, t2=t2)
+    elif isinstance(t1, (tuple, list)):
+        # unrestricted
+        t1a = np.array(t1[0])
+        t1b = np.array(t1[1])
+        t2aa, t2ab, t2bb = t2
         t2aa = (t2aa - t2aa.transpose(0, 1, 3, 2)) / 2
         t2bb = (t2bb - t2bb.transpose(0, 1, 3, 2)) / 2
         t2aa = t2aa.transpose(0, 2, 1, 3)
@@ -243,16 +288,15 @@ def save_cc_amplitude(cc, amp_file):
             t2ab=t2ab,
             t2bb=t2bb,
         )
-    elif isinstance(cc, CCSD):
-        # spin_type = 'restricted'
-        t2 = cc.t2
-        t2 = t2.transpose(0, 2, 1, 3)
-        t1 = np.array(cc.t1)
-        np.savez(amp_file, t1=t1, t2=t2)
-
+    else:
+        raise TypeError(
+            f"Cannot infer spin type from t1 of type {type(t1).__name__}; "
+            f"expected an ndarray (restricted) or a tuple/list (unrestricted)."
+        )
+    
     return None
 
-def get_chol(mf, spin_type, norb_frozen = 0, chol_cut = 1e-5, basis_coeff = None):
+def get_chol(mf, norb_frozen=0, chol_cut=1e-5, basis_coeff=None):
     mol = mf.mol
     nao = mol.nao
 
@@ -268,8 +312,7 @@ def get_chol(mf, spin_type, norb_frozen = 0, chol_cut = 1e-5, basis_coeff = None
     else:
         useDF = False
 
-    if spin_type == 'restricted':
-
+    if isinstance(mf, scf.rhf.RHF):
         nbasis = nao - norb_frozen
         nocc = int(np.count_nonzero(mf.mo_occ))
         nelec = [nocc - norb_frozen, nocc - norb_frozen]
@@ -299,9 +342,13 @@ def get_chol(mf, spin_type, norb_frozen = 0, chol_cut = 1e-5, basis_coeff = None
         nchol = chol.shape[0]
         chol = jnp.array(chol.reshape((nchol, -1)))
             
-    elif spin_type == 'unrestricted':
+    elif isinstance(mf, scf.uhf.UHF):
+        
+        if isinstance(norb_frozen, (list, tuple)):
+            ncore = np.array(norb_frozen, dtype=np.int32)
+        else:
+            ncore = np.array([norb_frozen, norb_frozen], dtype=np.int32)
 
-        ncore = np.array([norb_frozen, norb_frozen], dtype = np.int32)
         nocc = np.array([np.count_nonzero(mf.mo_occ[0]),
                          np.count_nonzero(mf.mo_occ[1])],
                          dtype = np.int32)
@@ -366,7 +413,7 @@ def prep_integral(
         cc = mf_or_cc
         if cc.frozen is not None:
             norb_frozen = cc.frozen
-            save_cc_amplitude(cc, amp_file)
+            save_cc_amplitude(cc=cc, amp_file=amp_file)
 
     else:
         mf = mf_or_cc
@@ -377,7 +424,7 @@ def prep_integral(
         spin_type = 'unrestricted'
   
     enuc, h1e, chol, nelec, nbasis, nchol \
-        = get_chol(mf, spin_type, norb_frozen, chol_cut, basis_coeff)
+        = get_chol(mf, norb_frozen, chol_cut, basis_coeff)
 
     print("Finished calculating Cholesky integrals")
     print("Size of the correlation space:")

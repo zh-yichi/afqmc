@@ -1,40 +1,56 @@
 from dataclasses import dataclass
 from functools import partial
 import jax.numpy as jnp
+import jax
 from jax import jit, lax, random
 import numpy as np
 from scipy.optimize import curve_fit
 
+def filter_outliers(samples, zeta=20):
+
+    median = np.median(samples)
+    mad = 1.4826 * np.median(np.abs(samples - median))
+    bound = zeta * mad
+    mask = np.abs(samples - median) < bound
+    print(f"Remove samples outside Zeta > {zeta}")
+    print(f"Outlier bound [{median-bound:.5f}, {median+bound:.5f}]")
+    
+    return mask
+
+@jit
 def weighted_average(weights, samples):
     # weights: (nsample,)
     # samples: (nsample, nterm)
     nsample = len(weights)
-    samples = samples.reshape(nsample, -1) # for when only one terms in the samples
-    
-    weight_mean = jnp.mean(weights)
-    sample_mean = jnp.mean(weights[:, None] * samples, axis=0) / weight_mean
+    samples = samples.reshape(nsample, -1)   # handle the single-term case
 
-    # weighted variance per term
+    w_sum = jnp.sum(weights)
+    sample_mean = jnp.sum(weights[:, None] * samples, axis=0) / w_sum
+
+    # Kish effective sample size: (sum w)^2 / sum(w^2)
+    n_eff = w_sum**2 / jnp.sum(weights**2)
+
+    # weighted (biased) variance per term
     deviations = samples - sample_mean
-    sample_var = jnp.mean(weights[:, None] * jnp.abs(deviations)**2, axis=0) / weight_mean
+    sample_var = jnp.sum(weights[:, None] * jnp.abs(deviations)**2, axis=0) / w_sum
 
-    # 1sigma uncertainty of each mean
-    sample_err = jnp.sqrt(sample_var / (nsample-1))
+    # standard error of the weighted mean via effective sample size
+    sample_err = jnp.sqrt(sample_var / n_eff)
 
-    return weight_mean, sample_mean, sample_err
+    return w_sum, jnp.squeeze(sample_mean), jnp.squeeze(sample_err)
 
 def blocking(wt_sp, en_sp, min_nblocks=20, final=False):
 
     nsample = len(wt_sp)
-    energy = (np.sum(wt_sp * en_sp) / np.sum(wt_sp)).real
+    weight = np.mean(wt_sp) 
+    energy = (np.mean(wt_sp * en_sp) / weight).real
 
     if not final:
-        w  = wt_sp.real
-        e  = en_sp.real
-        Ew = np.sum(w * e) / np.sum(w)                       # weighted mean <E>
-        var_mean = np.sum(w**2 * (e - Ew)**2) / np.sum(w)**2 # var of weighted mean
-        var_mean *= nsample / (nsample - 1)                  # small-sample correction
-        return energy, np.sqrt(var_mean)
+            W = np.sum(wt_sp)                              # total weight (not the mean)
+            dev = en_sp.real - energy                      # energy is the real estimator
+            var_mean = np.sum(wt_sp**2 * dev**2) / W**2    # scale-invariant SE^2
+            var_mean *= nsample / (nsample - 1)            # small-sample correction
+            return weight, energy, np.sqrt(var_mean).real
 
     # ---------------- full blocking analysis (final=True) ----------------
     max_size = nsample // min_nblocks
@@ -78,8 +94,8 @@ def blocking(wt_sp, en_sp, min_nblocks=20, final=False):
                                p0=p0, maxfev=10000)
         plateau_var = popt[0]
         plateau_var_unc = np.sqrt(pcov[0, 0])
-        plateau_value = np.sqrt(plateau_var)
-        plateau_uncertainty = plateau_var_unc / (2.0 * plateau_value)
+        plateau_err = np.sqrt(plateau_var)
+        plateau_uncertainty = plateau_var_unc / (2.0 * plateau_err)
         tau = popt[2]
         ratio = 0.01 * popt[0] / popt[1]
         if ratio > 0:
@@ -87,19 +103,19 @@ def blocking(wt_sp, en_sp, min_nblocks=20, final=False):
         else:
             plateau_block_size = 1
         print(f"Fit (variance): plateau_var = {plateau_var:.3e} ± {plateau_var_unc:.3e}")
-        print(f"Fit (error):    plateau = {plateau_value:.5f} ± {plateau_uncertainty:.5f}")
+        print(f"Fit (error):    plateau = {plateau_err:.5f} ± {plateau_uncertainty:.5f}")
         print(f"     autocorrelation length ~ {tau:.1f} blocks")
         print(f"     plateau reached at block size ~ {plateau_block_size}")
         if tau > max_size or tau < 0:
             print(f"     !!!Failed to reach plateau in blocking")
             print(f"     Return max block error")
-            plateau_value = np.sqrt(block_vars.max())
+            plateau_err = np.sqrt(block_vars.max())
     except RuntimeError as e:
         print(f"\nFit failed: {e}")
-        plateau_value = np.sqrt(block_vars.max())
-        print(f"Fallback max error: {plateau_value:.5f}")
+        plateau_err = np.sqrt(block_vars.max())
+        print(f"Fallback max error: {plateau_err:.5f}")
 
-    return energy, plateau_value
+    return weight, energy, plateau_err
 
 def pt2blocking(
         h0,
@@ -113,11 +129,11 @@ def pt2blocking(
         ):
 
     nsample = len(wt_sp)
-    wt = np.sum(wt_sp)
-    t1 = np.sum(wt_sp * t1_sp) / wt
-    t2 = np.sum(wt_sp * t2_sp) / wt
-    e0 = np.sum(wt_sp * e0_sp) / wt
-    e1 = np.sum(wt_sp * e1_sp) / wt
+    weight = np.mean(wt_sp)
+    t1 = np.mean(wt_sp * t1_sp) / weight
+    t2 = np.mean(wt_sp * t2_sp) / weight
+    e0 = np.mean(wt_sp * e0_sp) / weight
+    e1 = np.mean(wt_sp * e1_sp) / weight
     energy = (h0 + e0/t1 + e1/t1 - t2*e0/t1**2).real
 
     if not final:
@@ -145,11 +161,9 @@ def pt2blocking(
                 + dfdT1 * (w * t1_sp)
                 + dfdT2 * (w * t2_sp)).real
         var_mean = np.sum(infl**2) * nsample / (nsample - 1)
-        return energy, np.sqrt(var_mean)
+        return weight, energy, np.sqrt(var_mean)
 
     # ---------------- full blocking analysis (final=True) ----------------
-    from scipy.optimize import curve_fit
-
     max_size = nsample // min_nblocks
     if max_size < 10:
         min_nblocks = max(nsample // 10, 3)
@@ -196,9 +210,9 @@ def pt2blocking(
                             p0=p0, maxfev=10000)
         plateau_var = popt[0]
         plateau_var_unc = np.sqrt(pcov[0, 0])
-        plateau_value = np.sqrt(plateau_var)
+        plateau_err = np.sqrt(plateau_var)
         # Error propagation: d(sqrt(v)) = dv / (2 sqrt(v))
-        plateau_uncertainty = plateau_var_unc / (2.0 * plateau_value)
+        plateau_uncertainty = plateau_var_unc / (2.0 * plateau_err)
         tau = popt[2]
         ratio = 0.01 * popt[0] / popt[1]
         if ratio > 0:
@@ -206,120 +220,68 @@ def pt2blocking(
         else:
             plateau_block_size = 1
         print(f"Fit (variance): plateau_var = {plateau_var:.5e} ± {plateau_var_unc:.5e}")
-        print(f"Fit (error):    plateau = {plateau_value:.5f} ± {plateau_uncertainty:.5f}")
+        print(f"Fit (error):    plateau_err = {plateau_err:.5f} ± {plateau_uncertainty:.5f}")
         print(f"     autocorrelation length ~ {tau:.1f} blocks")
         print(f"     plateau reached at block size ~ {plateau_block_size}")
         if tau > max_size or tau < 0:
             print(f"     !!!Failed to reach plateau in blocking")
             print(f"     Return max block error")
-            plateau_value = np.sqrt(block_vars.max())
+            plateau_err = np.sqrt(block_vars.max())
     except RuntimeError as e:
         print(f"\nFit failed: {e}")
-        plateau_value = np.sqrt(block_vars.max())
-        print(f"Fallback max error: {plateau_value:.5f}")
-    return energy, plateau_value
+        plateau_err = np.sqrt(block_vars.max())
+        print(f"Fallback max error: {plateau_err:.5f}")
+    return weight, energy, plateau_err
 
-# def blocking_analysis(wt_sp, en_sp, min_nblocks=20, final=False):
-    
-#     nsample = len(wt_sp)
-#     max_size = nsample // min_nblocks
-#     if max_size < 10:
-#         min_nblocks = max(nsample // 10, 3)
-#         max_size = nsample // min_nblocks
-#         if final:
-#             print(f"Warning: small dataset, relaxed min_nblocks to {min_nblocks}")
-#     block_sizes = np.arange(1, max_size + 1)
-#     block_vars = np.zeros(max_size)
-#     block_var_errs = np.zeros(max_size)
-#     block_means = np.zeros(max_size)
-#     if final:
-#         print(f"nsample = {nsample}, max_block_size = {max_size}, min_nblocks = {min_nblocks}")
-#         print(f"{'B':>4s}  {'NB':>4s}  {'NS':>4s}  {'Observable':>10s}  {'Error':>8s}  {'dError':>8s}")
-#     for i, block_size in enumerate(block_sizes):
-#         n_blocks = nsample // block_size
-#         sl = slice(0, n_blocks * block_size)
-#         wt = (wt_sp[sl]).reshape(n_blocks, block_size)
-#         wt_en = (wt_sp[sl] * en_sp[sl]).reshape(n_blocks, block_size)
-#         block_weight = np.sum(wt, axis=1)
-#         block_energy = (np.sum(wt_en, axis=1) / block_weight).real
-#         block_mean = np.mean(block_energy)
-#         block_var = np.var(block_energy, ddof=1) / n_blocks  # variance of the mean
-#         block_error = np.sqrt(block_var)
-#         var_of_var = block_var * np.sqrt(2.0 / (n_blocks - 1))
-#         err_of_err = block_error / np.sqrt(2.0 * (n_blocks - 1))
-#         block_means[i] = block_mean
-#         block_vars[i] = block_var
-#         block_var_errs[i] = var_of_var
-#         if final:
-#             print(f'{block_size:4d}  {n_blocks:4d}  {block_size*n_blocks:4d}  '
-#                     f'{block_mean:10.5f}  {block_error:8.5f}  {err_of_err:8.5f}')
-    
-#     if final:
-#         def model(x, a, b, tau):
-#             return a - b * np.exp(-x / tau)
-#         p0 = [block_vars.max(), block_vars.max() - block_vars[0], 5.0]
-#         try:
-#             popt, pcov = curve_fit(model, block_sizes, block_vars,
-#                                 sigma=block_var_errs, absolute_sigma=True,
-#                                 p0=p0, maxfev=10000)
-#             plateau_var = popt[0]
-#             plateau_var_unc = np.sqrt(pcov[0, 0])
-#             plateau_value = np.sqrt(plateau_var)
-#             plateau_uncertainty = plateau_var_unc / (2.0 * plateau_value)
-#             tau = popt[2]
-#             ratio = 0.01 * popt[0] / popt[1]
-#             if ratio > 0:
-#                 plateau_block_size = int(np.ceil(-popt[2] * np.log(ratio)))
-#             else:
-#                 plateau_block_size = 1
-#             print(f"Fit (variance): plateau_var = {plateau_var:.3e} ± {plateau_var_unc:.3e}")
-#             print(f"Fit (error):    plateau = {plateau_value:.5f} ± {plateau_uncertainty:.5f}")
-#             print(f"     autocorrelation length ~ {tau:.1f} blocks")
-#             print(f"     plateau reached at block size ~ {plateau_block_size}")
-#             if plateau_block_size > max_size:
-#                 print(f"     !!!Failed to reach plateau in blocking")
-#                 print(f"     Return max block error")
-#                 plateau_value = np.sqrt(block_vars.max())
-#         except RuntimeError as e:
-#             print(f"\nFit failed: {e}")
-#             plateau_value = np.sqrt(block_vars.max())
-#             print(f"Fallback max error: {plateau_value:.5f}")
-    
-#     else: 
-#         plateau_value = np.sqrt(block_vars.max())
-    
-#     return plateau_value
-
-def filter_outliers(samples, zeta=20):
-
-    median = np.median(samples)
-    mad = 1.4826 * np.median(np.abs(samples - median))
-    bound = zeta * mad
-    mask = np.abs(samples - median) < bound
-    print(f"Remove samples outside Zeta > {zeta}")
-    print(f"Outlier bound [{median-bound:.5f}, {median+bound:.5f}]")
-    
-    return mask
 
 @dataclass
 class sampler:
-    n_prop_steps: int = 50
-    n_blocks: int = 500
-    n_chol: int = 0
+    n_prop_steps: int
+    n_blocks: int
+    n_chol: int
 
-    @partial(jit, static_argnums=(0, 4, 5))
-    def _step_scan(
-        self,
-        prop_data,
-        fields,
-        ham_data,
-        prop,
-        trial,
-        wave_data,
-        ):
+    @partial(jit, static_argnums=(0, 1, 2))
+    def prop_nstep(self, prop, trial, prop_data, ham_data, wave_data):
         """Phaseless propagation scan function over steps."""
-        prop_data = prop.propagate(trial, ham_data, prop_data, fields, wave_data)
-        return prop_data, fields
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(
+                self.n_prop_steps,
+                prop.n_walkers,
+                self.n_chol,
+            ),
+        )
+
+        def scan_fn(carry, field):
+            # field has shape (n_walkers, n_chol)
+            prop_data = carry
+            prop_data = prop.propagate(trial, ham_data, prop_data, field, wave_data)
+            return prop_data, None
+
+        prop_data, _ = lax.scan(scan_fn, prop_data, fields)
+
+        prop_data["n_killed_walkers"] = (
+                prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+            )
+
+        prop_data = prop.orthonormalize_walkers(prop_data)
+
+        return prop_data
+
+    # @partial(jit, static_argnums=(0, 4, 5))
+    # def _step_scan(
+    #     self,
+    #     prop_data,
+    #     fields,
+    #     ham_data,
+    #     prop,
+    #     trial,
+    #     wave_data,
+    #     ):
+    #     """Phaseless propagation scan function over steps."""
+    #     prop_data = prop.propagate(trial, ham_data, prop_data, fields, wave_data)
+    #     return prop_data, fields
 
     @partial(jit, static_argnums=(0, 3, 4))
     def block_sample(
@@ -331,37 +293,36 @@ class sampler:
         wave_data,
         ):
         """Block scan function. Propagation and energy calculation."""
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        fields = random.normal(
-            subkey,
-            shape=(
-                self.n_prop_steps,
-                prop.n_walkers,
-                self.n_chol,
-            ),
-        )
-        _step_scan_wrapper = lambda x, y: self._step_scan(
-            x, y, ham_data, prop, trial, wave_data
-        )
-        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
-        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+        # prop_data["key"], subkey = random.split(prop_data["key"])
+        # fields = random.normal(
+        #     subkey,
+        #     shape=(
+        #         self.n_prop_steps,
+        #         prop.n_walkers,
+        #         self.n_chol,
+        #     ),
+        # )
+        # _step_scan_wrapper = lambda x, y: self._step_scan(
+        #     x, y, ham_data, prop, trial, wave_data
+        # )
+        # prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        # prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
 
-        prop_data = prop.orthonormalize_walkers(prop_data)
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data = self.prop_nstep(prop, trial, prop_data, ham_data, wave_data)
+
         energies = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
         outlier = jnp.abs(energies - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
         energies = jnp.where(outlier, prop_data["e_estimate"], energies)
         weights = jnp.where(outlier, 0.0, prop_data["weights"])
 
-        block_weight = jnp.sum(weights)
-        block_energy = jnp.sum(weights * energies) / block_weight
+        wt, en, err = weighted_average(weights, energies)
 
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * block_energy
+        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * en
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
 
-        return prop_data, (block_weight, block_energy)
+        return prop_data, (wt, en, err)
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
@@ -381,21 +342,7 @@ class sampler_exp(sampler):
         wave_data,
         ):
         """Block scan function. Propagation and energy calculation."""
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        fields = random.normal(
-            subkey,
-            shape=(
-                self.n_prop_steps,
-                prop.n_walkers,
-                trial.nchol,
-            ),
-        )
-        _step_scan_wrapper = lambda x, y: self._step_scan(
-            x, y, ham_data, prop, trial, wave_data
-        )
-        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
-        prop_data = prop.orthonormalize_walkers(prop_data)
-        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+        prop_data = self.prop_nstep(prop, trial, prop_data, ham_data, wave_data)
         
         guide_olps = trial.calc_overlap(prop_data["walkers"], wave_data)
         trial_olps = trial.calc_trial_overlap(prop_data["walkers"], wave_data)
@@ -437,20 +384,8 @@ class sampler_pt(sampler):
         wave_data,
         ):
         """Block scan function. Propagation and energy calculation."""
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        fields = random.normal(
-            subkey,
-            shape=(
-                self.n_prop_steps,
-                prop.n_walkers,
-                self.n_chol,
-            ),
-        )
-        _step_scan_wrapper = lambda x, y: self._step_scan(x, y, ham_data, prop, trial, wave_data)
-        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        prop_data = self.prop_nstep(prop, trial, prop_data, ham_data, wave_data)
 
-        prop_data = prop.orthonormalize_walkers(prop_data)
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         t, e0, e1 = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
 
         outlier = jnp.abs(e0 - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
@@ -570,41 +505,43 @@ class sampler_pt2(sampler):
         wave_data,
         ):
         """Block scan function. Propagation and energy calculation."""
-        prop_data["key"], subkey = random.split(prop_data["key"])
-        fields = random.normal(
-            subkey,
-            shape=(
-                self.n_prop_steps,
-                prop.n_walkers,
-                self.n_chol,
-            ),
-        )
-        _step_scan_wrapper = lambda x, y: self._step_scan(
-            x, y, ham_data, prop, trial, wave_data
-        )
-        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
-        prop_data = prop.orthonormalize_walkers(prop_data)
-        prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+        # prop_data["key"], subkey = random.split(prop_data["key"])
+        # fields = random.normal(
+        #     subkey,
+        #     shape=(
+        #         self.n_prop_steps,
+        #         prop.n_walkers,
+        #         self.n_chol,
+        #     ),
+        # )
+        # _step_scan_wrapper = lambda x, y: self._step_scan(
+        #     x, y, ham_data, prop, trial, wave_data
+        # )
+        # prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        # prop_data = prop.orthonormalize_walkers(prop_data)
+        # prop_data["n_killed_walkers"] = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+        
+        prop_data = self.prop_nstep(prop, trial, prop_data, ham_data, wave_data)
 
-        e_guide = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
-        outlier = jnp.abs(e_guide - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        e_guide = jnp.where(outlier, prop_data["e_estimate"], e_guide)
+        eg_sp = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
+        outlier = jnp.abs(eg_sp - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
         weights = jnp.where(outlier, 0.0, prop_data["weights"])
 
-        t1, t2, e0, e1 = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
+        t1_sp, t2_sp, e0_sp, e1_sp = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
 
-        blk_wt = jnp.sum(weights)
-        blk_eg = jnp.sum(weights * e_guide) / blk_wt
-        blk_t1 = jnp.sum(weights * t1) / blk_wt
-        blk_t2 = jnp.sum(weights * t2) / blk_wt
-        blk_e0 = jnp.sum(weights * e0) / blk_wt
-        blk_e1 = jnp.sum(weights * e1) / blk_wt
+        wt = jnp.sum(weights)
+        eg = jnp.sum(weights * eg_sp) / wt
+        t1 = jnp.sum(weights * t1_sp) / wt
+        t2 = jnp.sum(weights * t2_sp) / wt
+        e0 = jnp.sum(weights * e0_sp) / wt
+        e1 = jnp.sum(weights * e1_sp) / wt
 
+        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * eg.real
         prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
-        return prop_data, (blk_wt, blk_eg, blk_t1, blk_t2, blk_e0, blk_e1)
+        return prop_data, (wt, eg, t1, t2, e0, e1)
     
     @partial(jit, static_argnums=(0,3,4))
     def sample_energy(

@@ -135,16 +135,16 @@ for n in range(sampler.n_blocks):
     prop_data2["e_estimate"] = 0.9 * prop_data2["e_estimate"] + 0.1 * eg2
 
     if (n+1) % (min(max(sampler.n_blocks // 10, 1), 20)) == 0 and n > 0:
-        weight1 = np.mean(wt_sp1[:n+1])
-        weight2 = np.mean(wt_sp2[:n+1])
+        # weight1 = np.mean(wt_sp1[:n+1])
+        # weight2 = np.mean(wt_sp2[:n+1])
 
-        guide1 , eg_err1 = sp.blocking(wt_sp1[:n+1], eg_sp1[:n+1])
-        guide2 , eg_err2 = sp.blocking(wt_sp2[:n+1], eg_sp2[:n+1])
+        weight1, guide1 , eg_err1 = sp.blocking(wt_sp1[:n+1], eg_sp1[:n+1])
+        weight2, guide2 , eg_err2 = sp.blocking(wt_sp2[:n+1], eg_sp2[:n+1])
         
-        ept1, ept_err1 = sp.pt2blocking(
+        _, ept1, ept_err1 = sp.pt2blocking(
             ham_data1["h0"], wt_sp1[:n+1], t1_sp1[:n+1], t2_sp1[:n+1], e0_sp1[:n+1], e1_sp1[:n+1]
             )
-        ept2, ept_err2 = sp.pt2blocking(
+        _, ept2, ept_err2 = sp.pt2blocking(
             ham_data2["h0"], wt_sp2[:n+1], t1_sp2[:n+1], t2_sp2[:n+1], e0_sp2[:n+1], e1_sp2[:n+1]
             )
         

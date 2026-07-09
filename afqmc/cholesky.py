@@ -155,16 +155,23 @@ def pack_symmetric(L):
     iu = jnp.tril_indices(n)
     return L[:, iu[0], iu[1]]
 
-def unpack_symmetric(L_packed, n):
+def unpack_symmetric(L_packed, n=None):
     """
     L_packed: shape (g, n*(n+1)//2), lower-tri packed with jnp.tril_indices order
-    returns: shape (g, n, n), symmetric
+    n:        number of orbitals. If None, derived from npair = n(n+1)/2.
+    returns:  shape (g, n, n), symmetric
     """
-    g = L_packed.shape[0]
+    g, npair = L_packed.shape
+    if n is None:
+        n = int(round((np.sqrt(8 * npair + 1) - 1) / 2))
+    if n * (n + 1) // 2 != npair:
+        raise ValueError(
+            f"npair={npair} is not n(n+1)/2 for n={n}; "
+            f"check the packing or pass n explicitly.")
     iu = jnp.tril_indices(n)
     L = jnp.zeros((g, n, n), dtype=L_packed.dtype)
     L = L.at[:, iu[0], iu[1]].set(L_packed)        # lower triangle
-    L = L.at[:, iu[1], iu[0]].set(L_packed)        # mirror to upper (diag rewritten with same values, fine)
+    L = L.at[:, iu[1], iu[0]].set(L_packed)        # mirror to upper (diag rewritten, fine)
     return L
 
 @jax.jit
