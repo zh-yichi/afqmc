@@ -203,6 +203,10 @@ def run_afqmc(mf,
               atom_group = None,
               plot_las = False,
               ):
+    
+    print("\n ******* LNO-CALCULATION ******* \n")
+    
+    tools.check_span(mf, lo_coeff, nfrozen, thresh=1e-10)
 
     spin_type = prep.kind(lo_coeff)
 

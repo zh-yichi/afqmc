@@ -9,7 +9,7 @@ import numpy as np
 from jax import jit, jvp, lax, vmap
 import opt_einsum as oe
 
-from afqmc import slater_tools
+from afqmc import slater_tools, integral
 
 
 class uwfn(ABC):
@@ -821,38 +821,40 @@ class upt2ccsd_ad(uhf):
         return t2eorb, t2orb
 
     @partial(jit, static_argnums=0)
-    def _calc_eorb_pt2(self,
+    def _calc_ept2_frag(self,
                       walker_up: jax.Array,
                       walker_dn: jax.Array,
                       ham_data: dict,
                       wave_data: dict):
+        
+        walker_up_bar = wave_data['exp_t1a'] @ walker_up
+        walker_dn_bar = wave_data['exp_t1b'] @ walker_dn
 
         o0 = jnp.linalg.det(walker_up[:walker_up.shape[1],:]) \
             * jnp.linalg.det(walker_dn[:walker_dn.shape[1],:])
-        e0 = self._calc_energy(walker_up, walker_dn, ham_data, wave_data)
-
-        walker_up_bar = wave_data['exp_t1a'] @ walker_up
-        walker_dn_bar = wave_data['exp_t1b'] @ walker_dn
         
         obar = jnp.linalg.det(walker_up_bar[:walker_up_bar.shape[1], :]) \
             * jnp.linalg.det(walker_dn_bar[:walker_dn_bar.shape[1], :])
-        t1olp = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
-        
-        eorb_bar = self._calc_eorb_bar(walker_up_bar, walker_dn_bar, ham_data, wave_data)
-        t2eorb, t2orb = self._t2e_orb_ad(walker_up_bar, walker_dn_bar, ham_data, wave_data)
-        e12bar = self._calc_energy_bar(walker_up_bar, walker_dn_bar, ham_data, wave_data)
 
-        return e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar
+        eg = self._calc_energy(walker_up, walker_dn, ham_data, wave_data)
+
+        t1 = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
+        
+        e0frag = self._calc_eorb_bar(walker_up_bar, walker_dn_bar, ham_data, wave_data)
+        e1frag, t2frag = self._t2e_orb_ad(walker_up_bar, walker_dn_bar, ham_data, wave_data)
+        e0 = self._calc_energy_bar(walker_up_bar, walker_dn_bar, ham_data, wave_data)
+
+        return eg, t1, t2frag, e0frag, e1frag, e0
 
     @partial(jit, static_argnums=(0)) 
-    def calc_eorb_pt2(self,
+    def calc_ept2_frag(self,
                      walkers: list,
                      ham_data: dict, 
                      wave_data: dict) -> jax.Array:
-        e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar = vmap(
-            self._calc_eorb_pt2,in_axes=(0, 0, None, None))(
+        eg, t1, t2frag, e0frag, e1frag, e0 = vmap(
+            self._calc_ept2_frag,in_axes=(0, 0, None, None))(
             walkers[0], walkers[1], ham_data, wave_data)
-        return e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar
+        return eg, t1, t2frag, e0frag, e1frag, e0
 
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
@@ -890,6 +892,17 @@ class upt2ccsd_ad(uhf):
         h1bar_a = chol_bar_a = la = jeff_a = keff_a = fock_bar_a = h1mod_bar_a = v0bar_a = None
         h1bar_b = chol_bar_b = lb = jeff_b = keff_b = fock_bar_b = h1mod_bar_a = v0bar_b = None  
         ham_data['h1_mod'] = None
+
+        lt1a = oe.contract('ia,gja->gij', wave_data["t1a"], chola[:,:nocca,nocca:], backend='jax')
+        lt1b = oe.contract('ia,gja->gij', wave_data["t1b"], cholb[:,:noccb,noccb:], backend='jax')
+        # e0t1orb = <exp(T1)HF|H|HF>_i
+        e0t1orb_aa = (oe.contract('gik,ik,gjj->',lt1a, prjloa, lt1a, backend='jax')
+                    - oe.contract('gij,gjk,ik->',lt1a, lt1a, prjloa, backend='jax')) * 0.5
+        e0t1orb_ab = oe.contract('gik,ik,gjj->',lt1a, prjloa, lt1b, backend='jax') * 0.5
+        e0t1orb_ba = oe.contract('gik,ik,gjj->',lt1b, prjlob, lt1a, backend='jax') * 0.5
+        e0t1orb_bb = (oe.contract('gik,ik,gjj->',lt1b, prjlob, lt1b, backend='jax')
+                    - oe.contract('gij,gjk,ik->',lt1b, lt1b, prjlob, backend='jax')) * 0.5
+        ham_data['e0t1orb'] = e0t1orb_aa + e0t1orb_ab + e0t1orb_ba + e0t1orb_bb
         
         return ham_data
     
@@ -1164,47 +1177,58 @@ class upt2ccsd(uhf):
         e2_2_2 = e2_2_2_1 + e2_2_2_2
         e2_2 = e2_2_1 + e2_2_2 + e2_2_3  # <HF|T2 h2|walker>/<HF|walker>
 
-        t2orb = gt2g  # <HF|T1+T2|walker>/<HF|walker>
-        e12bar = e1_0 + e2_0  # <HF|h1+h2|walker>/<HF|walker>
-        t2eorb = e1_2 + e2_2  # <HF|T2(h1+h2)|walker>/<HF|walker>
+        t2frag = gt2g  # <HF|T1+T2|walker>/<HF|walker>
+        e0 = e1_0 + e2_0  # <HF|h1+h2|walker>/<HF|walker>
+        e1frag = e1_2 + e2_2  # <HF|T2(h1+h2)|walker>/<HF|walker>
 
-        return t2eorb, t2orb, e12bar
+        return t2frag, e1frag, e0
     
     @partial(jit, static_argnums=0)
-    def _calc_eorb_pt2(self, walker_up: jax.Array, walker_dn: jax.Array, ham_data: dict, wave_data: dict):
-        
-        o0 = jnp.linalg.det(walker_up[:walker_up.shape[1],:]) \
-            * jnp.linalg.det(walker_dn[:walker_dn.shape[1],:])
-        e0 = self._calc_energy(walker_up, walker_dn, ham_data, wave_data)
+    def _calc_ept2_frag(self, walker_up: jax.Array, walker_dn: jax.Array, ham_data: dict, wave_data: dict):
         
         walker_up_bar = wave_data['exp_t1a'] @ walker_up
         walker_dn_bar = wave_data['exp_t1b'] @ walker_dn
+
+        o0 = jnp.linalg.det(walker_up[:walker_up.shape[1],:]) \
+            * jnp.linalg.det(walker_dn[:walker_dn.shape[1],:])
         
         obar = jnp.linalg.det(walker_up_bar[:walker_up_bar.shape[1], :]) \
             * jnp.linalg.det(walker_dn_bar[:walker_dn_bar.shape[1], :])
-        t1olp = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
         
-        # eorb_bar = self._calc_eorb_bar(walker_up_bar, walker_dn_bar, ham_data, wave_data)
-        eorb_bar = self._calc_e0bar_frag(walker_up_bar, walker_dn_bar, ham_data, wave_data)
-        t2eorb, t2orb, e12bar = self._t2eorb_tc(walker_up_bar, walker_dn_bar, ham_data, wave_data)
+        t1 = obar/o0 # <exp(T1)HF|walker>/<HF|walker> = <HF|walker_bar>/<HF|walker>
 
-        return e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar
+        # <HF|H|walker>/<HF|walker>
+        eg = self._calc_energy(walker_up, walker_dn, ham_data, wave_data)
+        
+        # <HF|H_bar|walker_bar>/<HF|walker_bar>_frag
+        e0frag = self._calc_e0bar_frag(walker_up_bar, walker_dn_bar, ham_data, wave_data)
+        
+        # <HF|T2|walker_bar>/<HF|walker_bar>_frag
+        # <HF|T2(h1+h2)|walker_bar>/<HF|walker_bar> _frag
+        # <HF|h1+h2|walker_bar>/<HF|walker_bar>
+        t2frag, e1frag, e0 = self._t2eorb_tc(walker_up_bar, walker_dn_bar, ham_data, wave_data)
+
+        return eg, t1, t2frag, e0frag, e1frag, e0
 
     @partial(jit, static_argnums=(0)) 
-    def calc_eorb_pt2(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
+    def calc_ept2_frag(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
+        '''
+        ept2_f = <e0>_f + <e1>_f - <t2>_f * <e0>
+        wt = wt0 * t1
+        '''
 
         n_walkers = walkers[0].shape[0]
         batch_size = n_walkers // self.n_batch
         
         def scan_batch(carry, walker_batch):
             batch_walker_up, batch_walker_dn = walker_batch
-            e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar \
-                = vmap(self._calc_eorb_pt2, in_axes=(0, 0, None, None))(
+            eg, t1, t2frag, e0frag, e1frag, e0 \
+                = vmap(self._calc_ept2_frag, in_axes=(0, 0, None, None))(
                 batch_walker_up, batch_walker_dn, ham_data, wave_data
             )
-            return carry, (e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar)
+            return carry, (eg, t1, t2frag, e0frag, e1frag, e0)
         
-        _, (e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar) \
+        _, (eg, t1, t2frag, e0frag, e1frag, e0) \
             = lax.scan(scan_batch, None,
             (
                 walkers[0].reshape(self.n_batch, batch_size, self.norb[0], self.nelec[0]),
@@ -1212,14 +1236,14 @@ class upt2ccsd(uhf):
             ),
         )
 
+        eg = eg.reshape(n_walkers)
+        t1 = t1.reshape(n_walkers)
+        t2frag = t2frag.reshape(n_walkers)
+        e0frag = e0frag.reshape(n_walkers)
+        e1frag = e1frag.reshape(n_walkers)
         e0 = e0.reshape(n_walkers)
-        t1olp = t1olp.reshape(n_walkers)
-        eorb_bar = eorb_bar.reshape(n_walkers)
-        t2eorb = t2eorb.reshape(n_walkers)
-        t2orb = t2orb.reshape(n_walkers)
-        e12bar = e12bar.reshape(n_walkers)
 
-        return e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar
+        return eg, t1, t2frag, e0frag, e1frag, e0
 
     
     @partial(jit, static_argnums=0)
@@ -1233,36 +1257,38 @@ class upt2ccsd(uhf):
         # exp(T1^dagger) H exp(-T1^dagger)
         h1bar_a = wave_data['exp_t1a'] @ ham_data['h1'][0] @ wave_data['exp_mt1a']
         h1bar_b = wave_data['exp_t1b'] @ ham_data['h1'][1] @ wave_data['exp_mt1b']
-        ham_data["h1bar"] = [h1bar_a, h1bar_b]
+        ham_data["h1bar"] = (h1bar_a, h1bar_b)
         chol_bar_a = oe.contract('pr,grs,sq->gpq', wave_data['exp_t1a'], chola, wave_data['exp_mt1a'], backend='jax')
         chol_bar_b = oe.contract('pr,grs,sq->gpq', wave_data['exp_t1b'], cholb, wave_data['exp_mt1b'], backend='jax')
-        ham_data["chol_bar"] = [chol_bar_a, chol_bar_b]
+        ham_data["chol_bar"] = (chol_bar_a, chol_bar_b)
+
         # exp(T1^dagger) Fock exp(-T1^dagger)
-        la = oe.contract('gjj->g', chol_bar_a[:,:nocca,:nocca], backend="jax")
-        lb = oe.contract('gjj->g', chol_bar_b[:,:noccb,:noccb], backend="jax")
-        jeff_a = oe.contract('gpq,g->pq', chol_bar_a, la+lb, backend="jax")
-        jeff_b = oe.contract('gpq,g->pq', chol_bar_b, la+lb, backend="jax")
-        keff_a = oe.contract('gpj,gjq->pq', chol_bar_a[:,:,:nocca], chol_bar_a[:,:nocca,:], backend="jax")
-        keff_b = oe.contract('gpj,gjq->pq', chol_bar_b[:,:,:noccb], chol_bar_b[:,:noccb,:], backend="jax")
-        fock_bar_a = h1bar_a + jeff_a - keff_a
-        fock_bar_b = h1bar_b + jeff_b - keff_b
+        # la = oe.contract('gjj->g', chol_bar_a[:,:nocca,:nocca], backend="jax")
+        # lb = oe.contract('gjj->g', chol_bar_b[:,:noccb,:noccb], backend="jax")
+        # jeff_a = oe.contract('gpq,g->pq', chol_bar_a, la+lb, backend="jax")
+        # jeff_b = oe.contract('gpq,g->pq', chol_bar_b, la+lb, backend="jax")
+        # keff_a = oe.contract('gpj,gjq->pq', chol_bar_a[:,:,:nocca], chol_bar_a[:,:nocca,:], backend="jax")
+        # keff_b = oe.contract('gpj,gjq->pq', chol_bar_b[:,:,:noccb], chol_bar_b[:,:noccb,:], backend="jax")
+        # fock_bar_a = h1bar_a + jeff_a - keff_a
+        # fock_bar_b = h1bar_b + jeff_b - keff_b
         # fock_bar_a = oe.contract('ip,ik->kp', fock_bar_a[:nocca, :], prjloa, backend="jax")
         # fock_bar_b = oe.contract('ip,ik->kp', fock_bar_b[:noccb, :], prjlob, backend="jax")
-        ham_data['fock_bar'] = [fock_bar_a, fock_bar_b]
+
+        ham_data['fock_bar'] = integral.get_ufock((nocca, noccb), (h1bar_a, h1bar_b), (chol_bar_a, chol_bar_b))
 
         lt1a = oe.contract('ia,gja->gij', wave_data["t1a"], chola[:,:nocca,nocca:], backend='jax')
         lt1b = oe.contract('ia,gja->gij', wave_data["t1b"], cholb[:,:noccb,noccb:], backend='jax')
         # e0t1orb = <exp(T1)HF|H|HF>_i
-        e0t1orb_aa = (oe.contract('gik,ik,gjj->',lt1a, wave_data["prjlo"][0], lt1a, backend='jax')
-                    - oe.contract('gij,gjk,ik->',lt1a, lt1a, wave_data["prjlo"][0], backend='jax')) * 0.5
-        e0t1orb_ab = oe.contract('gik,ik,gjj->',lt1a, wave_data["prjlo"][0], lt1b, backend='jax') * 0.5
-        e0t1orb_ba = oe.contract('gik,ik,gjj->',lt1b, wave_data["prjlo"][1], lt1a, backend='jax') * 0.5
-        e0t1orb_bb = (oe.contract('gik,ik,gjj->',lt1b, wave_data["prjlo"][1], lt1b, backend='jax')
-                    - oe.contract('gij,gjk,ik->',lt1b, lt1b, wave_data["prjlo"][1], backend='jax')) * 0.5
+        e0t1orb_aa = (oe.contract('gik,ik,gjj->',lt1a, prjloa, lt1a, backend='jax')
+                    - oe.contract('gij,gjk,ik->',lt1a, lt1a, prjloa, backend='jax')) * 0.5
+        e0t1orb_ab = oe.contract('gik,ik,gjj->',lt1a, prjloa, lt1b, backend='jax') * 0.5
+        e0t1orb_ba = oe.contract('gik,ik,gjj->',lt1b, prjlob, lt1a, backend='jax') * 0.5
+        e0t1orb_bb = (oe.contract('gik,ik,gjj->',lt1b, prjlob, lt1b, backend='jax')
+                    - oe.contract('gij,gjk,ik->',lt1b, lt1b, prjlob, backend='jax')) * 0.5
         ham_data['e0t1orb'] = e0t1orb_aa + e0t1orb_ab + e0t1orb_ba + e0t1orb_bb
         
-        del h1bar_a, chol_bar_a, la, jeff_a, keff_a, fock_bar_a, lt1a, e0t1orb_aa, e0t1orb_ab
-        del h1bar_b, chol_bar_b, lb, jeff_b, keff_b, fock_bar_b, lt1b, e0t1orb_ba, e0t1orb_bb
+        del h1bar_a, chol_bar_a, lt1a, e0t1orb_aa, e0t1orb_ab
+        del h1bar_b, chol_bar_b, lt1b, e0t1orb_ba, e0t1orb_bb
         
         return ham_data
     
