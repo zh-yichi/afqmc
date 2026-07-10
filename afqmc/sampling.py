@@ -312,8 +312,13 @@ class sampler:
 
         energies = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
         outlier = jnp.abs(energies - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        energies = jnp.where(outlier, prop_data["e_estimate"], energies)
-        weights = jnp.where(outlier, 0.0, prop_data["weights"])
+        # energies = jnp.where(outlier, prop_data["e_estimate"], energies)
+        # weights = jnp.where(outlier, 0.0, prop_data["weights"])
+        
+        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+                
+        weights = prop_data["weights"]
 
         wt, en, err = weighted_average(weights, energies)
 
@@ -525,7 +530,11 @@ class sampler_pt2(sampler):
 
         eg_sp = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
         outlier = jnp.abs(eg_sp - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        weights = jnp.where(outlier, 0.0, prop_data["weights"])
+        # weights = jnp.where(outlier, 0.0, prop_data["weights"])
+        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+                
+        weights = prop_data["weights"]
 
         t1_sp, t2_sp, e0_sp, e1_sp = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
 

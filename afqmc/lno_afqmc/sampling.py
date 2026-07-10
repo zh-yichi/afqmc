@@ -348,8 +348,11 @@ class sampler:
 
         e0 = jnp.real(e0)
         outlier = jnp.abs(e0 - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        e0 = jnp.where(outlier, prop_data["e_estimate"], e0)
-        weights = jnp.where(outlier, 0.0, prop_data["weights"]) # outliers don't contribute
+        # e0 = jnp.where(outlier, prop_data["e_estimate"], e0)
+        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+                
+        weights = prop_data["weights"]
 
         eorb = trial.calc_orb_energy(prop_data["walkers"], ham_data, wave_data)
 
@@ -394,7 +397,7 @@ class sampler_pt(sampler):
             x, y, ham_data, prop, trial, wave_data
         )
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
-        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+
         prop_data = prop.orthonormalize_walkers(prop_data)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
@@ -404,7 +407,10 @@ class sampler_pt(sampler):
         e0 = jnp.real(e0)
         outlier = jnp.abs(e0 - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
         e0 = jnp.where(outlier, prop_data["e_estimate"], e0)
-        weights = jnp.where(outlier, 0.0, prop_data["weights"])
+        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+
+        weights = prop_data["weights"]
 
         blk_wt = jnp.sum(weights)
         blk_eorb = jnp.sum(eorb * weights) / blk_wt
@@ -457,9 +463,8 @@ class sampler_pt2(sampler):
         eg_sp = jnp.real(eg_sp)
         
         outlier = jnp.abs(eg_sp - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        wts = jnp.where(outlier, 0.0, prop_data["weights"])
+        # wts = jnp.where(outlier, 0.0, prop_data["weights"])
         prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
-        
         prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
         
         wts = prop_data["weights"]

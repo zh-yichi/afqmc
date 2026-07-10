@@ -55,7 +55,7 @@ for n in range(sampler_eq.n_blocks):
               f"{e:12.5f}  {time.time() - init_time:8.2f}")
 
 print("\nSampling")
-print(f"Target (raw) 0.6 x max_error = {0.6 * options['max_error']:.5f}")
+print(f"Target (raw) 0.6 x max_error = {0.75 * options['max_error']:.5f}")
 print(f"{'blocks':>6s}  "
       f"{'weight':>12s}  {'nodes':>5s}  "
       f"{'E_Guide':>12s}  {'error':>8s}  "
@@ -97,7 +97,9 @@ for n in range(sampler.n_blocks):
             #   f"{otg.real:10.6f}  {otg_err.real:8.5f}"
               f"{time.time() - init_time:10.2f}")
         
-        if ept2_err < 0.6 * options["max_error"] and n > 120:
+        prop_data["e_estimate"] = 0.8 * prop_data["e_estimate"] + 0.2 * eg.real
+        
+        if ept2_err < 0.75 * options["max_error"] and n > 120:
             break
 
 print("\nPost Propagation Process")
