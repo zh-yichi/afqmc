@@ -56,45 +56,43 @@ for n in range(sampler_eq.n_blocks):
 
 print("\nSampling")
 print(f"Target (raw) 0.6 x max_error = {0.75 * options['max_error']:.5f}")
-print(f"{'blocks':>6s}  "
-      f"{'weight':>12s}  {'nodes':>5s}  "
-      f"{'E_Guide':>12s}  {'error':>8s}  "
-      f"{'E_Trial':>12s}  {'error':>8s}  "
-    #   f"{'olp_T/G':>10s}  {'error':>8s}  "
+print(f"{'blocks':>6s}  {'nodes':>5s}  "
+      f"{'weight':>10s}  {'E_Guide':>12s}  {'error':>8s}  "
+      f"{'weightp':>10s}  {'E_Trial':>12s}  {'error':>8s}  "
       f"{'Walltime':>10s}")
 
 wt_sp = np.zeros(sampler.n_blocks, dtype="float64")
 eg_sp = np.zeros(sampler.n_blocks, dtype="float64")
-t1_sp = np.zeros(sampler.n_blocks, dtype="complex128")
+wp_sp = np.zeros(sampler.n_blocks, dtype="complex128")
 t2_sp = np.zeros(sampler.n_blocks, dtype="complex128")
 e0_sp = np.zeros(sampler.n_blocks, dtype="complex128")
 e1_sp = np.zeros(sampler.n_blocks, dtype="complex128")
-nodes = 0
 
+nodes = 0
 for n in range(sampler.n_blocks):
-    prop_data, (wt, eg, t1, t2, e0, e1) =\
+    prop_data, (wt, eg, wp, t2, e0, e1) =\
         sampler.block_sample(prop_data, ham_data, prop, trial, wave_data)
     
     wt_sp[n] = wt
     eg_sp[n] = eg
-    t1_sp[n] = t1
+    wp_sp[n] = wp
     t2_sp[n] = t2
     e0_sp[n] = e0
     e1_sp[n] = e1
+    
     nodes += prop_data["n_killed_walkers"]
     prop_data["n_killed_walkers"] = 0
 
     if (n+1) % (min(max(sampler.n_blocks // 10, 1), 20)) == 0 and n > 0:
-        _, eguide, eg_err = sampling.blocking(wt_sp[:n+1], eg_sp[:n+1], final=False)
-        weight, ept2, ept2_err = sampling.pt2blocking(
-            h0, wt_sp[:n+1], t1_sp[:n+1], t2_sp[:n+1], e0_sp[:n+1], e1_sp[:n+1], final=False)
-        # _, otg, otg_err = sampling.blocking(wt_sp[:n+1], t1_sp[:n+1].real, final=False)
         
-        print(f"{n+1:6d}  "
-              f"{weight:12.5f}  {nodes:5d}  "
-              f"{eguide:12.5f}  {eg_err:8.5f}  "
-              f"{ept2:12.5f}  {ept2_err:8.5f}  "
-            #   f"{otg.real:10.6f}  {otg_err.real:8.5f}"
+        weight, eguide, eg_err = sampling.blocking(wt_sp[:n+1], eg_sp[:n+1], final=False)
+        
+        weighp, ept2, ept2_err \
+            = sampling.pt2blocking(h0, wp_sp[:n+1], t2_sp[:n+1], e0_sp[:n+1], e1_sp[:n+1], final=False)
+        
+        print(f"{n+1:6d}  {nodes:5d}  "
+              f"{weight:10.5f}  {eguide:12.5f}  {eg_err:8.5f}  "
+              f"{weighp.real:10.5f}  {ept2:12.5f}  {ept2_err:8.5f}  "
               f"{time.time() - init_time:10.2f}")
         
         prop_data["e_estimate"] = 0.8 * prop_data["e_estimate"] + 0.2 * eg.real
@@ -102,36 +100,42 @@ for n in range(sampler.n_blocks):
         if ept2_err < 0.75 * options["max_error"] and n > 120:
             break
 
-print("\nPost Propagation Process")
-nsamples = n + 1
+print("\n ***** Post Propagation Process ***** ")
+
+nsamples = np.count_nonzero(wt_sp)
 print(f'Total number of samples {nsamples}')
+
 wt_sp = wt_sp[:nsamples]
 eg_sp = eg_sp[:nsamples]
-t1_sp = t1_sp[:nsamples]
+wp_sp = wp_sp[:nsamples]
 t2_sp = t2_sp[:nsamples]
 e0_sp = e0_sp[:nsamples]
 e1_sp = e1_sp[:nsamples]
 
-print("\nRemove Outliers")
-ept2_sp = (h0 + e0_sp/t1_sp + e1_sp/t1_sp - t2_sp*e0_sp/t1_sp**2).real
-mask = sampling.filter_outliers(ept2_sp, zeta=30)
+print("\nRemove AFQMC/Guide Outliers")
+eg_mask = sampling.filter_outliers(eg_sp, zeta=30)
+wt_sp = wt_sp[eg_mask]
+eg_sp = eg_sp[eg_mask]
+print(f"Removed {np.sum(~eg_mask)} Outliers")
+print(f"Outliers Energy: {eg_sp[~eg_mask]}")
 
-wt_sp = wt_sp[mask]
-t1_sp = t1_sp[mask]
-t2_sp = t2_sp[mask]
-e0_sp = e0_sp[mask]
-e1_sp = e1_sp[mask]
-
-print(f"Removed {np.sum(~mask)} Outliers")
-print(f"Outliers Energy {ept2_sp[~mask]}")
+print("\nRemove AFQMC/pt2CCSD Outliers")
+ept2_sp = (h0 + e0_sp + e1_sp - t2_sp * e0_sp).real
+ept2mask = sampling.filter_outliers(ept2_sp, zeta=30)
+wp_sp = wp_sp[ept2mask]
+t2_sp = t2_sp[ept2mask]
+e0_sp = e0_sp[ept2mask]
+e1_sp = e1_sp[ept2mask]
+print(f"Removed {np.sum(~ept2mask)} Outliers")
+print(f"Outliers Energy {ept2_sp[~ept2mask]}")
 
 print("\nBlocking Analysis")
 
-print("\nOverlap Ratio:")
-_, t1, t1_err = sampling.blocking(wt_sp, t1_sp.real, final=True)
+print("\nAFQMC/Guide")
+wt, eguide, eg_err = sampling.blocking(wt_sp, eg_sp, final=True)
 
 print("\nAFQMC/pt2CCSD:")
-weight, energy, err = sampling.pt2blocking(h0, wt_sp, t1_sp, t2_sp, e0_sp, e1_sp, final=True)
+wp, ept2, ept2_err = sampling.pt2blocking(h0, wp_sp, t2_sp, e0_sp, e1_sp, final=True)
 
 runtime = time.time() - init_time
 h, rem = divmod(runtime, 3600)
@@ -139,14 +143,16 @@ m, s = divmod(rem, 60)
 runtime_str = f"{int(h):d}h {int(m):02d}m {s:05.2f}s" if h else \
               f"{int(m):d}m {s:05.2f}s" if m else f"{s:.2f}s"
 
-print("\n" + "=" * 50)
+print("\n" + "=" * 60)
 print("  AFQMC/pt2CCSD Result")
-print("-" * 50)
-print(f"  {'Average weight':<16s}{weight:>24.5f}")
-print(f"  {'Energy (Ha)':<16s}{energy:>16.5f} +/- {err:<.5f}")
-print(f"  {'Run time':<16s}{runtime_str:>24s}")
-print("=" * 50)
-print("\nAFQMC Sampling Finished\n")
+print("-" * 60)
+print(f"  {'[Guide] Average Weight':<26s}{wt.real:>24.5f}")
+print(f"  {'[Guide] Energy (Ha)':<26s}{eguide:>16.5f} +/- {eg_err:<.5f}")
+print(f"  {'[Trial] Average Weight':<26s}{wp.real:>24.5f}")
+print(f"  {'[Trial]] Energy (Ha)':<26s}{ept2:>16.5f} +/- {ept2_err:<.5f}")
+print(f"  {'Run Time':<26s}{runtime_str:>24s}")
+print("=" * 60)
+print("\n ***** AFQMC Sampling Finished ***** \n")
 
 # print(f"\n Final AFQMC/pt2CCSD overlap ratio: {t1.real:.5f} +/- {t1_err:.5f}")
 # print(f"Final AFQMC/pt2CCSD energy: {ept2:.5f} +/- {ept2_err:.5f} weight = {weight:.5f}")
