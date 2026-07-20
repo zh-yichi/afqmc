@@ -11,7 +11,6 @@ import opt_einsum as oe
 import jax
 import jax.numpy as jnp
 from jax import scipy as jsp
-# from jax import jit, lax, random, vmap
 from jax import random
 
 from . import hamiltonian, cholesky, walker_tools, slater_tools, t2_tools
@@ -237,14 +236,15 @@ def get_hamiltonian(h0, h1, chol, norb):
     ham = hamiltonian.hamiltonian(norb)
     ham_data = {}
     ham_data["h0"] = h0
-    ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2.0, 
-                      jnp.array(h1[1] + h1[1].T) / 2.0)
     
     if isinstance(chol, (jax.Array, np.ndarray)):
+        ham_data["h1"] = (jnp.array(h1), jnp.array(h1))
         nchol = chol.shape[0]
         ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
     
     elif isinstance(chol, (list, tuple)):
+        ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2.0, 
+                          jnp.array(h1[1] + h1[1].T) / 2.0)
         nchola = chol[0].shape[0]
         ncholb = chol[1].shape[0]
         assert nchola == ncholb, f"nchol mismatch: alpha={nchola}, beta={ncholb}"
@@ -374,6 +374,7 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 nchol_chunk=nchol_chunk,
                 mix_precision=options["mix_precision"],
                 )
+            
             if "bar" in options["trial"]:
                 trial = wavefunctions_unrestricted.upt2ccsd_bar(
                     norb, nelec_sp, 
@@ -392,6 +393,28 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
                 wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
                 wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
+            
+            elif "cisd" in options["trial"]:
+                wave_data = load_cc_amplitude(wave_data, amp_file)
+                wave_data = load_ci_amplitude(wave_data, amp_file)
+                wave_data['mo_ta'] = None
+                wave_data['mo_tb'] = None
+                t1a, t1b = wave_data["t1a"], wave_data["t1b"]
+                t1a_full = np.zeros((norb, norb), dtype=np.float64)
+                t1b_full = np.zeros((norb, norb), dtype=np.float64)
+                t1a_full[:nocc_a, nocc_a:] = t1a
+                t1b_full[:nocc_b, nocc_b:] = t1b
+                wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
+                wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
+                wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
+                wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
+                trial = wavefunctions_unrestricted.upt2ccsd_cisd(
+                    norb, nelec_sp, 
+                    n_batch=options["n_batch"], 
+                    nchol_chunk=nchol_chunk,
+                    mix_precision=options["mix_precision"],
+                    )
+                
             if "ad" in options["trial"]:
                 trial = wavefunctions_unrestricted.upt2ccsd_ad(
                     norb, nelec_sp, n_batch=options["n_batch"])
@@ -527,6 +550,7 @@ def init_afqmc(options=None,
 
 
     h0, h1, chol, ms, nelec_sp, norb, spin_type = load_chol(chol_file)
+    # print(h1)
 
     ham, ham_data, nchol = get_hamiltonian(h0, h1, chol, norb)
 
@@ -844,7 +868,7 @@ def init_afqmc_exp(
     ham_data["h0"] = h0
 
     if spin_type == 'restricted':
-        ham_data["h1"] = jnp.array([h1, h1])
+        ham_data["h1"] = (jnp.array(h1), jnp.array(h1))
         nchol = chol.shape[0]
         ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
     elif spin_type == 'unrestricted':
@@ -901,9 +925,7 @@ def init_afqmc_exp(
             trial_energy_fn = rpt2ccsd_wfn.calc_energy
             trial_intermediate_fn = rpt2ccsd_wfn.calc_intermediate
             energy_formula_fn = rpt2ccsd_wfn.energy_formula
-            # wave_data["mo_t"] = slater_tools.thouless(wave_data["mo_coeff"], wave_data["t1"])
 
-    
     elif spin_type == "unrestricted":
         nocc_a, nocc_b = nelec_sp
         wave_data["mo_coeff"] = (jnp.eye(norb)[:,:nocc_a],
@@ -971,6 +993,7 @@ def init_afqmc_exp(
     sampler = sampling.sampler_exp(
         n_prop_steps=options["n_prop_steps"],
         n_blocks=options["n_blocks"],
+        n_chol=nchol,
         )
     
     return ham, prop, wave, ham_data, wave_data, sampler, options

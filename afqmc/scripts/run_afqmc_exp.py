@@ -14,7 +14,7 @@ init_time = time.time()
 prep.print_start()
 config.setup_jax()
 
-ham, prop, wave, ham_data, wave_data, sampler, options = (prep.init_afqmc_exp())
+ham, prop, wave, ham_data, wave_data, sampler, options = prep.init_afqmc_exp()
 ham_data = wave.build_trial_intermediate(ham_data, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, wave, wave_data)
 prop_data = prep.init_hf_prop_data_exp(wave, wave_data, ham_data, options)
@@ -25,7 +25,7 @@ e_init = prop_data["e_estimate"]
 
 print("\nEquilibration")
 print(f"{'1/T':>5s}  {'weight':>10s}  "
-      f"{'energy':>12s}  {'realTime':>10s}")
+      f"{'energy':>12s}  {'Time':>10s}")
 print(f"{0.:5.2f}  {wt_init:10.5f}  {e_init:12.5f}  "
       f"{time.time() - init_time:10.2f}")
 
@@ -45,12 +45,12 @@ for n in range(1,neql_block+1):
               f"{time.time() - init_time:10.2f}")
 
 print("\nSampling")
-print(f"{'N':>4s}  {'killW':>5s}  "
-      f"{'weight':>10s}  {'energy':>12s}  {'error':>8s}  "
-      f"{'runTime':>10s}")
+print(f"{'N':>4s}  {'nodes':>5s}  "
+      f"{'weight':>8s}  {'energy':>12s}  {'error':>8s}  "
+      f"{'Time':>10s}")
 
 weight_list, sample_list = [], []
-n_killed = 0
+nodes = 0
 
 for n in range(sampler.n_blocks):
     prop_data, (weight, sample) \
@@ -61,15 +61,17 @@ for n in range(sampler.n_blocks):
     weights = jnp.stack(weight_list)
     samples = jnp.stack(sample_list)
     
-    n_killed += prop_data["n_killed_walkers"]
+    nodes += prop_data["n_killed_walkers"]
     prop_data["n_killed_walkers"] = 0
 
     if (n+1) % (min(max(sampler.n_blocks // 10, 1), 20)) == 0 and n > 0:
-        weight_mean, energy_mean, energy_err \
-            = wave.calc_sample_energy(weights, samples, ham_data)
+        # weight_mean, energy_mean, energy_err \
+            # = wave.calc_sample_energy(weights, samples, ham_data)
+
+        weight_mean, energy_mean, energy_err = sampling.blocking(weights, samples, final=False)
         prop_data["e_estimate"] = 0.8 * prop_data["e_estimate"] + 0.2 * energy_mean
-        print(f"{n+1:4d}  {n_killed:5d}  {weight_mean:10.5f}  "
-              f"{energy_mean:12.5f}  {energy_err:8.5f}  "
+        print(f"{n+1:4d}  {nodes:5d}  {weight_mean.real:8.5f}  "
+              f"{energy_mean.real:12.5f}  {energy_err:8.5f}  "
               f"{time.time() - init_time:10.2f}")
         
         if energy_err < 0.75 * options["max_error"] and n > 120:

@@ -109,16 +109,15 @@ for n in range(sampler.n_blocks):
     prop_data2["e_estimate"] = 0.9 * prop_data2["e_estimate"] + 0.1 * en2
 
     if (n+1) % (min(max(sampler.n_blocks // 10, 1), 20)) == 0 and n > 0:
-        weight1 = np.mean(wt1_sp[:n+1])
-        weight2 = np.mean(wt2_sp[:n+1])
+        # weight1 = np.mean(wt1_sp[:n+1])
+        # weight2 = np.mean(wt2_sp[:n+1])
         # energy1 = np.mean(wt1_sp[:n+1] * en1_sp[:n+1]) / weight1
         # energy2 = np.mean(wt2_sp[:n+1] * en2_sp[:n+1]) / weight2
         # de12 = energy1 - energy2
-        energy1, err1 = sp.blocking(wt1_sp[:n+1], en1_sp[:n+1], min_nblocks=20, final=False)
-        energy2, err2 = sp.blocking(wt2_sp[:n+1], en2_sp[:n+1], min_nblocks=20, final=False)
-        de12, cs_err = csp.blocking(wt1_sp[:n+1], en1_sp[:n+1], 
-                              wt2_sp[:n+1], en2_sp[:n+1], 
-                              min_nblocks=20, final=False)
+        weight1, energy1, err1 = sp.blocking(wt1_sp[:n+1], en1_sp[:n+1], min_nblocks=20, final=False)
+        weight2, energy2, err2 = sp.blocking(wt2_sp[:n+1], en2_sp[:n+1], min_nblocks=20, final=False)
+        de12, cs_err = csp.blocking(wt1_sp[:n+1], en1_sp[:n+1], wt2_sp[:n+1], en2_sp[:n+1], 
+                                    min_nblocks=20, final=False)
         print(f"{n+1:4d}  "
               f"{nodes1[n]:6d}  {weight1:10.5f}  {energy1:12.5f}  {err1:8.5f}  "
               f"{nodes2[n]:6d}  {weight2:10.5f}  {energy2:12.5f}  {err2:8.5f}  "
@@ -159,12 +158,9 @@ wt1_sp = wt1_sp[mask]; en1_sp = en1_sp[mask]
 wt2_sp = wt2_sp[mask]; en2_sp = en2_sp[mask]
 
 print("\nBlocking Analysis")
-# energy1 = np.sum(wt1_sp * en1_sp) / np.sum(wt1_sp)
-# energy2 = np.sum(wt2_sp * en2_sp) / np.sum(wt2_sp)
-# dE12    = energy1 - energy2
 
-energy1, err1 = sp.blocking(wt1_sp, en1_sp, min_nblocks=20, final=True)
-energy2, err2 = sp.blocking(wt2_sp, en2_sp, min_nblocks=20, final=True)
+weight1, energy1, err1 = sp.blocking(wt1_sp, en1_sp, min_nblocks=20, final=True)
+weight2, energy2, err2 = sp.blocking(wt2_sp, en2_sp, min_nblocks=20, final=True)
 de12, cs_err = csp.blocking(wt1_sp, en1_sp, wt2_sp, en2_sp, min_nblocks=20, final=True)
 
 print(f"Final AFQMC E1:    {energy1:.5f} +/- {err1:.5f}")

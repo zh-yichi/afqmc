@@ -33,8 +33,8 @@ def init_afqmc(options=None, option_file="options.bin",
     h01, h11, chol1, ms1, nelec_sp1, norb1, spin_type1 = prep.load_chol(chol_file1)
     h02, h12, chol2, ms2, nelec_sp2, norb2, spin_type2 = prep.load_chol(chol_file2)
 
-    _, ham_data1, nchol1 = prep.get_hamiltonian(h01, h11, chol1, norb1, spin_type1)
-    _, ham_data2, nchol2 = prep.get_hamiltonian(h02, h12, chol2, norb2, spin_type2)
+    _, ham_data1, nchol1 = prep.get_hamiltonian(h01, h11, chol1, norb1)
+    _, ham_data2, nchol2 = prep.get_hamiltonian(h02, h12, chol2, norb2)
     
     assert nchol1 == nchol2
 

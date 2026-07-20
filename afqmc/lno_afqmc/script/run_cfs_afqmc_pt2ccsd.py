@@ -35,21 +35,24 @@ prop_data2 = prep.init_hf_prop_data(trial2, wave_data2, ham_data2, options)
 
 def get_ept2orb(trial, prop_data, ham_data, wave_data):
     
+    eg_sp, t1_sp, t2frg_sp, e0frg_sp, e1frg_sp, e0_sp \
+        = trial.calc_ept2_frag(prop_data['walkers'], ham_data, wave_data)
+    
     wt_sp = prop_data["weights"]
-    eg_sp, t1_sp, e0orb_sp, e1orb_sp, t2orb_sp, e0bar_sp \
-        = trial.calc_eorb_pt2(prop_data['walkers'], ham_data, wave_data)
-
+    wp_sp = wt_sp * t1_sp
+    
     wt     = jnp.sum(wt_sp)
     eg     = jnp.sum(wt_sp * eg_sp) / wt
-    t1     = jnp.sum(wt_sp * t1_sp) / wt
-    e0orb  = jnp.sum(wt_sp * e0orb_sp) / wt
-    e1orb  = jnp.sum(wt_sp * e1orb_sp) / wt
-    t2orb  = jnp.sum(wt_sp * t2orb_sp) / wt
-    e0bar  = jnp.sum(wt_sp * e0bar_sp) / wt
 
-    ept2_orb = jnp.real(e0orb/t1 + e1orb/t1 - t2orb*e0bar/t1**2)
+    wp     = jnp.sum(wp_sp)
+    t2frg  = jnp.sum(wp_sp * t2frg_sp) / wp
+    e0frg  = jnp.sum(wp_sp * e0frg_sp) / wp
+    e1frg  = jnp.sum(wp_sp * e1frg_sp) / wp
+    e0     = jnp.sum(wp_sp * e0_sp) / wp
 
-    return eg.real, ept2_orb
+    ept2_frg = jnp.real(e0frg + e1frg - t2frg * e0)
+
+    return eg.real, ept2_frg
 
 _, ept2orb1 = get_ept2orb(trial1, prop_data1, ham_data1, wave_data1)
 _, ept2orb2 = get_ept2orb(trial2, prop_data2, ham_data2, wave_data2)

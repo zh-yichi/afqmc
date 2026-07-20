@@ -15,7 +15,7 @@ prep.print_start()
 config.setup_jax()
 
 ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
-
+# print(ham_data["h1"])
 
 wave_data["rdm1"] = trial.get_rdm1(wave_data)
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)

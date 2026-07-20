@@ -36,106 +36,298 @@ def left_procrustes(A, B):
     return R
 
 
-def _split_active(nmo, nocc, frozen):
-    """From a frozen INDEX list + total occupied count nocc, return the active
-    occupied and active virtual column indices."""
-    fr = np.array([], dtype=int) if frozen is None else \
-         np.atleast_1d(np.asarray(frozen, dtype=int)).ravel()
-    is_frozen = np.zeros(nmo, dtype=bool)
-    if fr.size:
-        is_frozen[fr] = True
-    idx = np.arange(nmo)
-    occ_act = idx[(idx < nocc)  & ~is_frozen]     # occupied, not frozen
-    vir_act = idx[(idx >= nocc) & ~is_frozen]     # virtual, not frozen
-    return occ_act, vir_act
+# def _split_active(nmo, nocc, frozen):
+#     """From a frozen INDEX list + total occupied count nocc, return the active
+#     occupied and active virtual column indices."""
+#     fr = np.array([], dtype=int) if frozen is None else \
+#          np.atleast_1d(np.asarray(frozen, dtype=int)).ravel()
+#     is_frozen = np.zeros(nmo, dtype=bool)
+#     if fr.size:
+#         is_frozen[fr] = True
+#     idx = np.arange(nmo)
+#     occ_act = idx[(idx < nocc)  & ~is_frozen]     # occupied, not frozen
+#     vir_act = idx[(idx >= nocc) & ~is_frozen]     # virtual, not frozen
+#     return occ_act, vir_act
 
 
-def _procrustes_pad(ref, big):
-    """Pad ref (nao,kref) with zero cols to kbig, rotate big (nao,kbig)
-    onto it -> R (kbig,kbig)."""
-    nao, kref = ref.shape
-    kbig = big.shape[1]
-    if kref == 0 or kbig == 0:
-        return np.eye(kbig, dtype=big.dtype)
-    A_pad = np.zeros((nao, kbig), dtype=np.result_type(ref.dtype, big.dtype))
-    A_pad[:, :kref] = ref
-    return np.asarray(right_procrustes(jnp.asarray(A_pad), jnp.asarray(big)))
+# def _procrustes_pad(ref, big):
+#     """Pad ref (nao,kref) with zero cols to kbig, rotate big (nao,kbig)
+#     onto it -> R (kbig,kbig)."""
+#     nao, kref = ref.shape
+#     kbig = big.shape[1]
+#     if kref == 0 or kbig == 0:
+#         return np.eye(kbig, dtype=big.dtype)
+#     A_pad = np.zeros((nao, kbig), dtype=np.result_type(ref.dtype, big.dtype))
+#     A_pad[:, :kref] = ref
+#     return np.asarray(right_procrustes(jnp.asarray(A_pad), jnp.asarray(big)))
 
 
-def _align_block(mo1, mo2, cols1, cols2, report=False, tag=""):
-    """Align mo1[:,cols1] vs mo2[:,cols2]: pad the smaller, rotate the larger
-    onto it. Writes rotated columns back (in place); returns R1, R2 with the
-    reference (smaller) block getting identity. The smaller block is returned
-    at its ORIGINAL size -- padding lives only inside _procrustes_pad."""
-    a1 = mo1[:, cols1]; a2 = mo2[:, cols2]
-    k1, k2 = a1.shape[1], a2.shape[1]
-    if k1 <= k2:
-        R = _procrustes_pad(a1, a2); R1 = np.eye(k1, dtype=R.dtype); R2 = R
-        a1n, a2n, kref = a1, a2 @ R, k1
-    else:
-        R = _procrustes_pad(a2, a1); R1 = R; R2 = np.eye(k2, dtype=R.dtype)
-        a1n, a2n, kref = a1 @ R, a2, k2
+# def _align_block(mo1, mo2, cols1, cols2, report=False, tag=""):
+#     """Align mo1[:,cols1] vs mo2[:,cols2]: pad the smaller, rotate the larger
+#     onto it. Writes rotated columns back (in place); returns R1, R2 with the
+#     reference (smaller) block getting identity. The smaller block is returned
+#     at its ORIGINAL size -- padding lives only inside _procrustes_pad."""
+#     a1 = mo1[:, cols1]; a2 = mo2[:, cols2]
+#     k1, k2 = a1.shape[1], a2.shape[1]
+#     if k1 <= k2:
+#         R = _procrustes_pad(a1, a2); R1 = np.eye(k1, dtype=R.dtype); R2 = R
+#         a1n, a2n, kref = a1, a2 @ R, k1
+#     else:
+#         R = _procrustes_pad(a2, a1); R1 = R; R2 = np.eye(k2, dtype=R.dtype)
+#         a1n, a2n, kref = a1 @ R, a2, k2
+#     if report:
+#         ref = a1 if k1 <= k2 else a2
+#         old = (a2 if k1 <= k2 else a1)[:, :kref]      # larger's first kref cols, pre-rotation
+#         new = (a2n if k1 <= k2 else a1n)[:, :kref]    # ...post-rotation
+#         def _stats(X, Y):
+#             d = np.linalg.norm(X - Y)                 # Frobenius residual
+#             den = np.linalg.norm(X) * np.linalg.norm(Y)
+#             ov = np.real(np.vdot(X, Y)) / den if den else 1.0
+#             return d, ov
+#         db, ob = _stats(ref, old)
+#         da, oa = _stats(ref, new)
+#         print(f"  {tag:12s} k1={k1} k2={k2} shared={kref}  "
+#               f"||d||_F {db:.3e} -> {da:.3e}   overlap {ob:.4f} -> {oa:.6f}")
+#     mo1[:, cols1] = a1n; mo2[:, cols2] = a2n
+#     return R1, R2
+
+
+# def _align_one_spin(mo1, mo2, nocc1, nocc2, frozen1, frozen2, report, tag=""):
+#     mo1 = np.array(mo1); mo2 = np.array(mo2)
+#     o1, v1 = _split_active(mo1.shape[1], nocc1, frozen1)
+#     o2, v2 = _split_active(mo2.shape[1], nocc2, frozen2)
+#     # occ and vir aligned SEPARATELY -> no occ/vir mixing
+#     Ro1, Ro2 = _align_block(mo1, mo2, o1, o2, report, tag + " occ")
+#     Rv1, Rv2 = _align_block(mo1, mo2, v1, v2, report, tag + " vir")
+#     return mo1, mo2, (Ro1, Rv1), (Ro2, Rv2)
+
+
+# def align_mo(mo_coeff1, mo_coeff2, nocc1, nocc2,
+#              frozen1=None, frozen2=None, report=False):
+#     """
+#     Align two systems' active MOs, occupied and virtual blocks SEPARATELY,
+#     padding the smaller block and Procrustes-rotating the larger onto it.
+
+#     mo_coeff1/2 : (nao, nmo) array (RHF) or [alpha, beta] list/tuple (UHF).
+#     nocc1/2     : total occupied count (RHF scalar; UHF (n_a, n_b)).
+#     frozen1/2   : frozen MO index list (RHF) or [alpha_list, beta_list] (UHF).
+
+#     Returns:
+#       mo_coeff1, mo_coeff2 (aligned),
+#       u1actocc, u1actvir, u2actocc, u2actvir
+#     where u..occ = <occ_old|occ_new>, u..vir = <vir_old|vir_new> for that
+#     active block (reference system gets identity). t1 transforms as
+#       t1_new[i,a] = sum_{jb} uocc*[j,i] uvir*[b,a] t1[j,b]
+#     and t2 with occ rotations on the occupied indices, vir on the virtual.
+#     """
+#     print("Procrustes align (occ & vir separately): rotate larger block onto smaller")
+#     uhf = isinstance(mo_coeff1, (list, tuple))
+#     if not uhf:
+#         mo1, mo2, (Ro1, Rv1), (Ro2, Rv2) = _align_one_spin(
+#             mo_coeff1, mo_coeff2, nocc1, nocc2, frozen1, frozen2, report, "rhf")
+#         return mo1, mo2, Ro1, Rv1, Ro2, Rv2
+
+#     mo1o, mo2o = [], []
+#     u1occ, u1vir, u2occ, u2vir = [], [], [], []
+#     for s, name in ((0, "alpha"), (1, "beta")):
+#         f1 = None if frozen1 is None else frozen1[s]
+#         f2 = None if frozen2 is None else frozen2[s]
+#         m1, m2, (Ro1, Rv1), (Ro2, Rv2) = _align_one_spin(
+#             mo_coeff1[s], mo_coeff2[s], nocc1[s], nocc2[s], f1, f2, report, name)
+#         mo1o.append(m1); mo2o.append(m2)
+#         u1occ.append(Ro1); u1vir.append(Rv1); u2occ.append(Ro2); u2vir.append(Rv2)
+#     return mo1o, mo2o, u1occ, u1vir, u2occ, u2vir
+
+# right_procrustes / left_procrustes as in csi -- unchanged
+
+def _frozen_idx(frozen, norb):
+    """Normalize a frozen spec (None / int / index list) to a sorted index list."""
+    if frozen is None:
+        return []
+    if isinstance(frozen, (int, np.integer)):
+        return list(range(int(frozen)))
+    fr = np.atleast_1d(np.asarray(frozen, dtype=int)).ravel()
+    return sorted(int(i) % norb for i in fr)
+
+
+def _frozen_pair(frozen):
+    """Split a UHF frozen spec into (alpha, beta) specs."""
+    if frozen is None:
+        return None, None
+    if isinstance(frozen, (int, np.integer)):
+        return int(frozen), int(frozen)
+    return frozen[0], frozen[1]        # [alpha_list, beta_list]
+
+
+def _procrustes(target, x):
+    """R minimizing ||target - x @ R||_F, as a numpy array."""
+    return np.asarray(right_procrustes(jnp.asarray(target), jnp.asarray(x)))
+
+
+def _sigmas(target, x):
+    """Singular values of <target|x>: cosines of the principal angles.
+    Meaningful in [0,1] only if the MOs are orthonormal in the AO metric."""
+    if x.shape[1] == 0:
+        return np.array([1.0])
+    return np.linalg.svd(target.conj().T @ x, compute_uv=False)
+
+
+def _align_one_spin(mo1, mo2, nocc1, nocc2, frozen1, frozen2,
+                    report=False, tag="", max_cycle=20, tol=1e-10):
+    """Core aligner for a single spin channel. See align_mo for semantics."""
+    mo1 = np.array(mo1)
+    mo2 = np.array(mo2)
+    assert mo1.shape == mo2.shape, f"{tag}: mo1 {mo1.shape} != mo2 {mo2.shape}"
+    norb = mo1.shape[1]                       # nmo, NOT nao
+
+    dtype = np.result_type(mo1.dtype, mo2.dtype)
+    mo1 = mo1.astype(dtype, copy=True)        # assigned in place; don't clobber caller
+    mo2 = mo2.astype(dtype, copy=True)
+
+    frzidx1 = _frozen_idx(frozen1, norb)
+    frzidx2 = _frozen_idx(frozen2, norb)
+    # the index-padding trick only makes sense if one frozen space sits inside
+    # the other -- otherwise "the same column index" pairs unrelated orbitals
+    assert set(frzidx1) <= set(frzidx2) or set(frzidx2) <= set(frzidx1), \
+        f"{tag}: frozen spaces are not nested"
+
+    actidx1 = [i for i in range(norb) if i not in frzidx1]
+    actidx2 = [i for i in range(norb) if i not in frzidx2]
+
+    actoccidx1 = [i for i in actidx1 if i < nocc1]
+    actviridx1 = [i for i in actidx1 if i >= nocc1]
+    actoccidx2 = [i for i in actidx2 if i < nocc2]
+    actviridx2 = [i for i in actidx2 if i >= nocc2]
+
+    nactocc1, nactocc2 = len(actoccidx1), len(actoccidx2)
+    nactvir1, nactvir2 = len(actviridx1), len(actviridx2)
+
+    # which set gets rotated in each block, and against which column indices.
+    # NOTE when nocc1 != nocc2 the padding indices deliberately fall on the
+    # other side of the other set's Fermi level (triplet SOMO <-> singlet LUMO).
+    occ1_big = nactocc1 >= nactocc2
+    vir1_big = nactvir1 >= nactvir2
+    occidx = actoccidx1 if occ1_big else actoccidx2   # shared occ columns
+    viridx = actviridx1 if vir1_big else actviridx2   # shared vir columns
+
+    Ro1 = np.eye(nactocc1, dtype=dtype)
+    Ro2 = np.eye(nactocc2, dtype=dtype)
+    Rv1 = np.eye(nactvir1, dtype=dtype)
+    Rv2 = np.eye(nactvir2, dtype=dtype)
+
     if report:
-        ref = a1 if k1 <= k2 else a2
-        old = (a2 if k1 <= k2 else a1)[:, :kref]      # larger's first kref cols, pre-rotation
-        new = (a2n if k1 <= k2 else a1n)[:, :kref]    # ...post-rotation
-        def _stats(X, Y):
-            d = np.linalg.norm(X - Y)                 # Frobenius residual
-            den = np.linalg.norm(X) * np.linalg.norm(Y)
-            ov = np.real(np.vdot(X, Y)) / den if den else 1.0
-            return d, ov
-        db, ob = _stats(ref, old)
-        da, oa = _stats(ref, new)
-        print(f"  {tag:12s} k1={k1} k2={k2} shared={kref}  "
-              f"||d||_F {db:.3e} -> {da:.3e}   overlap {ob:.4f} -> {oa:.6f}")
-    mo1[:, cols1] = a1n; mo2[:, cols2] = a2n
-    return R1, R2
+        d0o = np.linalg.norm(mo1[:, occidx] - mo2[:, occidx])
+        d0v = np.linalg.norm(mo1[:, viridx] - mo2[:, viridx])
 
+    for it in range(max_cycle):
+        mo1_prev, mo2_prev = mo1.copy(), mo2.copy()
 
-def _align_one_spin(mo1, mo2, nocc1, nocc2, frozen1, frozen2, report, tag=""):
-    mo1 = np.array(mo1); mo2 = np.array(mo2)
-    o1, v1 = _split_active(mo1.shape[1], nocc1, frozen1)
-    o2, v2 = _split_active(mo2.shape[1], nocc2, frozen2)
-    # occ and vir aligned SEPARATELY -> no occ/vir mixing
-    Ro1, Ro2 = _align_block(mo1, mo2, o1, o2, report, tag + " occ")
-    Rv1, Rv2 = _align_block(mo1, mo2, v1, v2, report, tag + " vir")
+        # --- occupied ---
+        if len(occidx) > 0:
+            if occ1_big:
+                o = _procrustes(mo2[:, occidx], mo1[:, occidx])
+                mo1[:, actoccidx1] = mo1[:, actoccidx1] @ o
+                Ro1 = Ro1 @ o
+            else:
+                o = _procrustes(mo1[:, occidx], mo2[:, occidx])
+                mo2[:, actoccidx2] = mo2[:, actoccidx2] @ o
+                Ro2 = Ro2 @ o
+
+        # --- virtual, using the occ-aligned MOs ---
+        if len(viridx) > 0:
+            if vir1_big:
+                o = _procrustes(mo2[:, viridx], mo1[:, viridx])
+                mo1[:, actviridx1] = mo1[:, actviridx1] @ o
+                Rv1 = Rv1 @ o
+            else:
+                o = _procrustes(mo1[:, viridx], mo2[:, viridx])
+                mo2[:, actviridx2] = mo2[:, actviridx2] @ o
+                Rv2 = Rv2 @ o
+
+        if nocc1 == nocc2:
+            break        # occ and vir blocks are decoupled; one pass is exact
+        if (abs(mo1 - mo1_prev).max() < tol and
+                abs(mo2 - mo2_prev).max() < tol):
+            break
+    else:
+        print(f"WARNING: align_mo ({tag}) did not converge in {max_cycle} cycles")
+
+    if report:
+        d1o = np.linalg.norm(mo1[:, occidx] - mo2[:, occidx])
+        d1v = np.linalg.norm(mo1[:, viridx] - mo2[:, viridx])
+        so = _sigmas(mo2[:, occidx], mo1[:, occidx])
+        sv = _sigmas(mo2[:, viridx], mo1[:, viridx])
+        print(f"  {tag+' occ':12s} k1={nactocc1} k2={nactocc2} shared={len(occidx)}  "
+              f"||d||_F {d0o:.3e} -> {d1o:.3e}  sigma_min {so.min():.4f}  "
+              f"rotated mo{1 if occ1_big else 2}")
+        print(f"  {tag+' vir':12s} k1={nactvir1} k2={nactvir2} shared={len(viridx)}  "
+              f"||d||_F {d0v:.3e} -> {d1v:.3e}  sigma_min {sv.min():.4f}  "
+              f"rotated mo{1 if vir1_big else 2}  (cycles: {it+1})")
+
     return mo1, mo2, (Ro1, Rv1), (Ro2, Rv2)
 
 
 def align_mo(mo_coeff1, mo_coeff2, nocc1, nocc2,
-             frozen1=None, frozen2=None, report=False):
+             frozen1=None, frozen2=None, report=False,
+             max_cycle=20, tol=1e-10):
     """
-    Align two systems' active MOs, occupied and virtual blocks SEPARATELY,
-    padding the smaller block and Procrustes-rotating the larger onto it.
+    Align two systems' active MOs, occupied and virtual blocks SEPARATELY.
 
-    mo_coeff1/2 : (nao, nmo) array (RHF) or [alpha, beta] list/tuple (UHF).
+    Strategy: whichever set has the LARGER active block is Procrustes-rotated
+    onto the other set's orbitals taken AT THE SAME COLUMN INDICES.  No zero
+    padding: the "extra" reference columns are the other set's real orbitals
+    at those indices, which is what you want when the two calculations differ
+    in nocc (e.g. triplet SOMO vs singlet LUMO in O2 -- the reference column
+    is virtual in the singlet, and that is correct, not a bug).
+
+    When nocc1 != nocc2 the occ and vir blocks are COUPLED (the boundary
+    orbitals sit in mo1's occ block and mo2's vir block), so the two rotations
+    are swept to self-consistency.  When nocc1 == nocc2 they are decoupled and
+    a single pass is exact.
+
+    Requires nested frozen spaces and mo1.shape == mo2.shape.
+
+    mo_coeff1/2 : (nao, nmo) array (RHF), or [alpha, beta] / (2, nao, nmo) (UHF).
     nocc1/2     : total occupied count (RHF scalar; UHF (n_a, n_b)).
-    frozen1/2   : frozen MO index list (RHF) or [alpha_list, beta_list] (UHF).
+    frozen1/2   : None, an int (leading core), or a frozen MO index list.
+                  For UHF: None, an int (both spins), or [alpha_spec, beta_spec].
 
     Returns:
-      mo_coeff1, mo_coeff2 (aligned),
+      mo_coeff1, mo_coeff2 (aligned, ORIGINAL column order preserved),
       u1actocc, u1actvir, u2actocc, u2actvir
-    where u..occ = <occ_old|occ_new>, u..vir = <vir_old|vir_new> for that
-    active block (reference system gets identity). t1 transforms as
+    where mo_new[:, actocc] = mo_old[:, actocc] @ uactocc (identity for the set
+    that was not rotated), and likewise for the virtual block.  t1 transforms as
       t1_new[i,a] = sum_{jb} uocc*[j,i] uvir*[b,a] t1[j,b]
     and t2 with occ rotations on the occupied indices, vir on the virtual.
+
+    NOTE: right_procrustes uses the bare B^H A overlap.  This is only the true
+    MO overlap if the MOs are orthonormal in the AO basis (e.g. OAO / S^1/2 C).
+    Pass S^1/2-transformed coefficients if working in a non-orthogonal AO basis.
     """
-    print("Procrustes align (occ & vir separately): rotate larger block onto smaller")
-    uhf = isinstance(mo_coeff1, (list, tuple))
+    if report:
+        print("Procrustes align (occ & vir separately): "
+              "rotate the larger active block onto the smaller set's same-index orbitals")
+
+    uhf = isinstance(mo_coeff1, (list, tuple)) or np.ndim(mo_coeff1) == 3
     if not uhf:
         mo1, mo2, (Ro1, Rv1), (Ro2, Rv2) = _align_one_spin(
-            mo_coeff1, mo_coeff2, nocc1, nocc2, frozen1, frozen2, report, "rhf")
+            mo_coeff1, mo_coeff2, nocc1, nocc2, frozen1, frozen2,
+            report, "rhf", max_cycle, tol)
         return mo1, mo2, Ro1, Rv1, Ro2, Rv2
+
+    f1a, f1b = _frozen_pair(frozen1)
+    f2a, f2b = _frozen_pair(frozen2)
 
     mo1o, mo2o = [], []
     u1occ, u1vir, u2occ, u2vir = [], [], [], []
-    for s, name in ((0, "alpha"), (1, "beta")):
-        f1 = None if frozen1 is None else frozen1[s]
-        f2 = None if frozen2 is None else frozen2[s]
+    for s, (name, f1, f2) in enumerate((("alpha", f1a, f2a), ("beta", f1b, f2b))):
         m1, m2, (Ro1, Rv1), (Ro2, Rv2) = _align_one_spin(
-            mo_coeff1[s], mo_coeff2[s], nocc1[s], nocc2[s], f1, f2, report, name)
+            mo_coeff1[s], mo_coeff2[s], nocc1[s], nocc2[s], f1, f2,
+            report, name, max_cycle, tol)
         mo1o.append(m1); mo2o.append(m2)
-        u1occ.append(Ro1); u1vir.append(Rv1); u2occ.append(Ro2); u2vir.append(Rv2)
+        u1occ.append(Ro1); u1vir.append(Rv1)
+        u2occ.append(Ro2); u2vir.append(Rv2)
+
     return mo1o, mo2o, u1occ, u1vir, u2occ, u2vir
 
 # def _report_line(A, B, tag):
@@ -315,7 +507,8 @@ def prep_integral(
     basis_coeff2: Optional[np.ndarray] = None,
     norb_frozen1: int = 0,
     norb_frozen2: int = 0,
-    chol_cut: float = 1e-5,
+    chol_cut1: float = 1e-5,
+    chol_cut2: float = 1e-5,
     amp_file1 = "amplitudes1.npz",
     chol_file1 = "FCIDUMP_chol1",
     amp_file2 = "amplitudes2.npz",
@@ -357,9 +550,9 @@ def prep_integral(
     # mf1.mo_coeff = match_mocoeff(mf1, mf2)
 
     enuc1, h1e1, chol1, nelec1, nbasis1, nchol1 \
-        = integral.get_chol(mf1, spin_type1, norb_frozen1, chol_cut, basis_coeff1)
+        = integral.get_chol(mf1, norb_frozen1, chol_cut1, basis_coeff1)
     enuc2, h1e2, chol2, nelec2, nbasis2, nchol2 \
-        = integral.get_chol(mf2, spin_type2, norb_frozen2, chol_cut, basis_coeff2)
+        = integral.get_chol(mf2, norb_frozen2, chol_cut2, basis_coeff2)
       
     print(f"Original number of Cholesky: {nchol1} vs {nchol2}")
     
@@ -381,7 +574,7 @@ def prep_integral(
         assert chol1a.shape[0] == chol1b.shape[0] == chol2a.shape[0] == chol2b.shape[0]
         nchol1 = nchol2 = chol1a.shape[0]
         chol1 = (chol1a, chol1b)
-        chol2 = align_gauge(chol1, (chol2a, chol2b), report=True)   # ONE shared O
+        chol1, chol2 = align_gauge(chol1, (chol2a, chol2b), report=True)   # ONE shared O
         
 
     print("Finished calculating Cholesky integrals")

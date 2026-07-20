@@ -297,8 +297,11 @@ class sampler:
         outlier1 = jnp.abs(en_sp1 - prop_data1["e_estimate"]) > jnp.sqrt(2.0 / prop.dt)
         outlier2 = jnp.abs(en_sp2 - prop_data2["e_estimate"]) > jnp.sqrt(2.0 / prop.dt)
         outlier = outlier1 | outlier2 # union
-        wt_sp1 = jnp.where(outlier, 0.0, prop_data1["weights"])
-        wt_sp2 = jnp.where(outlier, 0.0, prop_data2["weights"])
+        prop_data1["weights"] = jnp.where(outlier, 0.0, prop_data1["weights"])
+        prop_data2["weights"] = jnp.where(outlier, 0.0, prop_data2["weights"])
+
+        wt_sp1 = prop_data1["weights"]
+        wt_sp2 = prop_data2["weights"]
 
         wt1 = jnp.sum(wt_sp1)
         wt2 = jnp.sum(wt_sp2)

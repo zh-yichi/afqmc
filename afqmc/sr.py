@@ -1,22 +1,6 @@
 import jax.numpy as jnp
 from jax import jit
 
-# # this uses numpy but is only called once after each block
-# def stochastic_reconfiguration_np(walkers, weights, zeta):
-#     nwalkers = walkers.shape[0]
-#     walkers = np.array(walkers)
-#     weights = np.array(weights)
-#     walkers_new = 0.0 * walkers
-#     cumulative_weights = np.cumsum(np.abs(weights))
-#     total_weight = cumulative_weights[-1]
-#     average_weight = total_weight / nwalkers
-#     weights_new = np.ones(nwalkers) * average_weight
-#     for i in range(nwalkers):
-#         z = (i + zeta) / nwalkers
-#         new_i = np.searchsorted(cumulative_weights, z * total_weight)
-#         walkers_new[i] = walkers[new_i].copy()
-#     return jnp.array(walkers_new), jnp.array(weights_new)
-
 @jit
 def get_replicant(weights, zeta):
     nwalkers = len(weights)
@@ -31,28 +15,13 @@ def get_replicant(weights, zeta):
 # @checkpoint
 @jit
 def stochastic_reconfiguration(walkers, weights, zeta):
-    # nwalkers = walkers.shape[0]
-    # cumulative_weights = jnp.cumsum(jnp.abs(weights))
-    # total_weight = cumulative_weights[-1]
-    # average_weight = total_weight / nwalkers
-    # weights = jnp.ones(nwalkers) * average_weight
-    # z = average_weight * (jnp.arange(nwalkers) + zeta)
-    # indices = vmap(jnp.searchsorted, in_axes=(None, 0))(cumulative_weights, z)
-    indices = get_replicant(weights, zeta)
-    walkers, weights = walkers[indices]
+    indices, weights = get_replicant(weights, zeta)
+    walkers = walkers[indices]
     return walkers, weights
 
 
 @jit
 def stochastic_reconfiguration_uhf(walkers, weights, zeta):
-    # nwalkers = walkers[0].shape[0]
-    # cumulative_weights = jnp.cumsum(jnp.abs(weights))
-    # total_weight = cumulative_weights[-1]
-    # average_weight = total_weight / nwalkers
-    # weights = jnp.ones(nwalkers) * average_weight
-    # z = average_weight * (jnp.arange(nwalkers) + zeta)
-    # indices = jnp.searchsorted(cumulative_weights, z)
-    # # indices = vmap(jnp.searchsorted, in_axes=(None, 0))(cumulative_weights, z)
     indices, weights = get_replicant(weights, zeta)
     walkers[0] = walkers[0][indices]
     walkers[1] = walkers[1][indices]

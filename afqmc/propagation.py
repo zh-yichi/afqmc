@@ -312,6 +312,7 @@ class propagator_restricted(propagator):
             optimize="optimal",
         )
         h1_mod = (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0 - v0
+        # h1_mod = ham_data["h1"] - v0
         h1_mod = h1_mod - jnp.real(
             1.0j
             * jnp.einsum(

@@ -117,122 +117,6 @@ def blocking(wt_sp, en_sp, min_nblocks=20, final=False):
 
     return weight, energy, plateau_err
 
-# def pt2blocking(
-#         h0,
-#         wt_sp,
-#         t1_sp,
-#         t2_sp,
-#         e0_sp,
-#         e1_sp,
-#         min_nblocks=20,
-#         final=False,
-#         ):
-
-#     nsample = len(wt_sp)
-#     weight = np.mean(wt_sp)
-#     t1 = np.mean(wt_sp * t1_sp) / weight
-#     t2 = np.mean(wt_sp * t2_sp) / weight
-#     e0 = np.mean(wt_sp * e0_sp) / weight
-#     e1 = np.mean(wt_sp * e1_sp) / weight
-#     energy = (h0 + e0/t1 + e1/t1 - t2*e0/t1**2).real
-
-#     if not final:
-#         # No blocking: weight-aware naive error of the nonlinear estimator
-#         #   E = h0 + E0/T1 + E1/T1 - T2*E0/T1**2
-#         # with E0=sum(w*e0), E1=sum(w*e1), T1=sum(w*t1), T2=sum(w*t2).
-#         # Treat each sample as an independent unit and propagate its
-#         # contribution to each aggregate through a first-order (delta-method)
-#         # linearization -> per-sample influence, then variance of the mean.
-#         w  = wt_sp
-#         E0 = np.sum(w * e0_sp)
-#         E1 = np.sum(w * e1_sp)
-#         T1 = np.sum(w * t1_sp)
-#         T2 = np.sum(w * t2_sp)
-
-#         # partials of E w.r.t. each aggregate
-#         dfdE0 = 1.0 / T1 - T2 / T1**2
-#         dfdE1 = 1.0 / T1
-#         dfdT1 = -E0 / T1**2 - E1 / T1**2 + 2.0 * T2 * E0 / T1**3
-#         dfdT2 = -E0 / T1**2
-
-#         # per-sample influence on E (these sum to ~0 since E is scale-free)
-#         infl = (dfdE0 * (w * e0_sp)
-#                 + dfdE1 * (w * e1_sp)
-#                 + dfdT1 * (w * t1_sp)
-#                 + dfdT2 * (w * t2_sp)).real
-#         var_mean = np.sum(infl**2) * nsample / (nsample - 1)
-#         return weight, energy, np.sqrt(var_mean)
-
-#     # ---------------- full blocking analysis (final=True) ----------------
-#     max_size = nsample // min_nblocks
-#     if max_size < 10:
-#         min_nblocks = max(nsample // 10, 3)
-#         max_size = nsample // min_nblocks
-#         print(f"Warning: small dataset, relaxed min_nblocks to {min_nblocks}")
-#     block_sizes = np.arange(1, max_size + 1)
-#     block_vars = np.zeros(max_size)
-#     block_var_errs = np.zeros(max_size)
-#     block_means = np.zeros(max_size)
-#     print(f"nsample = {nsample}, max_block_size = {max_size}, min_nblocks = {min_nblocks}")
-#     print(f"{'Blk_SZ':>6s}  {'NBlk':>5s}  {'NSmp':>5s}  {'Energy':>10s}  {'Error':>8s}  {'dError':>8s}")
-#     for i, block_size in enumerate(block_sizes):
-#         n_blocks = nsample // block_size
-#         sl = slice(0, n_blocks * block_size)
-#         wt = (wt_sp[sl]).reshape(n_blocks, block_size)
-#         wt_t1 = (wt_sp[sl] * t1_sp[sl]).reshape(n_blocks, block_size)
-#         wt_t2 = (wt_sp[sl] * t2_sp[sl]).reshape(n_blocks, block_size)
-#         wt_e0 = (wt_sp[sl] * e0_sp[sl]).reshape(n_blocks, block_size)
-#         wt_e1 = (wt_sp[sl] * e1_sp[sl]).reshape(n_blocks, block_size)
-#         block_t1 = np.sum(wt_t1, axis=1)
-#         block_t2 = np.sum(wt_t2, axis=1)
-#         block_e0 = np.sum(wt_e0, axis=1)
-#         block_e1 = np.sum(wt_e1, axis=1)
-#         block_energy = (h0 + block_e0/block_t1 + block_e1/block_t1
-#                         - (block_t2 * block_e0) / block_t1**2).real
-#         block_mean = np.mean(block_energy)
-#         block_var = np.var(block_energy, ddof=1) / n_blocks  # variance of the mean
-#         block_error = np.sqrt(block_var)
-#         # Uncertainty on variance: var / sqrt((n_blocks - 1) / 2)
-#         var_of_var = block_var * np.sqrt(2.0 / (n_blocks - 1))
-#         err_of_err = block_error / np.sqrt(2.0 * (n_blocks - 1))
-#         block_means[i] = block_mean
-#         block_vars[i] = block_var
-#         block_var_errs[i] = var_of_var
-#         print(f'{block_size:6d}  {n_blocks:5d}  {block_size*n_blocks:5d}  '
-#             f'{block_mean:10.5f}  {block_error:8.5f}  {err_of_err:8.5f}')
-
-#     def model(x, a, b, tau):
-#         return a - b * np.exp(-x / tau)
-#     p0 = [block_vars.max(), block_vars.max() - block_vars[0], 5.0]
-#     try:
-#         popt, pcov = curve_fit(model, block_sizes, block_vars,
-#                             sigma=block_var_errs, absolute_sigma=True,
-#                             p0=p0, maxfev=10000)
-#         plateau_var = popt[0]
-#         plateau_var_unc = np.sqrt(pcov[0, 0])
-#         plateau_err = np.sqrt(plateau_var)
-#         # Error propagation: d(sqrt(v)) = dv / (2 sqrt(v))
-#         plateau_uncertainty = plateau_var_unc / (2.0 * plateau_err)
-#         tau = popt[2]
-#         ratio = 0.01 * popt[0] / popt[1]
-#         if ratio > 0:
-#             plateau_block_size = int(np.ceil(-popt[2] * np.log(ratio)))
-#         else:
-#             plateau_block_size = 1
-#         print(f"Fit (variance): plateau_var = {plateau_var:.5e} ± {plateau_var_unc:.5e}")
-#         print(f"Fit (error):    plateau_err = {plateau_err:.5f} ± {plateau_uncertainty:.5f}")
-#         print(f"     autocorrelation length ~ {tau:.1f} blocks")
-#         print(f"     plateau reached at block size ~ {plateau_block_size}")
-#         if tau > max_size or tau < 0:
-#             print(f"     !!!Failed to reach plateau in blocking")
-#             print(f"     Return max block error")
-#             plateau_err = np.sqrt(block_vars.max())
-#     except RuntimeError as e:
-#         print(f"\nFit failed: {e}")
-#         plateau_err = np.sqrt(block_vars.max())
-#         print(f"Fallback max error: {plateau_err:.5f}")
-#     return weight, energy, plateau_err
-
 def pt2blocking(
         h0,
         wp_sp,
@@ -471,21 +355,21 @@ class sampler_exp(sampler):
     def sample_energy(
         self,
         prop,
-        trial,
+        wave,
         prop_data,
         ham_data,
         wave_data,
         ):
         """Block scan function. Propagation and energy calculation."""
-        prop_data = self.prop_nstep(prop, trial, prop_data, ham_data, wave_data)
+        prop_data = self.prop_nstep(prop, wave, prop_data, ham_data, wave_data)
         
-        guide_olps = trial.calc_overlap(prop_data["walkers"], wave_data)
-        trial_olps = trial.calc_trial_overlap(prop_data["walkers"], wave_data)
+        guide_olps = wave.calc_overlap(prop_data["walkers"], wave_data)
+        trial_olps = wave.calc_trial_overlap(prop_data["walkers"], wave_data)
         prop_data["overlaps"] = guide_olps
 
         olp_ratio = trial_olps / guide_olps
         wps = prop_data["weights"] * olp_ratio
-        samples = trial.calc_energy(prop_data["walkers"], ham_data, wave_data)
+        samples = wave.calc_energy(prop_data["walkers"], ham_data, wave_data)
         wp_mean, sample_mean, sample_err = weighted_average(wps, samples)
         tot_wp = jnp.sum(wps)
 
@@ -498,7 +382,7 @@ class sampler_exp(sampler):
 
         # prop_data["pop_control_ene_shift"] = 0.9 * prop_data["pop_control_ene_shift"] + 0.1 * blk_eg
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["overlaps"] = wave.calc_overlap(prop_data["walkers"], wave_data)
 
         return prop_data, (tot_wp, sample_mean)
     

@@ -67,6 +67,6 @@ def energy_formula(weights, samples, ham_data):
     # energy_terms shape: (nsamples, terms)
     weight_mean, sample_mean, sample_err = sampling.weighted_average(weights, samples)
     weight = weight_mean.real
-    energy = sample_mean[0].real
-    energy_err = sample_err[0].real
+    energy = sample_mean.real
+    energy_err = sample_err.real
     return weight, energy, energy_err
