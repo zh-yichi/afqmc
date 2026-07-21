@@ -1316,8 +1316,9 @@ class upt2ccsd_bar(upt2ccsd):
         norb_a, nocc_a = walker_up.shape
         norb_b, nocc_b = walker_dn.shape
 
-        o0 = jnp.linalg.det(walker_up[:nocc_a,:]) \
-            * jnp.linalg.det(walker_dn[:nocc_b,:])
+        # o0 = jnp.linalg.det(walker_up[:nocc_a,:]) \
+        #     * jnp.linalg.det(walker_dn[:nocc_b,:])
+        o0 = self._calc_overlap(walker_up, walker_dn, wave_data)
         
         t2aa = wave_data["t2aa"]
         t2ab = wave_data["t2ab"]

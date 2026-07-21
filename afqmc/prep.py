@@ -395,7 +395,7 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
             
             if "wrong" in options["trial"]:
-                trial = wavefunctions_unrestricted.upt2ccsd(
+                trial = wavefunctions_unrestricted.upt2ccsd_bar(
                     norb, nelec_sp, 
                     n_batch=options["n_batch"], 
                     nchol_chunk=nchol_chunk,
