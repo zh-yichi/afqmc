@@ -31,8 +31,10 @@ print("\nEquilibration")
 block_time = prop.dt * options["n_prop_steps"]
 neql_block = int(-(-options["eql_time"] // block_time))
 
-print(f"{'1/T':>5s}  {'weight':>10s}  {'energy':>10s}  {'error':>8s}  {'runTime':>6s}")
-print(f"{0.:5.2f}  {w_init:10.5f}  {e_init:10.5f}  {0:8.5f}  {time.time() - init_time:6.2f}")
+print(f"{'1/T':>5s}  {'nodes':>5s}  "
+      f"{'weight':>10s}  {'energy':>10s}  "
+      f" {'error':>8s}  {'runTime':>6s}")
+print(f"{0.:5.2f}  {0:5d}  {w_init:10.5f}  {e_init:10.5f}  {0:8.5f}  {time.time() - init_time:6.2f}")
 
 sampler_eq = sampling.sampler(
     n_prop_steps = options["n_prop_steps"],
@@ -40,13 +42,17 @@ sampler_eq = sampling.sampler(
     n_blocks = neql_block,
     )
 
-for n in range(1,neql_block+1):
+for n in range(neql_block):
     prop_data, (wt, en, err) \
         = sampler_eq.block_sample(prop_data, ham_data, prop, trial, wave_data)
-    prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * en
+    # prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * en
+    nodes = prop_data["n_killed_walkers"]
 
     if (n+1) % (min(max(neql_block // 10, 1), 20)) == 0 and n > 0:
-        print(f"{(n+1)*block_time:5.2f}  {wt:10.5f}  {en:10.5f}  {err:8.5f}  {time.time() - init_time:6.2f}")
+        print(f"{(n+1)*block_time:5.2f}  {nodes:5d}  {wt:10.5f}  "
+              f"{en:10.5f}  {err:8.5f}  {time.time() - init_time:6.2f}")
+        
+        prop_data["n_killed_walkers"] = 0
 
 print("\n")
 print(f"Sampling Target (raw) 0.6 x max_error = {0.6 * options['max_error']:.5f}")

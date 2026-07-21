@@ -417,7 +417,6 @@ class uhf(uwfn):
 
     @partial(jit, static_argnums=(0,))
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
-        moa, mob = wave_data["mo_coeff"]
         chola, cholb = ham_data["chol"]
         chola = chola.reshape(-1, self.norb, self.norb)
         cholb = cholb.reshape(-1, self.norb, self.norb)
@@ -426,8 +425,8 @@ class uhf(uwfn):
             wave_data["mo_coeff"][1].T.conj() @ ham_data["h1"][1],
         ]
         ham_data["rot_chol"] = [
-            oe.contract("pi,gij->gpj", moa.T.conj(), chola, backend="jax"),
-            oe.contract("pi,gij->gpj", mob.T.conj(), cholb, backend="jax")
+            oe.contract("pi,gij->gpj", wave_data["mo_coeff"][0].T.conj(), chola, backend="jax"),
+            oe.contract("pi,gij->gpj", wave_data["mo_coeff"][1].T.conj(), cholb, backend="jax")
             ]
         
         return ham_data
@@ -1229,9 +1228,9 @@ class upt2ccsd(uhf):
         # <exp(T1)HF|walker>/<HF|walker>
         t1 = jnp.linalg.det(wave_data["mo_ta"].T.conj() @ walker_up
             ) * jnp.linalg.det(wave_data["mo_tb"].T.conj() @ walker_dn) / o0
-        t2 = gt2g # * t1 # <exp(T1)HF|T2|walker>/<HF|walker>
-        e0 = (e1_0 + e2_0) # * t1 # <exp(T1)HF|h1+h2|walker>/<HF|walker>
-        e1 = (e1_2 + e2_2) # * t1 # <exp(T1)HF|T2 (h1+h2)|walker>/<HF|walker>
+        t2 = gt2g # * t1 # <exp(T1)HF|T2|walker>/<exp(T1)HF|walker>
+        e0 = (e1_0 + e2_0) # * t1 # <exp(T1)HF|h1+h2|walker>/<exp(T1)HF|walker>
+        e1 = (e1_2 + e2_2) # * t1 # <exp(T1)HF|T2 (h1+h2)|walker>/<exp(T1)HF|walker>
 
         return t1, t2, e0, e1
     

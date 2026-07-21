@@ -334,6 +334,9 @@ class sampler:
         wts = prop_data["weights"]
 
         wt, en, err = weighted_average(wts, energies)
+        # wt = jnp.sum(wts)
+        # en = jnp.sum(wts * energies) / wt
+        # err = 0
 
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
         prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
