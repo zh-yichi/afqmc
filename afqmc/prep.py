@@ -394,6 +394,25 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
                 wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
             
+            if "wrong" in options["trial"]:
+                trial = wavefunctions_unrestricted.upt2ccsd(
+                    norb, nelec_sp, 
+                    n_batch=options["n_batch"], 
+                    nchol_chunk=nchol_chunk,
+                    mix_precision=options["mix_precision"],
+                    )
+                wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
+                                         jnp.array(wave_data['mo_tb']))
+                t1a, t1b = wave_data["t1a"], wave_data["t1b"]
+                t1a_full = np.zeros((norb, norb), dtype=np.float64)
+                t1b_full = np.zeros((norb, norb), dtype=np.float64)
+                t1a_full[:nocc_a, nocc_a:] = t1a
+                t1b_full[:nocc_b, nocc_b:] = t1b
+                wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
+                wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
+                wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
+                wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
+            
             elif "cisd" in options["trial"]:
                 wave_data = load_cc_amplitude(wave_data, amp_file)
                 wave_data = load_ci_amplitude(wave_data, amp_file)

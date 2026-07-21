@@ -14,6 +14,8 @@ config.setup_jax()
 
 ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
+# print(wave_data["mo_coeff"])
+
 if "rdm1" not in wave_data:
     wave_data["rdm1"] = trial.get_rdm1(wave_data)
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)

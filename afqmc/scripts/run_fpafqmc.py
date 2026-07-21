@@ -2,7 +2,7 @@ import numpy as np
 from jax import random, jit
 from jax import numpy as jnp
 
-from afqmc import config, prep
+from afqmc import config, prep, walker_tools
 
 import time
 from functools import partial
@@ -24,6 +24,40 @@ def error_estimate(w_trj, e_trj):
 
 config.setup_jax()
 
+# @partial(jit, static_argnames=("trial", "n_walkers", "walker_type", "seeds"))
+def init_ccsd_prop_data(
+    trial,
+    wave_data,
+    n_walkers,
+    walker_type,
+    seeds,
+    ):
+
+    print("\nInitalize QMC walkers by stochastic CCSD")
+    prop_data = {}
+    prop_data["n_killed_walkers"] = 0
+    prop_data["key"] = random.PRNGKey(seeds)
+
+    weights0 = jnp.ones(n_walkers, dtype=jnp.float64)
+    walkers0 = walker_tools.replicate_walker(wave_data["mo_coeff"], n_walkers)
+    overlaps0 = trial.calc_overlap(walkers0, wave_data)
+
+    walkers1, prop_data = walker_tools.get_ccsd_walkers(
+        prop_data, wave_data, n_walkers, walker_type)
+
+    overlaps1 = trial.calc_overlap(walkers1, wave_data)
+    weights1 = jnp.real(weights0 * overlaps1 / overlaps0)
+    energy = trial.calc_energy(walkers1, wave_data)
+
+    prop_data["weights"] = weights1
+    prop_data["walkers"] = walkers1
+    prop_data["overlaps"] = overlaps1
+
+    prop_data["e_estimate"] = energy
+    prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+
+    return prop_data
+
 print = partial(print, flush=True)
 
 ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
@@ -42,7 +76,7 @@ if "rdm1" not in wave_data:
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 
-# prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers = None)
+prop_data = prop.init_prop_data(trial, wave_data, ham_data, init_walkers = None)
 
 # if jnp.abs(jnp.sum(prop_data["overlaps"])) < 1.0e-6:
 #     raise ValueError(
@@ -54,22 +88,22 @@ seeds = random.randint(random.PRNGKey(options["seed"]),
                        minval=0, 
                        maxval=100*sampler.n_trj)
 
-@partial(jit, static_argnames=("prop", "trial"))
-def init_prop_data(wave_data, ham_data, prop, trial, seed):
-    prop_data = {}
-    prop_data["weights"] = jnp.ones(prop.n_walkers)
-    prop_data["key"] = random.PRNGKey(seed)
-    init_walkers, prop_data = trial.get_ccsd_walkers(prop_data, wave_data, prop)
-    prop_data["walkers"] = init_walkers
-    energy_samples = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
-    e_estimate = jnp.array(jnp.sum(energy_samples) / prop.n_walkers)
-    prop_data["e_estimate"] = e_estimate
-    prop_data["pop_control_ene_shift"] = e_estimate
-    prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+# @partial(jit, static_argnames=("prop", "trial"))
+# def init_prop_data(wave_data, ham_data, prop, trial, seed):
+#     prop_data = {}
+#     prop_data["weights"] = jnp.ones(prop.n_walkers)
+#     prop_data["key"] = random.PRNGKey(seed)
+#     init_walkers, prop_data = trial.get_ccsd_walkers(prop_data, wave_data, prop)
+#     prop_data["walkers"] = init_walkers
+#     energy_samples = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
+#     e_estimate = jnp.array(jnp.sum(energy_samples) / prop.n_walkers)
+#     prop_data["e_estimate"] = e_estimate
+#     prop_data["pop_control_ene_shift"] = e_estimate
+#     prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
 
-    return prop_data
+#     return prop_data
 
-# prop_data["key"] = random.PRNGKey(options["seed"])
+prop_data["key"] = random.PRNGKey(options["seed"])
 # prop_data = init_prop_data(wave_data, ham_data, prop, trial, options["seed"])
 # e_init = prop_data["e_estimate"]
 
@@ -82,11 +116,12 @@ e_trj = np.zeros((sampler.n_eql_blocks+1, sampler.n_trj), dtype="complex128")
 print(f"Propagating with {options['n_walkers']} walkers")
 
 for i in range(sampler.n_trj):
-    prop_data = init_prop_data(wave_data, ham_data, prop, trial, seeds[i])
+    prop_data = init_ccsd_prop_data(
+        trial, wave_data, options["n_walkers"], options["walker_type"], seeds[i])
     e_init = prop_data["e_estimate"]
     w_init = np.sum(prop_data["weights"])
 
-    _, (blk_w, blk_e) \
+    prop_data, (blk_w, blk_e) \
         = sampler.scan_eql_blocks(prop_data, ham_data, prop, trial, wave_data)
 
     # blk_w = np.array([blk_w], dtype="complex128")
@@ -103,14 +138,14 @@ for i in range(sampler.n_trj):
     e_mean, e_err = error_estimate(w_trj[:,:(i + 1)], e_trj[:,:(i + 1)])
     
     if i == 0:
-        print(f"Free Projection AFQMC trajector {i+1}/{sampler.n_trj} | seed = {seeds[i]}")
+        print(f"Free Projection AFQMC trajector {i+1}/{sampler.n_trj} | key = {prop_data["key"]}")
         print(f"{'Inv_T':>6s}  {'Energy':>10s}  {'Error':>8s}  {'Walltime':>8s}")
         # print(f"{0.:6.2f}  {e_init:10.5f}  {0.:8.5f}  {time.time() - init_time:8.2f}")
         for nb in range(len(e_mean)):
             print(f"{(nb)*blk_time:6.2f}  {e_mean[nb]:10.5f}  {'N/A':>8s}  {time.time() - init_time:8.2f} ")
 
     elif (i+1) % (min(max(sampler.n_trj // 10, 1), 20)) == 0 and i > 0:
-        print(f"Free Projection AFQMC trajector {i+1}/{sampler.n_trj} | seed = {seeds[i]}")
+        print(f"Free Projection AFQMC trajector {i+1}/{sampler.n_trj} | key = {prop_data["key"]}")
         print(f"{'Inv_T':>6s}  {'Energy':>10s}  {'Error':>8s}  {'Walltime':>8s}")
         # print(f"{0.:6.2f}  {e_init:10.5f}  {0.:8.5f}  {time.time() - init_time:8.2f}")
         for nb in range(len(e_mean)):
