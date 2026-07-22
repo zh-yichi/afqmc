@@ -324,6 +324,38 @@ class uhf(uwfn):
         ) * jnp.linalg.det(wave_data["mo_coeff"][1].T.conj() @ walker_dn)
 
     @partial(jit, static_argnums=0)
+    def _calc_overlap_delta(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        wave_data: dict,
+    ) -> complex:
+        o0 = jnp.linalg.det(walker_up[:walker_up.shape[1], :]) \
+            * jnp.linalg.det(walker_dn[:walker_dn.shape[1], :])
+        return o0
+
+    def calc_overlap_delta(self, walkers: list, wave_data: dict) -> jax.Array:
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+
+        def scanned_fun(carry, walker_batch):
+            walker_batch_0, walker_batch_1 = walker_batch
+            overlap_batch = vmap(self._calc_overlap_delta, in_axes=(0, 0, None))(
+                walker_batch_0, walker_batch_1, wave_data
+            )
+            return carry, overlap_batch
+
+        _, overlaps = lax.scan(
+            scanned_fun,
+            None,
+            (
+                walkers[0].reshape(self.n_batch, batch_size, self.norb, self.nelec[0]),
+                walkers[1].reshape(self.n_batch, batch_size, self.norb, self.nelec[1]),
+            ),
+        )
+        return overlaps.reshape(n_walkers)
+
+    @partial(jit, static_argnums=0)
     def _calc_green(
         self,
         walker_up: jax.Array,
@@ -632,13 +664,13 @@ class ucisd(uwfn):
         # e2_0 = e2_0_1 + e2_0_2
 
         nchol = rot_chol_a.shape[0]
-        nchol_chunk = self.nchol_chunk
-        nchunks = -(-nchol // nchol_chunk)
-        pad = nchunks * nchol_chunk - nchol
-        rot_chol_a = jnp.pad(rot_chol_a, ((0, pad), (0, 0), (0, 0)))
-        rot_chol_b = jnp.pad(rot_chol_b, ((0, pad), (0, 0), (0, 0)))
-        rot_chol_a_chunks = rot_chol_a.reshape(nchunks, nchol_chunk, *rot_chol_a.shape[1:])
-        rot_chol_b_chunks = rot_chol_b.reshape(nchunks, nchol_chunk, *rot_chol_b.shape[1:])
+        # nchol_chunk = self.nchol_chunk
+        # nchunks = -(-nchol // nchol_chunk)
+        # pad = nchunks * nchol_chunk - nchol
+        # rot_chol_a_pad = jnp.pad(rot_chol_a, ((0, pad), (0, 0), (0, 0)))
+        # rot_chol_b_pad = jnp.pad(rot_chol_b, ((0, pad), (0, 0), (0, 0)))
+        # rot_chol_a_chunks = rot_chol_a.reshape(nchol, 1, *rot_chol_a.shape[1:])
+        # rot_chol_b_chunks = rot_chol_b.reshape(nchol, 1, *rot_chol_b.shape[1:])
 
         def scanned_fun(carry, x):
             chol_a_c, chol_b_c = x  # (nchol_chunk, nocc, norb) each
@@ -660,7 +692,9 @@ class ucisd(uwfn):
             carry += (e2aa_c + e2ab_c + e2bb_c) / 2
             return carry, 0.0
 
-        e2_0, _ = lax.scan(scanned_fun, 0.0, (rot_chol_a_chunks, rot_chol_b_chunks))
+        e2_0, _ = lax.scan(
+            scanned_fun, 0.0, (rot_chol_a.reshape(nchol, 1, *rot_chol_a.shape[1:]), 
+                               rot_chol_b.reshape(nchol, 1, *rot_chol_b.shape[1:])))
 
         # single excitations
         e2_1_1 = e2_0 * ci1g
@@ -1519,7 +1553,7 @@ class upt2ccsd_bar(upt2ccsd):
 
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
-    
+
 
 # @dataclass
 # class upt2ccsd_eff(upt2ccsd):

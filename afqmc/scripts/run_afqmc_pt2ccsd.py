@@ -14,15 +14,13 @@ config.setup_jax()
 
 ham_data, ham, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
-# print(wave_data["mo_coeff"])
-
 if "rdm1" not in wave_data:
     wave_data["rdm1"] = trial.get_rdm1(wave_data)
 ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 h0 = ham_data['h0']
 
-prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
+prop_data = prep.init_delta_prop_data(trial, wave_data, ham_data, options)
 
 init_e = prop_data["e_estimate"]
 init_w = np.sum(prop_data["weights"])
@@ -54,6 +52,8 @@ for n in range(sampler_eq.n_blocks):
         print(f"{(n+1)*block_time:5.2f}  "
               f"{nodes:5d}  {wt:12.5f}  "
               f"{e:12.5f}  {time.time() - init_time:8.2f}")
+        # prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        # prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         prop_data["n_killed_walkers"] = 0
 
 print("\nSampling")
@@ -61,6 +61,7 @@ print(f"Target (raw) 0.6 x max_error = {0.75 * options['max_error']:.5f}")
 print(f"{'blocks':>6s}  {'nodes':>5s}  "
       f"{'weight':>10s}  {'E_Guide':>12s}  {'error':>8s}  "
       f"{'weightp':>10s}  {'E_Trial':>12s}  {'error':>8s}  "
+    #   f"{'energy0':>10s}  {'error':>8s}  "
       f"{'Walltime':>10s}")
 
 wt_sp = np.zeros(sampler.n_blocks, dtype="float64")
@@ -88,16 +89,21 @@ for n in range(sampler.n_blocks):
     if (n+1) % (min(max(sampler.n_blocks // 10, 1), 20)) == 0 and n > 0:
         
         weight, eguide, eg_err = sampling.blocking(wt_sp[:n+1], eg_sp[:n+1], final=False)
-        
+
+        # _, e0_mean, e0_err = sampling.blocking(wt_sp[:n+1], h0+e0_sp[:n+1], final=False)
+
         weighp, ept2, ept2_err \
             = sampling.pt2blocking(h0, wp_sp[:n+1], t2_sp[:n+1], e0_sp[:n+1], e1_sp[:n+1], final=False)
         
         print(f"{n+1:6d}  {nodes:5d}  "
               f"{weight:10.5f}  {eguide:12.5f}  {eg_err:8.5f}  "
               f"{weighp.real:10.5f}  {ept2:12.5f}  {ept2_err:8.5f}  "
+            #   f"{e0_mean:10.5f}  {e0_err:8.5f}  "
               f"{time.time() - init_time:10.2f}")
         
-        prop_data["e_estimate"] = 0.8 * prop_data["e_estimate"] + 0.2 * eg.real
+        prop_data["e_estimate"] = 0.8 * prop_data["e_estimate"] + 0.2 * eguide.real
+        # prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        # prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
         
         if ept2_err < 0.75 * options["max_error"] and n > 120:
             break
@@ -107,27 +113,27 @@ print("\n ***** Post Propagation Process ***** ")
 nsamples = np.count_nonzero(wt_sp)
 print(f'Total number of samples {nsamples}')
 
-wt_sp = wt_sp[:nsamples]
-eg_sp = eg_sp[:nsamples]
-wp_sp = wp_sp[:nsamples]
-t2_sp = t2_sp[:nsamples]
-e0_sp = e0_sp[:nsamples]
-e1_sp = e1_sp[:nsamples]
+wt_sp = np.array(wt_sp[:nsamples])
+eg_sp = np.array(eg_sp[:nsamples])
+wp_sp = np.array(wp_sp[:nsamples])
+t2_sp = np.array(t2_sp[:nsamples])
+e0_sp = np.array(e0_sp[:nsamples])
+e1_sp = np.array(e1_sp[:nsamples])
 
 print("\nRemove AFQMC/Guide Outliers")
-eg_mask = sampling.filter_outliers(eg_sp, zeta=30)
-wt_sp = wt_sp[eg_mask]
-eg_sp = eg_sp[eg_mask]
+eg_mask = np.array(sampling.filter_outliers(eg_sp, zeta=30))
+wt_sp = np.array(wt_sp[eg_mask])
+eg_sp = np.array(eg_sp[eg_mask])
 print(f"Removed {np.sum(~eg_mask)} Outliers")
 print(f"Outliers Energy: {eg_sp[~eg_mask]}")
 
 print("\nRemove AFQMC/pt2CCSD Outliers")
 ept2_sp = (h0 + e0_sp + e1_sp - t2_sp * e0_sp).real
-ept2mask = sampling.filter_outliers(ept2_sp, zeta=30)
-wp_sp = wp_sp[ept2mask]
-t2_sp = t2_sp[ept2mask]
-e0_sp = e0_sp[ept2mask]
-e1_sp = e1_sp[ept2mask]
+ept2mask = np.array(sampling.filter_outliers(ept2_sp, zeta=30))
+wp_sp = np.array(wp_sp[ept2mask])
+t2_sp = np.array(t2_sp[ept2mask])
+e0_sp = np.array(e0_sp[ept2mask])
+e1_sp = np.array(e1_sp[ept2mask])
 print(f"Removed {np.sum(~ept2mask)} Outliers")
 print(f"Outliers Energy {ept2_sp[~ept2mask]}")
 
@@ -151,12 +157,7 @@ print("-" * 60)
 print(f"  {'[Guide] Average Weight':<26s}{wt.real:>24.5f}")
 print(f"  {'[Guide] Energy (Ha)':<26s}{eguide:>16.5f} +/- {eg_err:<.5f}")
 print(f"  {'[Trial] Average Weight':<26s}{wp.real:>24.5f}")
-print(f"  {'[Trial]] Energy (Ha)':<26s}{ept2:>16.5f} +/- {ept2_err:<.5f}")
+print(f"  {'[Trial] Energy (Ha)':<26s}{ept2:>16.5f} +/- {ept2_err:<.5f}")
 print(f"  {'Run Time':<26s}{runtime_str:>24s}")
 print("=" * 60)
 print("\n ***** AFQMC Sampling Finished ***** \n")
-
-# print(f"\n Final AFQMC/pt2CCSD overlap ratio: {t1.real:.5f} +/- {t1_err:.5f}")
-# print(f"Final AFQMC/pt2CCSD energy: {ept2:.5f} +/- {ept2_err:.5f} weight = {weight:.5f}")
-# print(f"Total run time: {time.time() - init_time:.2f}")
-# print(f"AFQMC Sampling Finished\n")

@@ -1355,21 +1355,21 @@ class pt2ccsd_ad(rhf):
     nelec: Tuple[int, int]
     n_batch: int = 1
 
-    @partial(jit, static_argnums=0)
-    def thouless_trans(self, t1):
-        ''' thouless transformation |psi'> = exp(t1)|psi>
-            gives the transformed mo_occrep in the 
-            original mo basis <psi_p|psi'_i>
-            t = t_ia
-            t_ia = c_ik c.T_ka
-            c_ik = <psi_i|psi'_k>
-        '''
-        q, r = jnp.linalg.qr(t1,mode='complete')
-        u_ji = q
-        u_ai = r.T
-        u_occ = jnp.vstack((u_ji,u_ai))
-        mo_t, _ = jnp.linalg.qr(u_occ,mode='complete')
-        return mo_t
+    # @partial(jit, static_argnums=0)
+    # def thouless_trans(self, t1):
+    #     ''' thouless transformation |psi'> = exp(t1)|psi>
+    #         gives the transformed mo_occrep in the 
+    #         original mo basis <psi_p|psi'_i>
+    #         t = t_ia
+    #         t_ia = c_ik c.T_ka
+    #         c_ik = <psi_i|psi'_k>
+    #     '''
+    #     q, r = jnp.linalg.qr(t1,mode='complete')
+    #     u_ji = q
+    #     u_ai = r.T
+    #     u_occ = jnp.vstack((u_ji,u_ai))
+    #     mo_t, _ = jnp.linalg.qr(u_occ,mode='complete')
+    #     return mo_t
 
     @partial(jit, static_argnums=0)
     def _tls_green(self, walker: jax.Array, wave_data: dict) -> jax.Array:
