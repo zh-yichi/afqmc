@@ -1229,14 +1229,14 @@ class pt2ccsd(rhf):
         e2_2 = e2_2_1 + e2_2_2 + e2_2_3
 
         # <HF|walker>
-        o0 = jnp.linalg.det(walker[:nocc,:nocc]) ** 2
+        # o0 = jnp.linalg.det(walker[:nocc,:nocc]) ** 2
         # <exp(T1)HF|walker>/<HF|walker>
-        t1 = jnp.linalg.det(wave_data["mo_t"].T.conj() @ walker)**2 / o0
+        ot1 = jnp.linalg.det(wave_data["mo_t"].T.conj() @ walker)**2
         t2 = gt2g  # <exp(T1)HF|T2|walker>/<exp(T1)HF|walker>
         e0 = (e1_0 + e2_0) # <exp(T1)HF|h1+h2|walker>/<exp(T1)HF|walker>
         e1 = (e1_2 + e2_2) # <exp(T1)HF|T2 (h1+h2)|walker>/<exp(T1)HF|walker>
 
-        return t1, t2, e0, e1
+        return ot1, t2, e0, e1
 
 
     @partial(jit, static_argnums=0)
@@ -1270,9 +1270,9 @@ class pt2ccsd_bar(pt2ccsd):
         chol = ham_data["chol_bar"]
         walker_bar = wave_data['exp_t1'] @ walker
 
-        o0 = jnp.linalg.det(walker[:walker.shape[1], :]) ** 2
+        # o0 = jnp.linalg.det(walker[:walker.shape[1], :]) ** 2
         obar = jnp.linalg.det(walker_bar[:walker_bar.shape[1], :]) ** 2
-        t1 = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
+        # t1 = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
 
         green = (walker_bar.dot(jnp.linalg.inv(walker_bar[: walker_bar.shape[1], :]))).T
         green_occ = green[:, nocc:]
@@ -1395,7 +1395,7 @@ class pt2ccsd_bar(pt2ccsd):
         e0 = e1_0 + e2_0  # <psi|(h1+h2)|phi>/<psi|phi>
         e1 = e1_2 + e2_2  # <psi|t2(h1+h2)|phi>/<psi|phi>
         t2 = gt2g          # <psi|t2|phi>/<psi|phi>
-        return t1, t2, e0, e1
+        return obar, t2, e0, e1
 
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
@@ -1447,9 +1447,9 @@ class pt2ccsd_cisd(cisd):
         chol = ham_data["chol_bar"]
         walker_bar = wave_data['exp_t1'] @ walker
 
-        o0 = jnp.linalg.det(walker[:walker.shape[1], :]) ** 2
+        # o0 = jnp.linalg.det(walker[:walker.shape[1], :]) ** 2
         obar = jnp.linalg.det(walker_bar[:walker_bar.shape[1], :]) ** 2
-        t1 = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
+        # t1 = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
 
         green = (walker_bar.dot(jnp.linalg.inv(walker_bar[: walker_bar.shape[1], :]))).T
         green_occ = green[:, nocc:]
@@ -1572,14 +1572,14 @@ class pt2ccsd_cisd(cisd):
         e0 = e1_0 + e2_0  # <psi|(h1+h2)|phi>/<psi|phi>
         e1 = e1_2 + e2_2  # <psi|t2(h1+h2)|phi>/<psi|phi>
         t2 = gt2g          # <psi|t2|phi>/<psi|phi>
-        return t1, t2, e0, e1
+        return obar, t2, e0, e1
 
     @partial(jit, static_argnums=0)
     def calc_energy_pt(self,walkers,ham_data,wave_data):
-        t1, t2, e0, e1 = vmap(
+        ot1, t2, e0, e1 = vmap(
             self._calc_energy_pt,in_axes=(0, None, None))(
             walkers, ham_data, wave_data)
-        return t1, t2, e0, e1
+        return ot1, t2, e0, e1
 
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
@@ -1616,6 +1616,103 @@ class pt2ccsd_cisd(cisd):
 
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class pt2ccsd_ci2(pt2ccsd_bar):
+
+    @partial(jit, static_argnums=0)
+    def _calc_overlap_restricted(self, walker, ham_data, wave_data):
+
+        if self.mix_precision:
+            rtype = jnp.float32
+            ctype = jnp.complex64
+        else:
+            rtype = jnp.float64
+            ctype = jnp.complex128
+        
+        nocc, norb = self.nelec[0], self.norb
+
+        t2 = wave_data["t2"]
+        walker_bar = wave_data['exp_t1'] @ walker
+
+        # o0 = jnp.linalg.det(walker[:walker.shape[1], :]) ** 2
+        obar = jnp.linalg.det(walker_bar[:walker_bar.shape[1], :]) ** 2
+        # t1 = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
+
+        green = (walker_bar.dot(jnp.linalg.inv(walker_bar[: walker_bar.shape[1], :]))).T
+
+        t2g_c = oe.contract("iajb,ia->jb", t2, green[:nocc,nocc:], backend="jax")
+        t2g_e = oe.contract("iajb,ib->ja", t2, green[:nocc,nocc:], backend="jax")
+        t2g = 2 * t2g_c - t2g_e
+        gt2g = oe.contract("ia,ia->", t2g, green[:nocc,nocc:], backend="jax")
+        olp = obar * (1 + gt2g)          # <psi|t2|phi_bar>
+        return olp
+
+    @partial(jit, static_argnums=0)
+    def _calc_force_bias_restricted(
+        self, walker: jax.Array, ham_data: dict, wave_data: dict
+    ) -> jax.Array:
+        """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker >"""
+        t2 = wave_data["t2"]
+        nocc = self.nelec[0]
+        walker = wave_data['exp_t1'] @ walker
+        chol = ham_data["chol_bar"]
+        rot_chol = chol[:,:nocc,:]
+
+        green = (walker.dot(jnp.linalg.inv(walker[:nocc, :]))).T
+        green_occ = green[:, nocc:].copy()
+        greenp = jnp.vstack((green_occ, -jnp.eye(self.norb - nocc)))
+
+        lg = oe.contract("gpj,pj->g", rot_chol, green, backend="jax")
+
+        # ref
+        fb_0 = 2 * lg
+
+        # double excitations
+        t2g_c = oe.contract("ptqu,pt->qu", t2, green_occ, backend="jax")
+        t2g_e = oe.contract("ptqu,pu->qt", t2, green_occ, backend="jax")
+        t2_green_c = (greenp @ t2g_c.T) @ green
+        t2_green_e = (greenp @ t2g_e.T) @ green
+        t2_green = -4 * t2_green_c + 2 * t2_green_e
+        t2g = 4 * t2g_c - 2 * t2g_e
+        gt2g = oe.contract("qu,qu->", t2g, green_occ, backend="jax")
+
+        fb_2_1 = lg * gt2g
+        fb_2_2 = oe.contract("gij,ij->g", chol, t2_green, backend="jax")
+        fb_2 = fb_2_1 + fb_2_2
+
+        # overlap
+        overlap_2 = gt2g / 2.0
+        overlap = 1.0 + overlap_2
+
+        return (fb_0 + fb_2) / overlap
+
+    def _calc_rdm1(self, wave_data: dict) -> jax.Array:
+        rdm1 = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
+        return rdm1
+
+    @partial(jit, static_argnums=0)
+    def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
+        """Builds half rotated integrals for efficient force bias and energy calculations."""
+        norb, nocc = self.norb, self.nelec[0]
+        chol = ham_data["chol"].reshape(-1, norb, norb)
+        
+        # exp(T1^dagger) H exp(-T1^dagger)
+        h1_bar = wave_data['exp_t1'] @ ham_data['h1'][0] @ wave_data['exp_mt1']
+        ham_data["h1_bar"] = h1_bar
+
+        chol_bar = oe.contract(
+            'pr,grs,sq->gpq', 
+            wave_data['exp_t1'], chol, wave_data['exp_mt1'],
+            backend="jax")
+        ham_data["chol_bar"] = chol_bar        
+
+        return ham_data
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
+
 
 @dataclass
 class ptccsd_ad(rhf):
@@ -1764,27 +1861,27 @@ class pt2ccsd_ad(rhf):
     @partial(jit, static_argnums=0)
     def _tls_exp1(self, x, h1_mod, walker, wave_data) -> complex:
         '''
-        <exp(T1)HF|exp(x*h1_mod)|walker>/<HF|walker>
+        <exp(T1)HF|exp(x*h1_mod)|walker>/<exp(T1)HF|walker>
         '''
         t = x * h1_mod
         walker_1x = walker + t.dot(walker)
-        t1 = self._tls_walker_olp(walker_1x,wave_data)
-        o0 = self._calc_overlap_restricted(walker, wave_data)
-        return t1/o0
+        e1t1 = self._tls_walker_olp(walker_1x,wave_data)
+        ot1 = self._tls_walker_olp(walker,wave_data)
+        return e1t1/ot1
 
     @partial(jit, static_argnums=0)
     def _tls_exp2(self, x, chol_i, walker, wave_data) -> complex:
         '''
-        <exp(T1)HF|exp(x*h2_mod)|walker>/<HF|walker>
+        <exp(T1)HF|exp(x*h2_mod)|walker>/<exp(T1)HF|walker>
         '''
         walker_2x = (
                 walker
                 + x * chol_i.dot(walker)
                 + x**2 / 2.0 * chol_i.dot(chol_i.dot(walker))
             )
-        t2 = self._tls_walker_olp(walker_2x,wave_data)
-        o0 = self._calc_overlap_restricted(walker, wave_data)
-        return t2/o0
+        e2t1 = self._tls_walker_olp(walker_2x,wave_data)
+        ot1 = self._tls_walker_olp(walker,wave_data)
+        return e2t1/ot1
 
     @partial(jit, static_argnums=0)
     def _t2_tls_walker_olp(self, walker, wave_data):
@@ -1804,13 +1901,13 @@ class pt2ccsd_ad(rhf):
     @partial(jit, static_argnums=0)
     def _t2_tls_exp1(self, x, h1_mod, walker, wave_data) -> complex:
         '''
-        <exp(T1)HF|T2 exp(x*h1_mod)|walker>/<HF|walker>
+        <exp(T1)HF|T2 exp(x*h1_mod)|walker>/<exp(T1)HF|walker>
         '''
         t = x * h1_mod
         walker_1x = walker + t.dot(walker)
-        t2 = self._t2_tls_walker_olp(walker_1x,wave_data)
-        o0 = self._calc_overlap_restricted(walker, wave_data)
-        return t2/o0
+        e1t2 = self._t2_tls_walker_olp(walker_1x,wave_data)
+        ot1 = self._tls_walker_olp(walker,wave_data)
+        return e1t2/ot1
 
     @partial(jit, static_argnums=0)
     def _t2_tls_exp2(self, x, chol_i, walker, wave_data) -> complex:
@@ -1822,17 +1919,17 @@ class pt2ccsd_ad(rhf):
                 + x * chol_i.dot(walker)
                 + x**2 / 2.0 * chol_i.dot(chol_i.dot(walker))
             )
-        t2 = self._t2_tls_walker_olp(walker_2x,wave_data)
-        o0 = self._calc_overlap_restricted(walker, wave_data)
-        return t2/o0
+        e2t2 = self._t2_tls_walker_olp(walker_2x,wave_data)
+        ot1 = self._tls_walker_olp(walker,wave_data)
+        return e2t2/ot1
 
     @partial(jit, static_argnums=0)
     def _calc_energy_pt_restricted(self, walker, ham_data, wave_data):
         ''' 
-        t1 = <exp(T1)HF|walker>/<HF|walker>
-        t2 = <exp(T1)HF|T2|walker>/<HF|walker>
-        e0 = <exp(T1)HF|H|walker>/<HF|walker>
-        e1 = <exp(T1)HF|T2(h1+h2)|walker>/<HF|walker>
+        ot1 = <exp(T1)HF|walker>
+        t2 = <exp(T1)HF|T2|walker>/<exp(T1)HF|walker>
+        e0 = <exp(T1)HF|H|walker>/<exp(T1)HF|walker>
+        e1 = <exp(T1)HF|T2(h1+h2)|walker>/<exp(T1)HF|walker>
         '''
 
         eps = 1e-4
@@ -1840,12 +1937,14 @@ class pt2ccsd_ad(rhf):
         h1_mod = ham_data['h1_mod']
         chol = ham_data["chol"].reshape(-1, norb, norb)
 
+        ot1 = self._tls_walker_olp(walker,wave_data)
+
         # <exp(T1)HF|h1+h2|walker>/<HF|walker>
         # one body
         # <exp(T1)HF|walker_1x>/<HF|walker>
         x = 0.0
         f1 = lambda a: self._tls_exp1(a,h1_mod,walker,wave_data)
-        t1, d_exp1 = jvp(f1, [x], [1.0])
+        _, d_exp1 = jvp(f1, [x], [1.0])
 
         # two body
         # <exp(T1)HF|walker_2x>/<HF|walker>
@@ -1883,14 +1982,14 @@ class pt2ccsd_ad(rhf):
     
         e1 = (d_exp1 + jnp.sum(d2_exp2) / 2.0 )
 
-        return t1, t2/t1, e0/t1, e1/t1
+        return ot1, t2, e0, e1
     
     @partial(jit, static_argnums=0)
     def calc_energy_pt(self,walkers,ham_data,wave_data):
-        t1, t2, e0, e1 = vmap(
+        ot1, t2, e0, e1 = vmap(
             self._calc_energy_pt_restricted,in_axes=(0, None, None))(
             walkers, ham_data, wave_data)
-        return t1, t2, e0, e1
+        return ot1, t2, e0, e1
 
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:

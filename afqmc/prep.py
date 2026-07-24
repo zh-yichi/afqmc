@@ -346,6 +346,18 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 t1_full[:nocc, nocc:] = wave_data["t1"]
                 wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
                 wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
+
+            if "ci2" in options["trial"]:
+                trial = wavefunctions_restricted.pt2ccsd_ci2(norb, nelec_sp, 
+                                                             n_batch=options["n_batch"],
+                                                             nchol_chunk=nchol_chunk, 
+                                                             mix_precision=options["mix_precision"],
+                                                             )
+                nocc = nelec_sp[0]
+                t1_full = np.zeros((norb, norb))
+                t1_full[:nocc, nocc:] = wave_data["t1"]
+                wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
+                wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
                 
             if "ad" in options["trial"]:
                 nocc = nelec_sp[0]

@@ -409,13 +409,15 @@ def prep_integral(
     print("\nPreparing AFQMC calculation")
 
     if isinstance(mf_or_cc, (CCSD, UCCSD)):
+        print("CCSD type input object")
         mf = mf_or_cc._scf
         cc = mf_or_cc
         if cc.frozen is not None:
             norb_frozen = cc.frozen
-            save_cc_amplitude(cc=cc, amp_file=amp_file)
+        save_cc_amplitude(cc=cc, amp_file=amp_file)
 
     else:
+        print("HF type input object")
         mf = mf_or_cc
 
     if isinstance(mf, scf.rhf.RHF):

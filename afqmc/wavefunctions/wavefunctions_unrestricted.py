@@ -1258,15 +1258,15 @@ class upt2ccsd(uhf):
 
         # o0 = jnp.linalg.det(walker_up[:nocc_a,:nocc_a]
         #     ) * jnp.linalg.det(walker_dn[:nocc_b,:nocc_b])
-        o0 = self._calc_overlap(walker_up, walker_dn, wave_data)
+        # o0 = self._calc_overlap(walker_up, walker_dn, wave_data)
         # <exp(T1)HF|walker>/<HF|walker>
-        t1 = jnp.linalg.det(wave_data["mo_ta"].T.conj() @ walker_up
-            ) * jnp.linalg.det(wave_data["mo_tb"].T.conj() @ walker_dn) / o0
+        ot1 = jnp.linalg.det(wave_data["mo_ta"].T.conj() @ walker_up
+            ) * jnp.linalg.det(wave_data["mo_tb"].T.conj() @ walker_dn)
         t2 = gt2g # * t1 # <exp(T1)HF|T2|walker>/<exp(T1)HF|walker>
         e0 = (e1_0 + e2_0) # * t1 # <exp(T1)HF|h1+h2|walker>/<exp(T1)HF|walker>
         e1 = (e1_2 + e2_2) # * t1 # <exp(T1)HF|T2 (h1+h2)|walker>/<exp(T1)HF|walker>
 
-        return t1, t2, e0, e1
+        return ot1, t2, e0, e1
     
     # @partial(jit, static_argnums=0)
     # def _mapped_energy_pt(self, walker_up, walker_dn, ham_data, wave_data):
@@ -1306,10 +1306,10 @@ class upt2ccsd(uhf):
     #     return t1, t2, e0, e1
 
     def calc_energy_pt(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
-        t1, t2, e0, e1 = vmap(
+        ot1, t2, e0, e1 = vmap(
             self._calc_energy_pt, in_axes=(0, 0, None, None))(
             walkers[0], walkers[1], ham_data, wave_data)
-        return t1, t2, e0, e1
+        return ot1, t2, e0, e1
     
 
     def __hash__(self):
@@ -1509,13 +1509,13 @@ class upt2ccsd_bar(upt2ccsd):
         e2_2_2 = e2_2_2_1 + e2_2_2_2
         e2_2 = e2_2_1 + e2_2_2 + e2_2_3 # <bra|T2 h2|ket>/<bra|ket>
 
-        t1 = jnp.linalg.det(walker_up[:nocc_a,:]) \
-            * jnp.linalg.det(walker_dn[:nocc_b,:]) / o0 # <bra|ket_bar>/<bra|ket>
+        ot1 = jnp.linalg.det(walker_up[:nocc_a,:]) \
+            * jnp.linalg.det(walker_dn[:nocc_b,:]) # <bra|ket_bar>
         t2 = gt2g # * t1o # <bra|T2|ket_bar>/<bra|ket>
         e0 = (e1_0 + e2_0) # * t1o # <bra|h1+h2|ket_bar>/<bra|ket>
         e1 = (e1_2 + e2_2) # * t1o # <bra|T2 (h1+h2)|ket_bar>/<bra|ket>
 
-        return t1, t2, e0, e1
+        return ot1, t2, e0, e1
     
     @partial(jit, static_argnums=(0,))
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
@@ -1793,8 +1793,8 @@ class upt2ccsd_cisd(ucisd):
         norb_a, nocc_a = walker_up.shape
         norb_b, nocc_b = walker_dn.shape
 
-        o0 = jnp.linalg.det(walker_up[:nocc_a,:]) \
-            * jnp.linalg.det(walker_dn[:nocc_b,:])
+        # o0 = jnp.linalg.det(walker_up[:nocc_a,:]) \
+        # * jnp.linalg.det(walker_dn[:nocc_b,:])
         
         t2aa = wave_data["t2aa"]
         t2ab = wave_data["t2ab"]
@@ -1952,19 +1952,19 @@ class upt2ccsd_cisd(ucisd):
         e2_2_2 = e2_2_2_1 + e2_2_2_2
         e2_2 = e2_2_1 + e2_2_2 + e2_2_3 # <bra|T2 h2|ket>/<bra|ket>
 
-        t1 = jnp.linalg.det(walker_up[:nocc_a,:]) \
-            * jnp.linalg.det(walker_dn[:nocc_b,:]) / o0 # <bra|ket_bar>/<bra|ket>
+        ot1 = jnp.linalg.det(walker_up[:nocc_a,:]) \
+            * jnp.linalg.det(walker_dn[:nocc_b,:]) # <bra|ket_bar>
         t2 = gt2g # * t1o # <bra|T2|ket_bar>/<bra|ket>
         e0 = (e1_0 + e2_0) # * t1o # <bra|h1+h2|ket_bar>/<bra|ket>
         e1 = (e1_2 + e2_2) # * t1o # <bra|T2 (h1+h2)|ket_bar>/<bra|ket>
 
-        return t1, t2, e0, e1
+        return ot1, t2, e0, e1
     
     def calc_energy_pt(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
-        t1, t2, e0, e1 = vmap(
+        ot1, t2, e0, e1 = vmap(
             self._calc_energy_pt, in_axes=(0, 0, None, None))(
             walkers[0], walkers[1], ham_data, wave_data)
-        return t1, t2, e0, e1
+        return ot1, t2, e0, e1
 
     @partial(jit, static_argnums=(0,))
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
@@ -2171,10 +2171,10 @@ class upt2ccsd_ad(uhf):
         walker_up_1x = walker_up + x * h1_mod[0].dot(walker_up)
         walker_dn_1x = walker_dn + x * h1_mod[1].dot(walker_dn)
 
-        olp = self._tls_olp(walker_up_1x, walker_dn_1x, wave_data)
-        o0 = self._calc_overlap(walker_up,walker_dn,wave_data)
+        e1t1 = self._tls_olp(walker_up_1x, walker_dn_1x, wave_data)
+        ot1 = self._tls_olp(walker_up, walker_dn, wave_data)
 
-        return olp/o0
+        return e1t1/ot1
 
     @partial(jit, static_argnums=0)
     def _tls_exp2(self, x: float, chol_i: jax.Array, walker_up: jax.Array,
@@ -2194,10 +2194,10 @@ class upt2ccsd_ad(uhf):
             + x**2 / 2.0 * chol_i[1].dot(chol_i[1].dot(walker_dn))
         )
 
-        olp = self._tls_olp(walker_up_2x,walker_dn_2x,wave_data)
-        o0 = self._calc_overlap(walker_up,walker_dn,wave_data)
+        e2t1 = self._tls_olp(walker_up_2x,walker_dn_2x,wave_data)
+        ot1 = self._tls_olp(walker_up, walker_dn, wave_data)
         
-        return olp/o0
+        return e2t1/ot1
     
     @partial(jit, static_argnums=0)
     def _ut2_walker_olp(
@@ -2227,10 +2227,10 @@ class upt2ccsd_ad(uhf):
         walker_up_1x = walker_up + x * h1_mod[0].dot(walker_up)
         walker_dn_1x = walker_dn + x * h1_mod[1].dot(walker_dn)
         
-        olp = self._ut2_walker_olp(walker_up_1x, walker_dn_1x, wave_data)
-        o0 = self._calc_overlap(walker_up,walker_dn,wave_data)
+        e1t2 = self._ut2_walker_olp(walker_up_1x, walker_dn_1x, wave_data)
+        ot1 = self._tls_olp(walker_up, walker_dn, wave_data)
 
-        return olp/o0
+        return e1t2/ot1
 
     @partial(jit, static_argnums=0)
     def _ut2_exp2(self, x: float, chol_i: jax.Array, walker_up: jax.Array,
@@ -2250,10 +2250,10 @@ class upt2ccsd_ad(uhf):
             + x**2 / 2.0 * chol_i[1].dot(chol_i[1].dot(walker_dn))
         )
         
-        olp = self._ut2_walker_olp(walker_up_2x,walker_dn_2x,wave_data)
-        o0 = self._calc_overlap(walker_up,walker_dn,wave_data)
+        e2t2 = self._ut2_walker_olp(walker_up_2x,walker_dn_2x,wave_data)
+        ot1 = self._tls_olp(walker_up, walker_dn, wave_data)
 
-        return olp/o0
+        return e2t2/ot1
     
     @partial(jit, static_argnums=0)
     def _d2_tls_exp2_i(self,chol_i,walker_up,walker_dn,wave_data):
@@ -2296,25 +2296,22 @@ class upt2ccsd_ad(uhf):
     @partial(jit, static_argnums=0)
     def _calc_energy_pt(self, walker_up, walker_dn, ham_data, wave_data):
         '''
-        t1 = <exp(T1)HF|walker>/<HF|walker>
-        t2 = <exp(T1)HF|T1+T2|walker>/<HF|walker>
-        e0 = <exp(T1)HF|h1+h2|walker>/<HF|walker>
-        e1 = <exp(T1)HF|(T1+T2)(h1+h2)|walker>/<HF|walker>
+        ot1 = <exp(T1)HF|walker>
+        t2 = <exp(T1)HF|T1+T2|walker>/<exp(T1)HF|walker>
+        e0 = <exp(T1)HF|h1+h2|walker>/<exp(T1)HF|walker>
+        e1 = <exp(T1)HF|(T1+T2)(h1+h2)|walker>/<exp(T1)HF|walker>
         '''
 
         norb = self.norb
         h1_mod = ham_data['h1_mod']
-        # chol = ham_data["chol"].reshape(2, -1, norb, norb)
-        # chol = chol.transpose(1,0,2,3)
-        # chol = (ham_data["chol"][0].reshape(-1, norb, norb),
-        #         ham_data["chol"][1].reshape(-1, norb, norb))
-        # chol = chol.transpose(1,0,2,3)
+
+        ot1 = self._tls_olp(walker_up, walker_dn, wave_data)
 
         # e0 = <exp(T1)HF|h1+h2|walker>/<HF|walker> #
         # one body
         x = 0.0
         f1 = lambda a: self._tls_exp1(a,h1_mod,walker_up,walker_dn,wave_data)
-        t1, d_exp1_0 = jvp(f1, [x], [1.0])
+        _, d_exp1_0 = jvp(f1, [x], [1.0])
 
         # two body
         d2_exp2_0 = self._d2_tls_exp2(walker_up,walker_dn,ham_data,wave_data)
@@ -2332,7 +2329,7 @@ class upt2ccsd_ad(uhf):
 
         e1 = d_exp1_1 + d2_exp2_1
         
-        return t1, t2/t1, e0/t1, e1/t1
+        return ot1, t2, e0, e1
 
     def calc_energy_pt(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
         t1, t2, e0, e1 = vmap(
