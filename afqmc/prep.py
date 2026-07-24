@@ -294,7 +294,7 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                                                  nchol_chunk=nchol_chunk,
                                                  )
 
-        elif "cisd" in options["trial"]:
+        elif options["trial"] == "cisd":
             wave_data = load_ci_amplitude(wave_data, amp_file)
             trial = wavefunctions_restricted.cisd(norb, nelec_sp, 
                                                     n_batch=options["n_batch"]
@@ -322,6 +322,31 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                                                      nchol_chunk=nchol_chunk, 
                                                      mix_precision=options["mix_precision"],
                                                      )
+            if "bar" in options["trial"]:
+                trial = wavefunctions_restricted.pt2ccsd_bar(norb, nelec_sp, 
+                                                             n_batch=options["n_batch"],
+                                                             nchol_chunk=nchol_chunk, 
+                                                             mix_precision=options["mix_precision"],
+                                                             )
+                nocc = nelec_sp[0]
+                t1_full = np.zeros((norb, norb))
+                t1_full[:nocc, nocc:] = wave_data["t1"]
+                wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
+                wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
+
+            if "cisd" in options["trial"]:
+                wave_data = load_ci_amplitude(wave_data, amp_file)
+                trial = wavefunctions_restricted.pt2ccsd_cisd(norb, nelec_sp, 
+                                                              n_batch=options["n_batch"],
+                                                              nchol_chunk=nchol_chunk, 
+                                                              mix_precision=options["mix_precision"],
+                                                              )
+                nocc = nelec_sp[0]
+                t1_full = np.zeros((norb, norb))
+                t1_full[:nocc, nocc:] = wave_data["t1"]
+                wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
+                wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
+                
             if "ad" in options["trial"]:
                 nocc = nelec_sp[0]
                 rot_t2 = oe.contract('il,jk,lakb->iajb',

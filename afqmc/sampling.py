@@ -447,12 +447,12 @@ class sampler_pt2(sampler):
         eg_sp = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
         
         outlier = jnp.abs(eg_sp - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        # weights = jnp.where(outlier, 0.0, prop_data["weights"])
-        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        wts = jnp.where(outlier, 0.0, prop_data["weights"])
+        # prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
 
         t1_sp, t2_sp, e0_sp, e1_sp = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
 
-        wts = prop_data["weights"]
+        # wts = prop_data["weights"]
         wps = wts * t1_sp
 
         wt = jnp.sum(wts)

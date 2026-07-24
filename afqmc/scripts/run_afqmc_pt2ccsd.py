@@ -20,7 +20,7 @@ ham_data = ham.build_measurement_intermediates(ham_data, trial, wave_data)
 ham_data = ham.build_propagation_intermediates(ham_data, prop, trial, wave_data)
 h0 = ham_data['h0']
 
-prop_data = prep.init_delta_prop_data(trial, wave_data, ham_data, options)
+prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
 
 init_e = prop_data["e_estimate"]
 init_w = np.sum(prop_data["weights"])
