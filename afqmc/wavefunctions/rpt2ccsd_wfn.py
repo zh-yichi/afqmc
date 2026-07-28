@@ -7,11 +7,11 @@ from jax import jit
 from functools import partial
 
 @partial(jit, static_argnums=0)
-def calc_overlap(wave, walker, wave_data):
-    return slater_tools.u_overlap(wave_data['mo_coeff'], walker)
+def overlap(wave, walker, wave_data):
+    return slater_tools.u_overlap(wave_data['mo_t'], walker)
 
 @partial(jit, static_argnums=0)
-def calc_energy(
+def energy(
         wave, 
         walker: jax.Array, 
         ham_data: dict, 
@@ -113,22 +113,21 @@ def calc_energy(
     return jnp.array((t1, t2, e0, e1))
 
 @partial(jit, static_argnums=0)
-def calc_intermediate(trial, ham_data: dict, wave_data: dict):
-
-    return ham_data
+def build_intermediate(trial, ham_data: dict, wave_data: dict):
+    wave_data["mo_t"] = slater_tools.thouless(wave_data["mo_coeff"], wave_data["t1"])
+    return ham_data, wave_data
 
 def energy_formula(weights, samples, ham_data):
     # samples shape: (nsamples, nterms)
     h0 = ham_data["h0"]
     nsamples = len(weights)
 
-    weight_mean, sample_mean, sample_err = sampling.weighted_average(weights, samples)
+    weight_mean, sample_mean, _ = sampling.weighted_average(weights, samples)
     weight = weight_mean.real
-    t1_mean, t2_mean, e0_mean, e1_mean = sample_mean
+    t2_mean, e0_mean, e1_mean = sample_mean
 
     energy = (
-        h0 + e0_mean / t1_mean + e1_mean / t1_mean
-        - (t2_mean * e0_mean) / t1_mean**2
+        h0 + e0_mean + e1_mean - (t2_mean * e0_mean)
     ).real
 
     if nsamples < 2:
@@ -136,14 +135,8 @@ def energy_formula(weights, samples, ham_data):
         energy_err = jnp.nan
         return weight, energy, energy_err
 
-    dE = jnp.array([
-        -(e0_mean + e1_mean) / t1_mean**2 + 2 * (t2_mean * e0_mean) / t1_mean**3,
-        -e0_mean / t1_mean**2,
-        1 / t1_mean - t2_mean / t1_mean**2,
-        1 / t1_mean,
-    ])
-
-    cov_te0e1 = jnp.cov(samples.T)
-    energy_err = (jnp.sqrt(dE @ cov_te0e1 @ dE) / jnp.sqrt(nsamples)).real
-
-    return weight, energy, energy_err
+    else:
+        dE = jnp.array([-e0_mean, 1-t2_mean, 1])
+        cov_te0e1 = jnp.cov(samples.T)
+        energy_err = (jnp.sqrt(dE @ cov_te0e1 @ dE) / jnp.sqrt(nsamples)).real
+        return weight, energy, energy_err

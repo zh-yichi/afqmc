@@ -10,15 +10,15 @@ from . import rhf_wfn
 energy_formula = rhf_wfn.energy_formula
 
 @partial(jit, static_argnums=0)
-def calc_overlap(
+def overlap(
     trial, 
     walker: tuple,
     wave_data: dict
 ) -> complex:
     (walker_a, walker_b) = walker
-    noccA, ci1A, ci2AA = trial.nelec[0], wave_data["ci1A"], wave_data["ci2AA"]
-    noccB, ci1B, ci2BB = trial.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
-    ci2AB = wave_data["ci2AB"]
+    noccA, ci1A, ci2AA = trial.nelec[0], wave_data["ci1"][0], wave_data["ci2"][0]
+    noccB, ci1B, ci2BB = trial.nelec[1], wave_data["ci1"][1], wave_data["ci2"][2]
+    ci2AB = wave_data["ci2"][1]
     (green_a, green_b) = slater_tools.u_delta_green(wave_data["mo_coeff"], walker)
     green_a, green_b = green_a[:, noccA:], green_b[:, noccB:]
     o0 = jnp.linalg.det(walker_a[:noccA, :]) * jnp.linalg.det(walker_b[:noccB, :])
@@ -30,16 +30,16 @@ def calc_overlap(
     return (1.0 + o1 + o2) * o0
 
 @partial(jit, static_argnums=0)
-def calc_force_bias(
+def force_bias(
     trial,
     walker: tuple,
     ham_data: dict,
     wave_data: dict,
 ) -> jax.Array:
     """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker >"""
-    nocc_a, ci1_a, ci2_aa = trial.nelec[0], wave_data["ci1A"], wave_data["ci2AA"]
-    nocc_b, ci1_b, ci2_bb = trial.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
-    ci2_ab = wave_data["ci2AB"]
+    nocc_a, ci1_a, ci2_aa = trial.nelec[0], wave_data["ci1"][0], wave_data["ci2"][0]
+    nocc_b, ci1_b, ci2_bb = trial.nelec[1], wave_data["ci1"][1], wave_data["ci2"][2]
+    ci2_ab = wave_data["ci2"][1]
     norb = trial.norb
     (green_a, green_b) = slater_tools.u_delta_green(wave_data["mo_coeff"], walker)
     green_occ_a = green_a[:, nocc_a:].copy()
@@ -97,15 +97,15 @@ def calc_force_bias(
     return (fb_0 + fb_1 + fb_2) / overlap
 
 @partial(jit, static_argnums=0)
-def calc_energy(
+def energy(
     trial,
     walker: tuple,
     ham_data: dict,
     wave_data: dict,
 ) -> complex:
-    nocc_a, ci1_a, ci2_aa = trial.nelec[0], wave_data["ci1A"], wave_data["ci2AA"]
-    nocc_b, ci1_b, ci2_bb = trial.nelec[1], wave_data["ci1B"], wave_data["ci2BB"]
-    ci2_ab = wave_data["ci2AB"]
+    nocc_a, ci1_a, ci2_aa = trial.nelec[0], wave_data["ci1"][0], wave_data["ci2"][0]
+    nocc_b, ci1_b, ci2_bb = trial.nelec[1], wave_data["ci1"][1], wave_data["ci2"][2]
+    ci2_ab = wave_data["ci2"][1]
     norb = trial.norb
     (green_a, green_b) = slater_tools.u_delta_green(wave_data["mo_coeff"], walker)
     green_occ_a = green_a[:, nocc_a:].copy()
@@ -264,23 +264,15 @@ def calc_energy(
     overlap = 1.0 + overlap_1 + overlap_2
     return (e1 + e2) / overlap + e0
 
-def calc_intermediate(trial, ham_data: dict, wave_data: dict) -> dict:
+def build_intermediate(trial, ham_data: dict, wave_data: dict) -> dict:
     ham_data["lci1_a"] = oe.contract(
         "git,pt->gip",
         ham_data["chol"][0].reshape(-1, trial.norb, trial.norb)[:,:,trial.nelec[0]:],
-        wave_data["ci1A"],
+        wave_data["ci1"][0],
         backend="jax")
     ham_data["lci1_b"] = oe.contract(
         "git,pt->gip",
         ham_data["chol"][1].reshape(-1, trial.norb, trial.norb)[:,:,trial.nelec[1]:],
-        wave_data["ci1B"],
+        wave_data["ci1"][1],
         backend="jax")
-    return ham_data
-
-# def energy_formula(weights, samples, ham_data):
-#     # energy_terms shape: (nsamples, terms)
-#     weight_mean, sample_mean, sample_err = sampling.weighted_average(weights, samples)
-#     weight = weight_mean.real
-#     energy = sample_mean[0].real
-#     energy_err = sample_err[0].real
-#     return weight, energy, energy_err
+    return ham_data, wave_data

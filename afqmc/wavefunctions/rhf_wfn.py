@@ -6,21 +6,21 @@ from .. import slater_tools, sampling
 
 # implementation in QMC sampling
 @partial(jit, static_argnums=0)
-def calc_overlap(trial, walker, wave_data):
+def overlap(trial, walker, wave_data):
     return slater_tools.r_overlap(wave_data["mo_coeff"], walker)
 
 @partial(jit, static_argnums=0)
-def calc_force_bias(trial, walker, ham_data, wave_data):
+def force_bias(trial, walker, ham_data, wave_data):
     chol = ham_data["chol"].reshape(trial.nchol, trial.norb, trial.norb)
     return slater_tools.r_force_bias(wave_data["mo_coeff"], walker, chol)
 
 @partial(jit, static_argnums=0)
-def calc_rot_force_bias(trial, walker, ham_data, wave_data):
+def rot_force_bias(trial, walker, ham_data, wave_data):
     rot_chol = ham_data["rot_chol"]
     return slater_tools.r_rot_force_bias(wave_data["mo_coeff"], walker, rot_chol)
 
 @partial(jit, static_argnums=0)
-def calc_energy(trial, walker, ham_data, wave_data):
+def energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     h1 = ((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
     chol = ham_data["chol"].reshape(trial.nchol, trial.norb, trial.norb)
@@ -33,7 +33,7 @@ def calc_energy(trial, walker, ham_data, wave_data):
     return slater_tools.r_energy(wave_data["mo_coeff"], walker, h0, h1, chol)
 
 @partial(jit, static_argnums=0)
-def calc_rot_energy(trial, walker, ham_data, wave_data):
+def rot_energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     rot_h1 = ham_data["rot_h1"]
     rot_chol = ham_data["rot_chol"]
@@ -46,21 +46,15 @@ def calc_rot_energy(trial, walker, ham_data, wave_data):
     return slater_tools.r_rot_energy(wave_data["mo_coeff"], walker, h0, rot_h1, rot_chol)
 
 @partial(jit, static_argnums=0)
-def calc_intermediate(trial, ham_data: dict, wave_data: dict) -> dict:
+def build_intermediate(trial, ham_data: dict, wave_data: dict) -> dict:
     """Builds half rotated integrals for efficient force bias and energy calculations."""
-    # ham_data["h1"] = (
-    #     ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
-    # )
-    # ham_data["h1"] = (
-    #     ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
-    # )
     ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ (
         (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0)
     ham_data["rot_chol"] = oe.contract("ip,gpq->giq",
                                        wave_data["mo_coeff"].T.conj(),
                                        ham_data["chol"].reshape(-1, trial.norb, trial.norb), 
                                        backend="jax")
-    return ham_data
+    return ham_data, wave_data
 
 
 def energy_formula(weights, samples, ham_data):

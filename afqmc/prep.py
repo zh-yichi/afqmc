@@ -69,6 +69,29 @@ def load_ci_amplitude(wave_data=None, amp_file="amplitudes.npz"):
         wave_data["ci2BB"] = ci2[2]
     return wave_data
 
+def load_cc_amplitude_exp(wave_data=None, amp_file="amplitudes.npz"):
+    if wave_data is None:
+        wave_data = {}
+    t1, t2 = t2_tools.read_cc_amps(amp_file)
+
+    wave_data["t1"] = t1
+    wave_data["t2"] = t2
+
+    return wave_data
+
+def load_ci_amplitude_exp(wave_data=None, amp_file="amplitudes.npz"):
+    if wave_data is None:
+        wave_data = {}
+        
+    t1, t2 = t2_tools.read_cc_amps(amp_file)
+    ci1, ci2 = t2_tools.cc2ci(t1, t2)
+
+    wave_data["ci1"] = ci1
+    wave_data["ci2"] = ci2
+
+    return wave_data
+
+
 def init_hf_prop_data(
     wave,
     wave_data,
@@ -398,12 +421,14 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
 
         if "uhf" in options["trial"]:
             trial = wavefunctions_unrestricted.uhf(norb, nelec_sp, n_batch=options["n_batch"])
-            if "wrong" in options["trial"]:
-                wave_data = load_cc_amplitude(wave_data, amp_file)
-                (wave_data['mo_ta'], wave_data['mo_tb']) = slater_tools.thouless(
-                wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
-                wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
-                                         jnp.array(wave_data['mo_tb']))
+            # if "wrong" in options["trial"]:
+            #     wave_data = load_cc_amplitude(wave_data, amp_file)
+            #     wave_data['mo_coeff'] = slater_tools.thouless(
+            #     wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
+            #     # wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
+            #     #                          jnp.array(wave_data['mo_tb']))
+            #     print(wave_data['mo_coeff'])
+
         elif options["trial"] == "ucisd":
             wave_data = load_ci_amplitude(wave_data, amp_file)
             trial = wavefunctions_unrestricted.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
@@ -465,24 +490,24 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
                 wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
             
-            if "wrong" in options["trial"]:
-                trial = wavefunctions_unrestricted.upt2ccsd_bar(
-                    norb, nelec_sp, 
-                    n_batch=options["n_batch"], 
-                    nchol_chunk=nchol_chunk,
-                    mix_precision=options["mix_precision"],
-                    )
-                wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
-                                         jnp.array(wave_data['mo_tb']))
-                t1a, t1b = wave_data["t1a"], wave_data["t1b"]
-                t1a_full = np.zeros((norb, norb), dtype=np.float64)
-                t1b_full = np.zeros((norb, norb), dtype=np.float64)
-                t1a_full[:nocc_a, nocc_a:] = t1a
-                t1b_full[:nocc_b, nocc_b:] = t1b
-                wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
-                wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
-                wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
-                wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
+            # if "wrong" in options["trial"]:
+            #     trial = wavefunctions_unrestricted.upt2ccsd_bar(
+            #         norb, nelec_sp, 
+            #         n_batch=options["n_batch"], 
+            #         nchol_chunk=nchol_chunk,
+            #         mix_precision=options["mix_precision"],
+            #         )
+            #     wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
+            #                              jnp.array(wave_data['mo_tb']))
+            #     t1a, t1b = wave_data["t1a"], wave_data["t1b"]
+            #     t1a_full = np.zeros((norb, norb), dtype=np.float64)
+            #     t1b_full = np.zeros((norb, norb), dtype=np.float64)
+            #     t1a_full[:nocc_a, nocc_a:] = t1a
+            #     t1b_full[:nocc_b, nocc_b:] = t1b
+            #     wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
+            #     wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
+            #     wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
+            #     wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
             
             elif "cisd" in options["trial"]:
                 # wave_data = load_cc_amplitude(wave_data, amp_file)
@@ -523,9 +548,9 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                                                     wave_data['mo_tb'][:nocc_b,:nocc_b].T,
                                                     wave_data["t2bb"], 
                                                     backend='jax')
-                if "wrong" in options["trial"]:
-                    wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
-                                             jnp.array(wave_data['mo_tb']))
+                # if "wrong" in options["trial"]:
+                #     wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
+                #                              jnp.array(wave_data['mo_tb']))
                     
             # if "eff" in options["trial"]:
             #     trial = wavefunctions_unrestricted.upt2ccsd_eff(
@@ -654,257 +679,6 @@ def init_afqmc(options=None,
     trial, wave_data = get_wavefunction(
         spin_type, norb, nelec_sp, nchol_chunk, options, amp_file)
 
-    # wave_data = {}
-
-    # if spin_type == "restricted":
-    #     wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec_sp[0]]
-    #     if options["trial"] == "rhf":
-    #         trial = wavefunctions_restricted.rhf(norb, nelec_sp, 
-    #                                              n_batch=options["n_batch"],
-    #                                              nchol_chunk=options["nchol_chunk"],
-    #                                              )
-
-    #     elif "cisd" in options["trial"]:
-    #         wave_data = load_ci_amplitude(wave_data, amp_file)
-    #         trial = wavefunctions_restricted.cisd(norb, nelec_sp, 
-    #                                                 n_batch=options["n_batch"]
-    #                                                 )
-
-    #     elif options["trial"] == "cid":
-    #         wave_data = load_ci_amplitude(wave_data, amp_file)
-    #         trial = wavefunctions_restricted.cid(norb, nelec_sp, n_batch=options["n_batch"])
-            
-    #     elif options["trial"] == "ptccsd":
-    #         wave_data = load_cc_amplitude(wave_data, amp_file)
-    #         trial = wavefunctions_restricted.ptccsd(norb, nelec_sp, n_batch=options["n_batch"])
-    #         if "ad" in options["trial"]:
-    #             trial = wavefunctions_restricted.ptccsd_ad(norb, nelec_sp, n_batch=options["n_batch"])
-        
-    #     elif options["trial"] == "ptccd":
-    #         wave_data = load_cc_amplitude(wave_data, amp_file)
-    #         trial = wavefunctions_restricted.ptccd(norb, nelec_sp, n_batch=options["n_batch"])
-
-    #     elif "pt2ccsd" in options["trial"]:
-    #         wave_data = load_cc_amplitude(wave_data, amp_file)
-    #         wave_data["mo_t"] = slater_tools.thouless(wave_data["mo_coeff"], wave_data["t1"])
-    #         trial = wavefunctions_restricted.pt2ccsd(norb, nelec_sp, 
-    #                                                  n_batch=options["n_batch"],
-    #                                                  nchol_chunk=options["nchol_chunk"], 
-    #                                                  mix_precision=options["mix_precision"],
-    #                                                  )
-    #         if "ad" in options["trial"]:
-    #             nocc = nelec_sp[0]
-    #             rot_t2 = oe.contract('il,jk,lakb->iajb',
-    #                                  wave_data["mo_t"][:nocc,:nocc].T,
-    #                                  wave_data["mo_t"][:nocc,:nocc].T,
-    #                                  wave_data["t2"], 
-    #                                  backend='jax')
-    #             wave_data['rot_t2'] = rot_t2
-    #             trial = wavefunctions_restricted.pt2ccsd_ad(norb, nelec_sp, 
-    #                                                         n_batch=options["n_batch"])
-
-    #     elif "stoccsd" in options["trial"]:
-    #         wave_data = load_cc_amplitude(wave_data, amp_file)
-    #         wave_data['mo_t'] = slater_tools.thouless(wave_data['mo_coeff'], wave_data["t1"])
-    #         wave_data['tau'] = t2_tools.decompose_t2(wave_data["t2"])
-
-    #         if "2" in options["trial"]:
-    #             trial = wavefunctions_restricted.stoccsd2(
-    #                 norb,
-    #                 nelec_sp,
-    #                 n_batch = options["n_batch"],
-    #                 nslater = options['nslater']
-    #                 )
-    #         else:
-    #             trial = wavefunctions_restricted.stoccsd(
-    #                 norb,
-    #                 nelec_sp,
-    #                 n_batch = options["n_batch"],
-    #                 nslater = options['nslater']
-    #                 )
-                    
-    
-    # elif spin_type == "unrestricted":
-    #     nocc_a, nocc_b = nelec_sp
-    #     wave_data["mo_coeff"] = (jnp.eye(norb)[:,:nocc_a],
-    #                              jnp.eye(norb)[:,:nocc_b])
-
-    #     if options["trial"] == "uhf":
-    #         trial = wavefunctions_unrestricted.uhf(norb, nelec_sp, n_batch=options["n_batch"])
-
-    #     elif options["trial"] == "ucisd":
-    #         wave_data = load_ci_amplitude(wave_data, amp_file)
-    #         trial = wavefunctions_unrestricted.ucisd(norb, nelec_sp, n_batch=options["n_batch"])
-
-    #     elif options["trial"] == "uptccsd":
-    #         wave_data = load_cc_amplitude(wave_data, amp_file)
-    #         trial = wavefunctions_unrestricted.uptccsd(norb, nelec_sp, n_batch = options["n_batch"])
-    #         if "ad" in options["trial"]:
-    #             trial = wavefunctions_unrestricted.uptccsd_ad(
-    #                 norb, nelec_sp, n_batch=options["n_batch"])
-                
-
-    #             wave_data["rot_t1a"] = wave_data['mo_coeff'][0][:nocc_a,:nocc_a].T @ wave_data["t1a"]
-    #             wave_data["rot_t1b"] = wave_data['mo_coeff'][1][:nocc_b,:nocc_b].T @ wave_data["t1b"]
-                
-    #             wave_data["rot_t2aa"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_coeff'][0][:nocc_a,:nocc_a].T,
-    #                                                 wave_data['mo_coeff'][1][:nocc_a,:nocc_a].T,
-    #                                                 wave_data["t2aa"], 
-    #                                                 backend='jax')
-    #             wave_data["rot_t2ab"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_coeff'][0][:nocc_a,:nocc_a].T,
-    #                                                 wave_data['mo_coeff'][1][:nocc_b,:nocc_b].T,
-    #                                                 wave_data["t2ab"], 
-    #                                                 backend='jax')
-    #             wave_data["rot_t2bb"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_coeff'][0][:nocc_b,:nocc_b].T,
-    #                                                 wave_data['mo_coeff'][1][:nocc_b,:nocc_b].T,
-    #                                                 wave_data["t2bb"], 
-    #                                                 backend='jax')
-
-    #     elif "upt2ccsd" in options["trial"]:
-    #         wave_data = load_cc_amplitude(wave_data, amp_file)
-    #         (wave_data['mo_ta'], wave_data['mo_tb']) = slater_tools.thouless(
-    #             wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
-    #         trial = wavefunctions_unrestricted.upt2ccsd(
-    #             norb, nelec_sp, 
-    #             n_batch=options["n_batch"], 
-    #             nchol_chunk=options["nchol_chunk"],
-    #             mix_precision=options["mix_precision"],
-    #             )
-    #         if "bar" in options["trial"]:
-    #             trial = wavefunctions_unrestricted.upt2ccsd_bar(
-    #                 norb, nelec_sp, 
-    #                 n_batch=options["n_batch"], 
-    #                 nchol_chunk=options["nchol_chunk"],
-    #                 mix_precision=options["mix_precision"],
-    #                 )
-    #             wave_data['mo_ta'] = None
-    #             wave_data['mo_tb'] = None
-    #             t1a, t1b = wave_data["t1a"], wave_data["t1b"]
-    #             t1a_full = np.zeros((norb, norb), dtype=np.float64)
-    #             t1b_full = np.zeros((norb, norb), dtype=np.float64)
-    #             t1a_full[:nocc_a, nocc_a:] = t1a
-    #             t1b_full[:nocc_b, nocc_b:] = t1b
-    #             wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
-    #             wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
-    #             wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
-    #             wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
-    #         if "ad" in options["trial"]:
-    #             trial = wavefunctions_unrestricted.upt2ccsd_ad(
-    #                 norb, nelec_sp, n_batch=options["n_batch"])
-    #             wave_data["rot_t2aa"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-    #                                                 wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-    #                                                 wave_data["t2aa"], 
-    #                                                 backend='jax')
-    #             wave_data["rot_t2ab"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-    #                                                 wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-    #                                                 wave_data["t2ab"], 
-    #                                                 backend='jax')
-    #             wave_data["rot_t2bb"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-    #                                                 wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-    #                                                 wave_data["t2bb"], 
-    #                                                 backend='jax')
-    #         if "eff" in options["trial"]:
-    #             trial = wavefunctions_unrestricted.upt2ccsd_eff(
-    #                 norb, nelec_sp, n_batch=options["n_batch"])
-    #             wave_data["rot_t2aa"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-    #                                                 wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-    #                                                 wave_data["t2aa"], 
-    #                                                 backend='jax')
-    #             wave_data["rot_t2ab"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-    #                                                 wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-    #                                                 wave_data["t2ab"], 
-    #                                                 backend='jax')
-    #             wave_data["rot_t2bb"] = oe.contract('ik,jl,kalb->iajb',
-    #                                                 wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-    #                                                 wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-    #                                                 wave_data["t2bb"], 
-    #                                                 backend='jax')
-
-    #     elif options["trial"] == "ustoccsd2":
-    #         wave_data = load_cc_amplitude(wave_data, amp_file)
-    #         (wave_data['mo_ta'], wave_data['mo_tb']) = slater_tools.thouless(
-    #             wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
-    #         wave_data['tau'] = t2_tools.decompose_t2((wave_data["t2aa"],
-    #                                                   wave_data["t2ab"],
-    #                                                   wave_data["t2bb"]))
-    #         trial = wavefunctions_unrestricted.ustoccsd2(
-    #             norb,
-    #             nelec_sp,
-    #             n_batch = options["n_batch"],
-    #             nslater = options['nslater']
-    #             )
-    
-
-    # if options["walker_type"] == "rhf":
-    #     prop = propagation.propagator_restricted(
-    #             options["dt"], 
-    #             options["n_walkers"], 
-    #             options["n_exp_terms"],
-    #             options["n_batch"]
-    #         )
-
-    # elif options["walker_type"] == "uhf":
-    #     prop = propagation.propagator_unrestricted(
-    #             options["dt"],
-    #             options["n_walkers"],
-    #             options["n_exp_terms"],
-    #             options["n_batch"],
-    #         )
-
-    # if  'pt' in options['trial'] and 'cc' in options['trial']:
-    #     if 'pt2' in options['trial']:
-    #         sampler = sampling.sampler_pt2(
-    #             options["n_prop_steps"],
-    #             options["n_blocks"],
-    #             nchol,)
-    #     else:
-    #         sampler = sampling.sampler_pt(
-    #             options["n_prop_steps"],
-    #             options["n_blocks"],
-    #             nchol,)
-            
-    # elif 'stoccsd' in options['trial']:
-    #     if '2' in options['trial']:
-    #         sampler = sampling.sampler_stoccsd2(
-    #             options["n_prop_steps"],
-    #             options["n_blocks"],
-    #             nchol,)
-    #     else:
-    #         sampler = sampling.sampler_stoccsd(
-    #             options["n_prop_steps"],
-    #             options["n_blocks"],
-    #             nchol,)
-            
-    # else:
-    #     sampler = sampling.sampler(
-    #         options["n_prop_steps"],
-    #         options["n_blocks"],
-    #         nchol,)
-
-    
-    # if options["free_projection"]:
-    #     if 'pt2' not in options["trial"]:
-    #         sampler = fp_sampling.fp_sampler(
-    #                 options["n_prop_steps"],
-    #                 options["n_eql_blocks"],
-    #                 options["n_trj"],
-    #                 nchol,
-    #                 )
-    #     elif 'pt2' in options["trial"]:
-    #         sampler = fp_sampling.fp_sampler_pt2(
-    #                 options["n_prop_steps"],
-    #                 options["n_eql_blocks"],
-    #                 options["n_trj"],
-    #                 nchol,
-    #                 )
 
     prop = get_propagator(options)
     sampler = get_sampler(options, nchol)
@@ -924,40 +698,47 @@ def init_afqmc_exp(
         amp_file="amplitudes.npz",
         chol_file="FCIDUMP_chol"
         ):
-    from .wavefunctions import wfn_exp, rhf_wfn, uhf_wfn, rcisd_wfn, ucisd_wfn, rpt2ccsd_wfn, upt2ccsd_wfn
+    from .wavefunctions import (wfn_exp, 
+                                rhf_wfn, uhf_wfn, 
+                                rms_wfn, ums_wfn, 
+                                rcisd_wfn, ucisd_wfn, 
+                                rpt2ccsd_wfn, upt2ccsd_wfn,
+                                rstoccsd_wfn, ustoccsd_wfn)
     
     options = get_qmc_options(options, option_file)
 
-    print("\nLoad system from Integral File")
+    h0, h1, chol, ms, nelec_sp, norb, spin_type = load_chol(chol_file)
 
-    with h5py.File(chol_file, "r") as fh5:
-        [nelec, norb, ms] = fh5["header"]
-        spin_type = fh5["spin_type"][()]
-        h0 = jnp.array(fh5.get("energy_core"))
-        h1 = jnp.array(fh5.get("hcore"))
-        chol = jnp.array(fh5.get("chol"))
+    # print("\nLoad system from Integral File")
+
+    # with h5py.File(chol_file, "r") as fh5:
+    #     [nelec, norb, ms] = fh5["header"]
+    #     spin_type = fh5["spin_type"][()]
+    #     h0 = jnp.array(fh5.get("energy_core"))
+    #     h1 = jnp.array(fh5.get("hcore"))
+    #     chol = jnp.array(fh5.get("chol"))
     
-    if isinstance(spin_type, bytes):
-        spin_type = spin_type.decode()
+    # if isinstance(spin_type, bytes):
+    #     spin_type = spin_type.decode()
 
-    assert spin_type in ["restricted", "unrestricted"]
+    # assert spin_type in ["restricted", "unrestricted"]
 
-    if spin_type == 'restricted':
-        h1 = jnp.array(h1).reshape(norb, norb)
-        chol = jnp.array(chol).reshape(-1, norb, norb)
+    # if spin_type == 'restricted':
+    #     h1 = jnp.array(h1).reshape(norb, norb)
+    #     chol = jnp.array(chol).reshape(-1, norb, norb)
 
-    elif spin_type == 'unrestricted':
-        h1 = jnp.array(h1).reshape(2, norb, norb)
-        chol = jnp.array(chol).reshape(2, -1, norb, norb)
+    # elif spin_type == 'unrestricted':
+    #     h1 = jnp.array(h1).reshape(2, norb, norb)
+    #     chol = jnp.array(chol).reshape(2, -1, norb, norb)
 
-    assert type(ms) is np.int64
-    assert type(nelec) is np.int64
-    assert type(norb) is np.int64
+    # assert type(ms) is np.int64
+    # assert type(nelec) is np.int64
+    # assert type(norb) is np.int64
 
     ms, nelec, norb = int(ms), int(nelec), int(norb)
     nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
 
-    ham = hamiltonian.hamiltonian(norb)
+    # ham = hamiltonian.hamiltonian(norb)
     ham_data = {}
     ham_data["h0"] = h0
 
@@ -997,27 +778,27 @@ def init_afqmc_exp(
         wave_data["rdm1"] = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
         # guide
         if options["guide"] == "rhf":
-            guide_overlap_fn = rhf_wfn.calc_overlap
-            guide_force_bias_fn = rhf_wfn.calc_rot_force_bias
+            guide_overlap_fn = rhf_wfn.overlap
+            guide_force_bias_fn = rhf_wfn.rot_force_bias
         if options["guide"] == "rcisd":
-            guide_overlap_fn = rcisd_wfn.calc_overlap
-            guide_force_bias_fn = rcisd_wfn.calc_force_bias
+            guide_overlap_fn = rcisd_wfn.overlap
+            guide_force_bias_fn = rcisd_wfn.force_bias
 
         # trial
         if options["trial"] == "rhf":
-            trial_overlap_fn = rhf_wfn.calc_overlap
-            trial_energy_fn = rhf_wfn.calc_rot_energy
-            trial_intermediate_fn = rhf_wfn.calc_intermediate
+            trial_overlap_fn = rhf_wfn.overlap
+            trial_energy_fn = rhf_wfn.rot_energy
+            trial_intermediate_fn = rhf_wfn.build_intermediate
             energy_formula_fn = rhf_wfn.energy_formula
         elif options["trial"] == "rcisd":
-            trial_overlap_fn = rcisd_wfn.calc_overlap
-            trial_energy_fn = rcisd_wfn.calc_energy
-            trial_intermediate_fn = rcisd_wfn.calc_intermediate
+            trial_overlap_fn = rcisd_wfn.overlap
+            trial_energy_fn = rcisd_wfn.energy
+            trial_intermediate_fn = rcisd_wfn.build_intermediate
             energy_formula_fn = rcisd_wfn.energy_formula
         elif options["trial"] == "rpt2ccsd":
-            trial_overlap_fn = rpt2ccsd_wfn.calc_overlap
-            trial_energy_fn = rpt2ccsd_wfn.calc_energy
-            trial_intermediate_fn = rpt2ccsd_wfn.calc_intermediate
+            trial_overlap_fn = rpt2ccsd_wfn.overlap
+            trial_energy_fn = rpt2ccsd_wfn.energy
+            trial_intermediate_fn = rpt2ccsd_wfn.build_intermediate
             energy_formula_fn = rpt2ccsd_wfn.energy_formula
 
     elif spin_type == "unrestricted":
@@ -1028,33 +809,46 @@ def init_afqmc_exp(
                              jnp.array([wave_data["mo_coeff"][1] @ wave_data["mo_coeff"][1].T]))
         # guide
         if options["guide"] == "uhf":
-            guide_overlap_fn = uhf_wfn.calc_overlap
-            guide_force_bias_fn = uhf_wfn.calc_force_bias
+            guide_overlap_fn = uhf_wfn.overlap
+            guide_force_bias_fn = uhf_wfn.force_bias
         if options["guide"] == "ucisd":
-            guide_overlap_fn = ucisd_wfn.calc_overlap
-            guide_force_bias_fn = ucisd_wfn.calc_force_bias
+            guide_overlap_fn = ucisd_wfn.overlap
+            guide_force_bias_fn = ucisd_wfn.force_bias
 
         # trial
         if options["trial"] == "uhf":
-            trial_overlap_fn = uhf_wfn.calc_overlap
-            trial_energy_fn = uhf_wfn.calc_rot_energy
-            trial_intermediate_fn = uhf_wfn.calc_intermediate
+            trial_overlap_fn = uhf_wfn.overlap
+            trial_energy_fn = uhf_wfn.rot_energy
+            trial_intermediate_fn = uhf_wfn.build_intermediate
             energy_formula_fn = uhf_wfn.energy_formula
         elif options["trial"] == "ucisd":
-            trial_overlap_fn = ucisd_wfn.calc_overlap
-            trial_energy_fn = ucisd_wfn.calc_energy
-            trial_intermediate_fn = ucisd_wfn.calc_intermediate
+            trial_overlap_fn = ucisd_wfn.overlap
+            trial_energy_fn = ucisd_wfn.energy
+            trial_intermediate_fn = ucisd_wfn.build_intermediate
             energy_formula_fn = ucisd_wfn.energy_formula
         elif options["trial"] == "upt2ccsd":
-            trial_overlap_fn = upt2ccsd_wfn.calc_overlap
-            trial_energy_fn = upt2ccsd_wfn.calc_energy
-            trial_intermediate_fn = upt2ccsd_wfn.calc_intermediate
+            trial_overlap_fn = upt2ccsd_wfn.overlap
+            trial_energy_fn = upt2ccsd_wfn.energy
+            trial_intermediate_fn = upt2ccsd_wfn.build_intermediate
             energy_formula_fn = upt2ccsd_wfn.energy_formula
         elif options["trial"] == "upt2ccsd_bar":
-            trial_overlap_fn = upt2ccsd_wfn.calc_overlap_bar
-            trial_energy_fn = upt2ccsd_wfn.calc_energy_bar
-            trial_intermediate_fn = upt2ccsd_wfn.calc_intermediate_bar
+            trial_overlap_fn = upt2ccsd_wfn.overlap_bar
+            trial_energy_fn = upt2ccsd_wfn.energy_bar
+            trial_intermediate_fn = upt2ccsd_wfn.build_intermediate_bar
             energy_formula_fn = upt2ccsd_wfn.energy_formula
+
+    wave = wfn_exp.wfn(    
+        guide_overlap_fn=guide_overlap_fn,
+        guide_force_bias_fn=guide_force_bias_fn,
+        trial_overlap_fn=trial_overlap_fn,
+        trial_energy_fn=trial_energy_fn,
+        trial_intermediate_fn=trial_intermediate_fn,
+        energy_formula_fn=energy_formula_fn,
+        nelec=nelec_sp,
+        norb=norb,
+        nchol=nchol,
+        nchol_chunk=options["nchol_chunk"],
+        )
 
     if options["walker_type"] == "rhf":
         prop = propagation.propagator_restricted(
@@ -1070,19 +864,6 @@ def init_afqmc_exp(
                 options["n_exp_terms"],
                 options["n_batch"],
             )
-
-    wave = wfn_exp.wfn(    
-        guide_overlap_fn=guide_overlap_fn,
-        guide_force_bias_fn=guide_force_bias_fn,
-        trial_overlap_fn=trial_overlap_fn,
-        trial_energy_fn=trial_energy_fn,
-        trial_intermediate_fn=trial_intermediate_fn,
-        energy_formula_fn=energy_formula_fn,
-        nelec=nelec_sp,
-        norb=norb,
-        nchol=nchol,
-        nchol_chunk=options["nchol_chunk"],
-        )
 
     sampler = sampling.sampler_exp(
         n_prop_steps=options["n_prop_steps"],

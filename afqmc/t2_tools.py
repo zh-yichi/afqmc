@@ -336,12 +336,12 @@ def ut2h12(bra, ket, t2, h1, chol, mix_precision=False, nchol_chunk=1):
     e2_2 = e2_2_1 + e2_2_2 + e2_2_3 # <bra|T2 h2|ket>/<bra|ket>
 
     # <bra|ket>
-    olp = slater_tools.u_overlap(bra, ket) 
-    t2o = gt2g # <bra|T2|ket>/<bra|ket>
-    e0 = (e1_0 + e2_0) # <bra|h1+h2|ket>/<bra|ket>
-    t2e12 = (e1_2 + e2_2) # <bra|T2 (h1+h2)|ket>/<bra|ket>
+    # olp = slater_tools.u_overlap(bra, ket) 
+    e10 = gt2g # <bra|T2|ket>/<bra|ket>
+    e01 = (e1_0 + e2_0) # <bra|h1+h2|ket>/<bra|ket>
+    e11 = (e1_2 + e2_2) # <bra|T2 (h1+h2)|ket>/<bra|ket>
 
-    return jnp.array([olp, t2o, e0, t2e12])
+    return jnp.array([e10, e01, e11])
 
 @partial(jit, static_argnums=(5,6))
 def ut2h12_delta(bra, ket, t2, h1, chol, mix_precision=False, nchol_chunk=1):
@@ -507,12 +507,12 @@ def ut2h12_delta(bra, ket, t2, h1, chol, mix_precision=False, nchol_chunk=1):
     e2_2_2 = e2_2_2_1 + e2_2_2_2
     e2_2 = e2_2_1 + e2_2_2 + e2_2_3 # <bra|T2 h2|ket>/<bra|ket>
 
-    olp = slater_tools.u_delta_overlap(bra, ket) # <bra|ket>
-    t2o = gt2g # <bra|T2|ket>/<bra|ket>
-    e0 = (e1_0 + e2_0) # <bra|h1+h2|ket>/<bra|ket>
-    t2e12 = (e1_2 + e2_2) # <bra|T2 (h1+h2)|ket>/<bra|ket>
+    # olp = slater_tools.u_delta_overlap(bra, ket) # <bra|ket>
+    e10 = gt2g # <bra|T2|ket>/<bra|ket>
+    e01 = (e1_0 + e2_0) # <bra|h1+h2|ket>/<bra|ket>
+    e11 = (e1_2 + e2_2) # <bra|T2 (h1+h2)|ket>/<bra|ket>
 
-    return jnp.array([olp, t2o, e0, t2e12])
+    return jnp.array([e10, e01, e11])
 
 @jit
 def ut2_overlap(bra: tuple, ket: tuple, t2: tuple):

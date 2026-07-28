@@ -9,7 +9,7 @@ from . import rhf_wfn
 energy_formula = rhf_wfn.energy_formula
 
 @partial(jit, static_argnums=0)
-def calc_overlap(trial, walker: jax.Array, wave_data: dict) -> complex:
+def overlap(trial, walker: jax.Array, wave_data: dict) -> complex:
     nocc, ci1, ci2 = walker.shape[1], wave_data["ci1"], wave_data["ci2"]
     green = slater_tools.r_delta_green(wave_data["mo_coeff"], walker)
     o0 = jnp.linalg.det(walker[: walker.shape[1], :]) ** 2
@@ -19,7 +19,7 @@ def calc_overlap(trial, walker: jax.Array, wave_data: dict) -> complex:
     return (1.0 + 2 * o1 + o2) * o0
 
 @partial(jit, static_argnums=0)
-def calc_force_bias(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
+def force_bias(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
     """Calculates force bias < psi_T | chol_gamma | walker > / < psi_T | walker >"""
     nocc, norb, nchol = trial.nelec[0], trial.norb, trial.nchol
     ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
@@ -62,7 +62,7 @@ def calc_force_bias(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -
     return (fb_0 + fb_1 + fb_2) / overlap
 
 @partial(jit, static_argnums=0)
-def calc_energy(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> complex:
+def energy(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> complex:
     nocc, norb, nchol = trial.nelec[0], trial.norb, trial.nchol
     ci1, ci2 = wave_data["ci1"], wave_data["ci2"]
     green = slater_tools.r_delta_green(wave_data["mo_coeff"], walker)
@@ -170,11 +170,11 @@ def calc_energy(trial, walker: jax.Array, ham_data: dict, wave_data: dict) -> co
     return (e1 + e2) / overlap + e0
 
 @partial(jit, static_argnums=0)
-def calc_intermediate(trial, ham_data: dict, wave_data: dict):
+def build_intermediate(trial, ham_data: dict, wave_data: dict):
     ham_data["lci1"] = oe.contract(
         "git,pt->gip",
         ham_data["chol"].reshape(-1, trial.norb, trial.norb)[:, :, trial.nelec[0] :],
         wave_data["ci1"],
         backend="jax")
     
-    return ham_data
+    return ham_data, wave_data

@@ -87,18 +87,18 @@ def ums_rot_energy(slaters, walker, h0, rot_h1, rot_chol):
 
 # implementation of above functions in QMC sampling
 @partial(jit, static_argnums=0)
-def u_overlap(trial, walker, wave_data):
+def overlap(trial, walker, wave_data):
     return ums_overlap(wave_data["slaters"], walker)
 
 @partial(jit, static_argnums=0)
-def u_force_bias(trial, walker, ham_data, wave_data):
+def force_bias(trial, walker, ham_data, wave_data):
     chol_a = ham_data["chol"][0].reshape(trial.nchol, trial.norb, trial.norb)
     chol_b = ham_data["chol"][1].reshape(trial.nchol, trial.norb, trial.norb)
     chol = (chol_a, chol_b)
     return ums_force_bias(wave_data["slaters"], walker, chol)
 
 @partial(jit, static_argnums=0)
-def u_energy(trial, walker, ham_data, wave_data):
+def energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     h1 = ham_data["h1"]
     chol_a = ham_data["chol"][0].reshape(trial.nchol, trial.norb, trial.norb)
@@ -115,7 +115,7 @@ def u_energy(trial, walker, ham_data, wave_data):
     return ums_energy(wave_data["slaters"], walker, h0, h1, chol)
 
 @partial(jit, static_argnums=0)
-def u_rot_force_bias(trial, walker, ham_data, wave_data):
+def rot_force_bias(trial, walker, ham_data, wave_data):
     rot_chol_a = ham_data["rot_chol"][0]
     rot_chol_b = ham_data["rot_chol"][1]
     nchol = trial.nchol
@@ -130,7 +130,7 @@ def u_rot_force_bias(trial, walker, ham_data, wave_data):
     return ums_rot_force_bias(wave_data["slaters"], walker, rot_chol)
 
 @partial(jit, static_argnums=0)
-def u_rot_energy(trial, walker, ham_data, wave_data):
+def rot_energy(trial, walker, ham_data, wave_data):
     h0 = ham_data["h0"]
     rot_h1 = ham_data["rot_h1"]
     rot_chol_a = ham_data["rot_chol"][0].reshape(trial.nchol, trial.norb, trial.norb)
