@@ -322,15 +322,8 @@ class rhf(rwfn):
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         """Builds half rotated integrals for efficient force bias and energy calculations."""
-        ham_data["h1"] = (
-            ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
-        )
-        ham_data["h1"] = (
-            ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
-        )
-        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ (
-            (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
-        )
+
+        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"][0]
         ham_data["rot_chol"] = oe.contract(
             "pi,gij->gpj",
             wave_data["mo_coeff"].T.conj(),
@@ -467,15 +460,13 @@ class ptccsd(rhf):
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         norb = self.norb
 
-        ham_data["h1"] = (
-            ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
-        )
-        ham_data["h1"] = (
-            ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
-        )
-        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ (
-            (ham_data["h1"][0] + ham_data["h1"][1]) / 2.0
-        )
+        # ham_data["h1"] = (
+        #     ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
+        # )
+        # ham_data["h1"] = (
+        #     ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
+        # )
+        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"][0]
         ham_data["rot_chol"] = oe.contract(
             "pi,gij->gpj",
             wave_data["mo_coeff"].T.conj(),
@@ -725,40 +716,34 @@ class pt2ccsd_ad(rhf):
         t2e_orb = (d_overlap + d_2_overlap) / o0
         t2_orb = t2_olp /o0 # <t2_i>
 
-        return t2e_orb, t2_orb
+        return t2_orb, t2e_orb
 
     @partial(jit, static_argnums=0)
-    def _calc_eorb_pt2(self, walker: jax.Array, ham_data: dict, wave_data: dict):
+    def _calc_ept2_frag(self, walker: jax.Array, ham_data: dict, wave_data: dict):
         
         walker_bar = wave_data['exp_t1'] @ walker
         o0 = jnp.linalg.det(walker[:walker.shape[1], :]) ** 2
         o_bar = jnp.linalg.det(walker_bar[:walker_bar.shape[1], :]) ** 2
-        t1olp = o_bar/o0 # <exp(T1)HF|walker>/<HF|walker>
-        e0 = self._calc_energy_restricted(walker, ham_data, wave_data)
-        eorb = self._calc_eorb_bar(walker_bar, ham_data, wave_data)
-        t2eorb, t2orb = self._t2e_orb_ad(walker_bar, ham_data, wave_data)
-        e12bar = self._calc_energy_bar(walker_bar, ham_data, wave_data)
+        t1 = o_bar/o0 # <exp(T1)HF|walker>/<HF|walker>
+        eg = self._calc_energy_restricted(walker, ham_data, wave_data)
+        e0frag = self._calc_eorb_bar(walker_bar, ham_data, wave_data)
+        t2frag, e1frag = self._t2e_orb_ad(walker_bar, ham_data, wave_data)
+        e0 = self._calc_energy_bar(walker_bar, ham_data, wave_data)
 
-        return e0, t1olp, eorb, t2eorb, t2orb, e12bar
+        return eg, t1, t2frag, e0frag, e1frag, e0
 
     @partial(jit, static_argnums=(0)) 
-    def calc_eorb_pt2(self,walkers,ham_data,wave_data):
-        e0, t1olp, eorb, t2eorb, t2orb, e12bar = vmap(
-            self._calc_eorb_pt2,in_axes=(0, None, None))(
+    def calc_ept2_frag(self,walkers,ham_data,wave_data):
+        eg, t1, t2frag, e0frag, e1frag, e0 = vmap(
+            self._calc_ept2_frag,in_axes=(0, None, None))(
             walkers, ham_data, wave_data)
-        return e0, t1olp, eorb, t2eorb, t2orb, e12bar
+        return eg, t1, t2frag, e0frag, e1frag, e0
     
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         """Builds half rotated integrals for efficient force bias and energy calculations."""
         norb, nocc = self.norb, self.nelec[0]
         chol = ham_data["chol"].reshape(-1, norb, norb)
-        ham_data["h1"] = (
-            ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
-        )
-        ham_data["h1"] = (
-            ham_data["h1"].at[1].set((ham_data["h1"][1] + ham_data["h1"][1].T) / 2.0)
-        )
         
         # exp(T1^dagger) H exp(-T1^dagger)
         h1_bar = wave_data['exp_t1'] @ ham_data['h1'][0] @ wave_data['exp_mt1']
@@ -956,57 +941,56 @@ class pt2ccsd(rhf):
         e2_2 = e2_2_1 + e2_2_2 + e2_2_3
 
         e0 = e1_0 + e2_0  # <psi|(h1+h2)|phi>/<psi|phi>
-        te = e1_2 + e2_2  # <psi|t2(h1+h2)|phi>/<psi|phi>
-        t = gt2g          # <psi|t2|phi>/<psi|phi>
-        return te, t, e0
+        e1frag = e1_2 + e2_2  # <psi|t2(h1+h2)|phi>/<psi|phi>
+        t2frag = gt2g          # <psi|t2|phi>/<psi|phi>
+        return t2frag, e1frag, e0
 
 
     @partial(jit, static_argnums=0)
-    def _calc_eorb_pt2(self, walker: jax.Array, ham_data: dict, wave_data: dict):
+    def _calc_ept2_frag(self, walker: jax.Array, ham_data: dict, wave_data: dict):
         
-        e0 = self._calc_energy_restricted(walker, ham_data, wave_data)
+        eg = self._calc_energy_restricted(walker, ham_data, wave_data)
+
         walker_bar = wave_data['exp_t1'] @ walker
         o0 = jnp.linalg.det(walker[:walker.shape[1], :]) ** 2
         obar = jnp.linalg.det(walker_bar[:walker_bar.shape[1], :]) ** 2
-        t1olp = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
-        eorb = self._calc_eorb_bar(walker_bar, ham_data, wave_data)
-        t2eorb, t2orb, e12bar = self._t2eorb_tc(walker_bar, ham_data, wave_data)
+        t1 = obar/o0 # <exp(T1)HF|walker>/<HF|walker>
+        e0frag = self._calc_eorb_bar(walker_bar, ham_data, wave_data)
+        t2frag, e1frag, e0 = self._t2eorb_tc(walker_bar, ham_data, wave_data)
 
-        return e0, t1olp, eorb, t2eorb, t2orb, e12bar
+        return eg, t1, t2frag, e0frag, e1frag, e0
 
     @partial(jit, static_argnums=0) 
-    def calc_eorb_pt2(self, walkers: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
+    def calc_ept2_frag(self, walkers: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
 
         n_walkers = walkers.shape[0]
         batch_size = n_walkers // self.n_batch
         
         def scan_batch(carry, walker_batch):
-            e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar \
-                = vmap(self._calc_eorb_pt2, in_axes=(0, None, None))(
+            eg, t1, t2frag, e0frag, e1frag, e0 \
+                = vmap(self._calc_ept2_frag, in_axes=(0, None, None))(
                 walker_batch, ham_data, wave_data
             )
-            return carry, (e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar)
+            return carry, (eg, t1, t2frag, e0frag, e1frag, e0)
         
-        _, (e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar) \
+        _, (eg, t1, t2frag, e0frag, e1frag, e0) \
             = lax.scan(scan_batch, None, walkers.reshape(self.n_batch, batch_size, self.norb,-1))
 
+        eg = eg.reshape(n_walkers)
+        t1 = t1.reshape(n_walkers)
+        t2frag = t2frag.reshape(n_walkers)
+        e0frag = e0frag.reshape(n_walkers)
+        e1frag = e1frag.reshape(n_walkers)
         e0 = e0.reshape(n_walkers)
-        t1olp = t1olp.reshape(n_walkers)
-        eorb_bar = eorb_bar.reshape(n_walkers)
-        t2eorb = t2eorb.reshape(n_walkers)
-        t2orb = t2orb.reshape(n_walkers)
-        e12bar = e12bar.reshape(n_walkers)
 
-        return e0, t1olp, eorb_bar, t2eorb, t2orb, e12bar
+        return eg, t1, t2frag, e0frag, e1frag, e0
     
     @partial(jit, static_argnums=0)
     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
         """Builds half rotated integrals for efficient force bias and energy calculations."""
         norb, nocc = self.norb, self.nelec[0]
         chol = ham_data["chol"].reshape(-1, norb, norb)
-        ham_data["h1"] = (
-            ham_data["h1"].at[0].set((ham_data["h1"][0] + ham_data["h1"][0].T) / 2.0)
-        )
+
         # exp(T1^dagger) H exp(-T1^dagger)
         h1_bar = wave_data['exp_t1'] @ ham_data['h1'][0] @ wave_data['exp_mt1']
         ham_data["h1_bar"] = h1_bar

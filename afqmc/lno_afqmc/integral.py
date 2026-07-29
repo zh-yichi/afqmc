@@ -65,9 +65,9 @@ def get_las_idx(mf, lno_frozen):
         nactocc = len(actocc)
         nactvir = len(actvir)
         nactorb = len(actfrag)
-        ncas = nactorb
-        ncore = nfrzocc
-        nelec = nactocc*2
+        # ncas = nactorb
+        # ncore = nfrzocc
+        # nocc = nactocc
 
     elif isinstance(mf, scf.uhf.UHF):
         nocc_a = int(sum(mf.mo_occ[0]))
@@ -88,18 +88,18 @@ def get_las_idx(mf, lno_frozen):
         nactocc_b = len(actocc_b)
         nactvir_b = len(actvir_b)
         nactorb_b = len(actfrag_b)
-        ncas = (nactorb_a, nactorb_b)
-        ncore = (nfrzocc_a, nfrzocc_b)
-        nelec = (nactocc_a, nactocc_b)
+        nfrzocc = (nfrzocc_a, nfrzocc_b)
+        nactocc = (nactocc_a, nactocc_b)
+        nactorb = (nactorb_a, nactorb_b)
         actfrag = (actfrag_a, actfrag_b)
 
-    return ncas, ncore, nelec, actfrag
+    return nfrzocc, nactocc, nactorb, actfrag
 
 def get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut):
-    ncas, ncore, nelec, actfrag = get_las_idx(mf, lno_frozen)
-    print('Size of the correlation space: ')
-    print(f'Number of electrons: {nelec}')
-    print(f'Number of basis functions: {ncas}')
+    ncore, nocc, ncas, actfrag = get_las_idx(mf, lno_frozen)
+    print('*** Correlation Space Size ***')
+    print(f'N Occupied Orbitals: {nocc}')
+    print(f'N Active Orbitals:   {ncas}')
 
     if isinstance(mf, scf.rhf.RHF):
         time0 = time.time()
@@ -127,7 +127,7 @@ def get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut):
         cderi_las = cholesky.unpack_symmetric(cderi_las, ncas)
         print(f"Compress CDERI time: {time.time() - time0:.6f} s")
         print("Finished calculating Integrals")
-        print(f'LAS Cholesky shape: {cderi.shape}')
+        print(f'LAS Cholesky shape: {cderi_las.shape}')
         # cderi_las = cderi_a.reshape(cderi_las.shape[0], -1)
 
     elif isinstance(mf, scf.uhf.UHF):
@@ -162,16 +162,16 @@ def get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut):
         cderi_b = cholesky.unpack_symmetric(cderi_b, ncas[1])
         print(f"Compress CDERI time: {time.time() - time0:.6f} s")
         print("Finished calculating Integrals")
-        print('Size of the correlation space: ')
-        print(f'Number of electrons: {nelec}')
-        print(f'Number of basis functions: {ncas}')
+        # print('Size of the correlation space: ')
+        # print(f'Number of electrons: {nocc}')
+        # print(f'Number of basis functions: {ncas}')
         print(f'LAS Alpha Cholesky shape: {cderi_a.shape}')
         print(f'LAS Beta  Cholesky shape: {cderi_b.shape}')
         # cderi_a = cderi_a.reshape(cderi_a.shape[0], -1)
         # cderi_b = cderi_b.reshape(cderi_b.shape[0], -1)
         cderi_las = (cderi_a, cderi_b)
 
-    return enuc, h1e, cderi_las, nelec, ncas
+    return enuc, h1e, cderi_las, nocc, ncas
 
 def get_lnoproj(uocc_loc):
     '''return the LNO fragment projector |I><I| for I in F'''
@@ -212,9 +212,9 @@ def prep_lno_integral(
 
     print('Calculating Effective Active Space One-electron Integrals')
 
-    h0, h1, chol, nelec, norb = get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut)
+    h0, h1, chol, nocc, norb = get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut)
 
-    write_integral(nelec, norb, h0, h1, chol, mf.e_tot, prjlo, filename=chol_file)
+    write_integral(nocc, norb, h0, h1, chol, mf.e_tot, prjlo, filename=chol_file)
 
     return None
 
@@ -358,12 +358,12 @@ def prep_cfs_integral(
     write_integral(nelec2, norb2, h02, h12, chol2, mf2.e_tot, prjlo2, filename=chol_file2)
     return None
 
-def write_integral(nelec, norb, h0, h1, chol, emf, prjlo, filename="FCIDUMP_chol"):
+def write_integral(nocc, norb, h0, h1, chol, emf, prjlo, filename="FCIDUMP_chol"):
     
     unrestricted = isinstance(h1, (list, tuple))
     
     with h5py.File(filename, "w") as fh5:
-        fh5["nelec"] = np.asarray(nelec)
+        fh5["nocc"] = np.asarray(nocc)
         fh5["norb"]  = np.asarray(norb)
         fh5["h0"]    = h0
         fh5["emf"]   = emf
@@ -392,7 +392,7 @@ def load_integral(filename="FCIDUMP_chol"):
     
     with h5py.File(filename, "r") as fh5:
 
-        nelec = _recover_int(fh5["nelec"][()])
+        nocc = _recover_int(fh5["nocc"][()])
         norb  = _recover_int(fh5["norb"][()])
         h0    = jnp.asarray(fh5["h0"][()], dtype=jnp.float64)
         emf   = jnp.asarray(fh5["emf"][()], dtype=jnp.float64)
@@ -433,4 +433,4 @@ def load_integral(filename="FCIDUMP_chol"):
                 f"'h1_a'/'h1_b' (unrestricted) integral block."
             )
     
-    return nelec, norb, nchol, h0, h1, chol, emf, prjlo
+    return nocc, norb, nchol, h0, h1, chol, emf, prjlo

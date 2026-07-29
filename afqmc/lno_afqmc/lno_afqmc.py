@@ -80,7 +80,6 @@ def get_las(mlno, orbloc, uocc_loc, lno_frozen, spin_type, loc_ctr):
             lno_elec_type = 'beta'
         else:
             lno_elec_type = 'mixed'
-        print(f'LNO-Frgament Spin Type = {lno_elec_type}')
 
         if loc_ctr is None:
             ao_max_a = prep.ao_comp(mf, orbloc[0])
@@ -106,7 +105,7 @@ def get_las(mlno, orbloc, uocc_loc, lno_frozen, spin_type, loc_ctr):
         print(f'LAS virtual orbitals:   {nactvir}')
         print(f'LAS total size:         {lno_tot}')
     else:
-        print(f'LNO-Frgament Spin Type = restricted')
+        lno_elec_type = 'restricted'
         if loc_ctr is None:
             loc_ctr = prep.ao_comp(mf, orbloc)
             print(f"LNO Center {loc_ctr}")
@@ -115,11 +114,12 @@ def get_las(mlno, orbloc, uocc_loc, lno_frozen, spin_type, loc_ctr):
         lno_active = np.array([i for i in range(mol.nao) if i not in lno_frozen])
         nactocc, nactvir = prep.las_size(mf, lno_frozen)
         lno_tot = len(lno_active)
+        print(f'LNO-Frgament Spin Type: {lno_elec_type}')
         print(f'LAS occupied orbitals:  {nactocc}')
         print(f'LAS virtual orbitals:   {nactvir}')
         print(f'LAS total size:         {lno_tot}')
     
-    return  maskact, lno_active, nactocc, nactvir, lno_tot, lno_elec_type
+    return  maskact, lno_active, nactocc, nactvir, lno_tot
 
 def lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=3):
     mf = mlno._scf
@@ -150,28 +150,6 @@ def run_lnoafqmc(options, option_file='options.bin'):
 
 def lnoafqmc_kernel(mlno, lno_coeff, uocc_loc, lno_frozen, t1, t2, 
                     chol_cut, frag_idx, seeds, qmc_options):
-    
-    # if spin_type == "unrestricted":
-    #     prjlo = [uocc_loc[0] @ uocc_loc[0].T.conj(),
-    #                 uocc_loc[1] @ uocc_loc[1].T.conj()]
-    #     qmc_options["trial"] = trial_base
-    #     if 'ad' not in trial_base:
-    #         if lno_elec_type == 'alpha':
-    #             qmc_options["trial"] += '_alpha'
-    #         elif lno_elec_type == 'beta':
-    #             qmc_options["trial"] += '_beta'
-    # else:
-    #     prjlo = uocc_loc @ uocc_loc.T.conj()
-    # prep.prep_afqmc_integral(
-    #     mf,
-    #     lno_coeff,
-    #     t1,
-    #     t2,
-    #     lno_frozen,
-    #     prjlo,
-    #     qmc_options,
-    #     chol_cut=chol_cut
-    #     )
 
     mf = mlno._scf
     
@@ -199,6 +177,7 @@ def run_afqmc(mf,
               qmc_options = {}, 
               chol_cut = 1e-5, 
               target_sto_error = 1e-3, 
+            #   max_nlas = 300, 
               run_frag_list = None, 
               atom_group = None,
               plot_las = False,
@@ -272,7 +251,7 @@ def run_afqmc(mf,
         orbloc, lno_param = get_lnoparam(lo_coeff, lno_thresh, lno_pct_occ, lno_norb, loidx, ifrag, spin_type)
         lno_coeff, lno_frozen, uocc_loc, _ = mlno.make_las(eris, orbloc, lno_type, lno_param)
 
-        maskact, lno_active, nactocc, nactvir, lno_tot, lno_elec_type = \
+        maskact, lno_active, nactocc, nactvir, lno_tot = \
             get_las(mlno, orbloc, uocc_loc, lno_frozen, spin_type, loc_ctr)
                 
         if plot_las:

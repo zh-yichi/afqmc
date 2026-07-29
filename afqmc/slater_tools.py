@@ -145,6 +145,8 @@ def r_energy(
     chunk the cholesky to (nchunk, nchol_per_chunk, norb, norb)
     before calling this function
     '''
+    if len(chol.shape) == 3:
+        chol = chol.reshape(1,*chol.shape)
 
     green = r_green(bra, ket)
     e1 = 2* oe.contract("pq,pq->", green, h1, backend="jax")
@@ -176,6 +178,8 @@ def r_rot_energy(
     chunk the rot_cholesky to (nchunk, nchol_per_chunk, nocc, norb)
     before calling this function
     '''
+    if len(rot_chol.shape) == 3:
+        rot_chol = rot_chol.reshape(1,*rot_chol.shape)
 
     green = r_half_green(bra, ket)
     e1 = 2* oe.contract("pq,pq->", green, rot_h1, backend="jax")
@@ -249,7 +253,12 @@ def u_rot_energy(
     rot_h1: tuple, 
     rot_chol: tuple
     ):
-    # rot_chol has to be chunked before calling this function
+
+    chola, cholb = rot_chol
+    if len(chola.shape) == 3:
+        chola = chola.reshape(1,*chola.shape)
+    if len(cholb.shape) == 3:
+        cholb = cholb.reshape(1,*cholb.shape)
 
     green = u_half_green(bra, ket)
     e1 = oe.contract("pq,pq->", rot_h1[0], green[0]) \
@@ -275,7 +284,7 @@ def u_rot_energy(
         carry += (e2aa_c + e2ab_c + e2bb_c) / 2
         return carry, 0.0
 
-    e2, _ = lax.scan(scanned_fun, 0.0, (rot_chol[0], rot_chol[1]))
+    e2, _ = lax.scan(scanned_fun, 0.0, (chola, cholb))
 
     return h0 + e1 + e2
 

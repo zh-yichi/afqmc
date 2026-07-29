@@ -246,8 +246,10 @@ def get_qmc_options(options=None, option_file="options.bin"):
 
     print("\nQMC Parameters")
     for op in options:
-        if options[op] is not None:
-            print(f"{str(op):<15s} - {str(options[op]):>10s}")
+        val = options[op]
+        if val is not None:
+            val_str = f"{val:.2g}" if isinstance(val, float) else str(val)
+            print(f"{str(op):<15s} - {val_str:>10s}")
 
     return options
 
