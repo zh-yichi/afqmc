@@ -125,13 +125,33 @@ def lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=3):
     mf = mlno._scf
     if isinstance(mf, scf.rhf.RHF):
         mcc = lnoccsd.CCSD(mf, mo_coeff=lno_coeff, frozen=lno_frozen).set(verbose=verbose)
+        mcc.conv_tol = 1e-6
+        mcc.conv_tol_normt = 1e-5
+        ecc_frag, t1, t2 = \
+            mod_lnoccsd.rlnoccsd_solver(mcc, lno_coeff, uocc_loc, mlno.mo_occ, maskact)
     elif isinstance(mf, scf.uhf.UHF):
         mcc = ulnoccsd.UCCSD(mf, mo_coeff=lno_coeff, frozen=lno_frozen).set(verbose=verbose)
-    mcc.conv_tol = 1e-6
-    mcc.conv_tol_normt = 1e-5
-    (eorb_mp2, eorb_cc), t1, t2 =\
-            mod_lnoccsd.lnoccsd_kernel(mcc, lno_coeff, uocc_loc, mlno.mo_occ, maskact)
-    return (eorb_mp2, eorb_cc), t1, t2
+        mcc.conv_tol = 1e-6
+        mcc.conv_tol_normt = 1e-5
+        ecc_frag, t1, t2 = \
+            mod_lnoccsd.ulnoccsd_solver(mcc, lno_coeff, uocc_loc, mlno.mo_occ, maskact)
+    else: 
+        raise NotImplementedError('LNO Only Support Restricted and Unrestricted Orbitals!')
+    return ecc_frag, t1, t2
+
+def lnomp2_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=3):
+    # give canonicalized orbitals to MP2
+    mf = mlno._scf
+    if isinstance(mf, scf.rhf.RHF):
+        mcc = lnoccsd.CCSD(mf, mo_coeff=lno_coeff, frozen=lno_frozen).set(verbose=verbose)
+        emp_frag = mod_lnoccsd.rlnomp2_solver(mcc, lno_coeff, uocc_loc, mlno.mo_occ, maskact)
+    elif isinstance(mf, scf.uhf.UHF):
+        mcc = ulnoccsd.UCCSD(mf, mo_coeff=lno_coeff, frozen=lno_frozen).set(verbose=verbose)
+        emp_frag = mod_lnoccsd.ulnomp2_solver(mcc, lno_coeff, uocc_loc, mlno.mo_occ, maskact)
+    else: 
+        raise NotImplementedError('LNO Only Support Restricted and Unrestricted Orbitals!')
+    # eorb_mp = mod_lnoccsd.lnomp2_solver(mcc, lno_coeff, uocc_loc, mlno.mo_occ, maskact)
+    return emp_frag
 
 def run_lnoafqmc(options, option_file='options.bin'):
     
@@ -184,6 +204,7 @@ def run_afqmc(mf,
               ):
     
     print("\n ******* LNO-CALCULATION ******* \n")
+    print(f"LNO THRESHOLD = {thresh}")
     
     tools.check_span(mf, lo_coeff, nfrozen, thresh=1e-10)
 
@@ -249,7 +270,10 @@ def run_afqmc(mf,
         print(f"PySCF NumPy Threads = {lib.num_threads()}")
 
         orbloc, lno_param = get_lnoparam(lo_coeff, lno_thresh, lno_pct_occ, lno_norb, loidx, ifrag, spin_type)
-        lno_coeff, lno_frozen, uocc_loc, _ = mlno.make_las(eris, orbloc, lno_type, lno_param)
+        lno_coeff, can_coeff, lno_frozen, uocc_loc, can_loc, _ \
+            = tools.make_las(mlno, eris, orbloc, lno_type, lno_param)
+        # lno_coeff, lno_frozen, uocc_loc, _ \
+        #             = mlno.make_las(eris, orbloc, lno_type, lno_param)
 
         maskact, lno_active, nactocc, nactvir, lno_tot = \
             get_las(mlno, orbloc, uocc_loc, lno_frozen, spin_type, loc_ctr)
@@ -259,8 +283,10 @@ def run_afqmc(mf,
 
         
         time0 = time.perf_counter()
-        (eorb_mp2, eorb_cc), t1, t2 = \
+        eorb_cc, t1, t2 = \
             lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=4)
+        # eorb_mp2 = lnomp2_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=4)
+        eorb_mp2 = lnomp2_kernel(mlno, can_coeff, lno_frozen, can_loc, maskact, verbose=4)
         lnocc_time = time.perf_counter() - time0
 
         print(f'LNO-MP2 Orbital Energy:  {eorb_mp2:.8f}')
