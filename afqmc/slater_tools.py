@@ -165,6 +165,35 @@ def r_energy(
     return energy
 
 @jit
+def r_energy_corr(bra, ket, fock, chol):
+    '''
+    calculate the correlation energy
+    '''
+    if len(chol.shape) == 3:
+        chol = chol.reshape(1,*chol.shape)
+
+    norb, nocc = ket.shape
+    rot_fock = fock[:nocc,nocc:]
+    rot_chol = chol[:,:,:nocc,nocc:]
+
+    green = (ket.dot(jnp.linalg.inv(ket[:nocc, :]))).T
+    green = green[:nocc,nocc:]
+    e1 = oe.contract('ia,ia->', green, rot_fock, backend="jax") * 2
+
+    def scan_chol(carry, x):
+        chol_c = x  # (nchol_chunk, nocc, nvir)
+        lg_c = oe.contract('gia,ja->gij', chol_c, green, backend="jax")
+        trlg_c = oe.contract('gii->g', lg_c, backend="jax")
+        e1_c = oe.contract('g,g->', trlg_c, trlg_c, backend="jax") * 2
+        e2_c = oe.contract('gij,gji->', lg_c, lg_c, backend="jax")
+        carry += e1_c - e2_c
+        return carry, 0.0
+
+    e2, _ = lax.scan(scan_chol, 0.0, rot_chol)
+    
+    return e1 + e2
+
+@jit
 def r_rot_energy(
     bra: jax.Array, 
     ket: jax.Array, 
@@ -196,6 +225,35 @@ def r_rot_energy(
     energy = h0 + e1 + e2
 
     return energy
+
+def r_energy_corr_frag(bra, ket, fock, chol, pfrag):
+    '''
+    calculate the fragment correlation energy
+    pfrag_ij = <i|I><I|j> is the fragment I projector
+    '''
+    if len(chol.shape) == 3:
+        chol = chol.reshape(1,*chol.shape)
+
+    norb, nocc = ket.shape
+    rot_fock = fock[:nocc,nocc:]
+    rot_chol = chol[:,:,:nocc,nocc:]
+
+    green = (ket.dot(jnp.linalg.inv(ket[:nocc, :]))).T
+    green = green[:nocc,nocc:]
+    e1 = oe.contract('ia,ik,ka->', green, pfrag, rot_fock, backend="jax") * 2
+
+    def scan_chol(carry, x):
+        chol_c = x  # (nchol_chunk, nocc, nvir)
+        lg_c = oe.contract('gia,ja->gij', chol_c, green, backend="jax")
+        trlg_c = oe.contract('gik,ik->g', lg_c, pfrag, backend="jax")
+        e1_c = oe.contract('g,gii->', trlg_c, lg_c, backend="jax") * 2
+        e2_c = oe.contract('gij,gjk,ik->', lg_c, lg_c, pfrag, backend="jax")
+        carry += e1_c - e2_c
+        return carry, 0.0
+
+    e2, _ = lax.scan(scan_chol, 0.0, rot_chol)
+    
+    return e1 + e2
 
 # unrestricted
 

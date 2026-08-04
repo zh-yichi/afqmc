@@ -9,285 +9,287 @@ import numpy as np
 from jax import jit, jvp, lax, vmap
 import opt_einsum as oe
 
-# from afqmc.wavefunctions.wavefunctions_restricted import rhf
+from afqmc.wavefunctions.wavefunctions_restricted import rhf as rwfn
 
 
-class rwfn(ABC):
-    """Base class for wave functions. Contains methods for wave function measurements.
+# class rwfn(ABC):
+#     """Base class for wave functions. Contains methods for wave function measurements.
 
-    The measurement methods support two types of walker batches:
+#     The measurement methods support two types of walker batches:
 
-    1) unrestricted: walkers is a list ([up, down]). up and down are jax.Arrays of shapes
-    (nwalkers, norb, nelec[sigma]). In this case the _calc_<property> method is mapped over.
+#     1) unrestricted: walkers is a list ([up, down]). up and down are jax.Arrays of shapes
+#     (nwalkers, norb, nelec[sigma]). In this case the _calc_<property> method is mapped over.
 
-    2) restricted (up and down dets are assumed to be the same): walkers is a jax.Array of shape
-    (nwalkers, max(nelec[0], nelec[1])). In this case the _calc_<property>_restricted method is mapped over. By default
-    this method is defined to call _calc_<property>. For certain trial states, one can override
-    it for computational efficiency.
+#     2) restricted (up and down dets are assumed to be the same): walkers is a jax.Array of shape
+#     (nwalkers, max(nelec[0], nelec[1])). In this case the _calc_<property>_restricted method is mapped over. By default
+#     this method is defined to call _calc_<property>. For certain trial states, one can override
+#     it for computational efficiency.
 
-    A minimal implementation of a wave function should define the _calc_<property> methods for
-    property = overlap, force_bias, energy.
+#     A minimal implementation of a wave function should define the _calc_<property> methods for
+#     property = overlap, force_bias, energy.
 
-    The wave function data is stored in a separate wave_data dictionary. Its structure depends on the
-    wave function type and is described in the corresponding class. It may contain "rdm1" which is a
-    one-body spin RDM (2, norb, norb). If it is not provided, wave function specific methods are called.
+#     The wave function data is stored in a separate wave_data dictionary. Its structure depends on the
+#     wave function type and is described in the corresponding class. It may contain "rdm1" which is a
+#     one-body spin RDM (2, norb, norb). If it is not provided, wave function specific methods are called.
 
-    Attributes:
-        norb: Number of orbitals.
-        nelec: Number of electrons of each spin.
-        n_batch: Number of batches used in scan.
-    """
+#     Attributes:
+#         norb: Number of orbitals.
+#         nelec: Number of electrons of each spin.
+#         n_batch: Number of batches used in scan.
+#     """
 
-    norb: Tuple[int, int]
-    nelec: Tuple[int, int]
-    n_batch: int = 1
-
-
-    def calc_overlap(self, walkers: jax.Array, wave_data: dict) -> jax.Array:
-        n_walkers = walkers.shape[0]
-        batch_size = n_walkers // self.n_batch
-
-        def scanned_fun(carry, walker_batch):
-            overlap_batch = vmap(self._calc_overlap_restricted, in_axes=(0, None))(
-                walker_batch, wave_data
-            )
-            return carry, overlap_batch
-
-        _, overlaps = lax.scan(
-            scanned_fun, None, walkers.reshape(self.n_batch, batch_size, self.norb, -1)
-        )
-        return overlaps.reshape(n_walkers)
+#     norb: Tuple[int, int]
+#     nelec: Tuple[int, int]
+#     n_batch: int = 1
 
 
-    def calc_force_bias(self, walkers: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
-        n_walkers = walkers.shape[0]
-        batch_size = n_walkers // self.n_batch
+#     def calc_overlap(self, walkers: jax.Array, wave_data: dict) -> jax.Array:
+#         n_walkers = walkers.shape[0]
+#         batch_size = n_walkers // self.n_batch
 
-        def scanned_fun(carry, walker_batch):
-            fb_batch = vmap(self._calc_force_bias_restricted, in_axes=(0, None, None))(
-                walker_batch, ham_data, wave_data
-            )
-            return carry, fb_batch
+#         def scanned_fun(carry, walker_batch):
+#             overlap_batch = vmap(self._calc_overlap_restricted, in_axes=(0, None))(
+#                 walker_batch, wave_data
+#             )
+#             return carry, overlap_batch
 
-        _, fbs = lax.scan(
-            scanned_fun, None, walkers.reshape(self.n_batch, batch_size, self.norb, -1)
-        )
-        return fbs.reshape(n_walkers, -1)
-
-
-    def calc_energy(self, walkers: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
-        n_walkers = walkers.shape[0]
-        batch_size = n_walkers // self.n_batch
-
-        def scanned_fun(carry, walker_batch):
-            energy_batch = vmap(self._calc_energy_restricted, in_axes=(0, None, None))(
-                walker_batch, ham_data, wave_data
-            )
-            return carry, energy_batch
-
-        _, energies = lax.scan(
-            scanned_fun,
-            None,
-            walkers.reshape(self.n_batch, batch_size, self.norb, -1),
-        )
-        return energies.reshape(n_walkers)
+#         _, overlaps = lax.scan(
+#             scanned_fun, None, walkers.reshape(self.n_batch, batch_size, self.norb, -1)
+#         )
+#         return overlaps.reshape(n_walkers)
 
 
-    def get_rdm1(self, wave_data: dict) -> jax.Array:
-        """Returns the one-body spin reduced density matrix of the trial.
-        Used for calculating mean-field shift and as a default value in cases of large
-        deviations in observable samples. If wave_data contains "rdm1" this value is used,
-        calls otherwise _calc_rdm1.
+#     def calc_force_bias(self, walkers: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
+#         n_walkers = walkers.shape[0]
+#         batch_size = n_walkers // self.n_batch
 
-        Args:
-            wave_data : The trial wave function data.
+#         def scanned_fun(carry, walker_batch):
+#             fb_batch = vmap(self._calc_force_bias_restricted, in_axes=(0, None, None))(
+#                 walker_batch, ham_data, wave_data
+#             )
+#             return carry, fb_batch
 
-        Returns:
-            rdm1: The one-body spin reduced density matrix (2, norb, norb).
-        """
-        if "rdm1" in wave_data:
-            return wave_data["rdm1"]
-        else:
-            return self._calc_rdm1(wave_data)
-
-    # def get_init_walkers(
-    #     self, wave_data: dict, n_walkers: int, restricted: bool = False
-    # ) -> Union[Sequence, jax.Array]:
-    #     """Get the initial walkers. Uses the rdm1 natural orbitals.
-
-    #     Args:
-    #         wave_data: The trial wave function data.
-    #         n_walkers: The number of walkers.
-    #         restricted: Whether the walkers should be restricted.
-
-    #     Returns:
-    #         walkers: The initial walkers.
-    #             If restricted, a single jax.Array of shape (nwalkers, norb, nelec[0]).
-    #             If unrestricted, a list of two jax.Arrays each of shape (nwalkers, norb, nelec[sigma]).
-    #     """
-    #     rdm1 = self.get_rdm1(wave_data)
-    #     natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
-    #     natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
-    #     if restricted:
-    #         if self.nelec[0] == self.nelec[1]:
-    #             det_overlap = np.linalg.det(
-    #                 natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
-    #             )
-    #             if (
-    #                 np.abs(det_overlap) > 1e-3
-    #             ):  # probably should scale this threshold with number of electrons
-    #                 return jnp.array([natorbs_up + 0.0j] * n_walkers)
-    #             else:
-    #                 overlaps = np.array(
-    #                     [
-    #                         natorbs_up[:, i].T @ natorbs_dn[:, i]
-    #                         for i in range(self.nelec[0])
-    #                     ]
-    #                 )
-    #                 new_vecs = natorbs_up[:, : self.nelec[0]] + np.einsum(
-    #                     "ij,j->ij", natorbs_dn[:, : self.nelec[1]], np.sign(overlaps)
-    #                 )
-    #                 new_vecs = np.linalg.qr(new_vecs)[0]
-    #                 det_overlap = np.linalg.det(
-    #                     new_vecs.T @ natorbs_up[:, : self.nelec[0]]
-    #                 ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
-    #                 if np.abs(det_overlap) > 1e-3:
-    #                     return jnp.array([new_vecs + 0.0j] * n_walkers)
-    #                 else:
-    #                     raise ValueError(
-    #                         "Cannot find a set of RHF orbitals with good trial overlap."
-    #                     )
-    #         else:
-    #             # bring the dn orbital projection onto up space to the front
-    #             dn_proj = natorbs_up.T.conj() @ natorbs_dn
-    #             proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
-    #             orbs = natorbs_up @ proj_orbs
-    #             return jnp.array([orbs + 0.0j] * n_walkers)
-    #     else:
-    #         return [
-    #             jnp.array([natorbs_up + 0.0j] * n_walkers),
-    #             jnp.array([natorbs_dn + 0.0j] * n_walkers),
-    #         ]
-
-    def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
-        """Build intermediates for measurements in ham_data. This method is called by the hamiltonian class.
-
-        Args:
-            ham_data: The hamiltonian data.
-            wave_data: The trial wave function data.
-
-        Returns:
-            ham_data: The updated Hamiltonian data.
-        """
-        return ham_data
+#         _, fbs = lax.scan(
+#             scanned_fun, None, walkers.reshape(self.n_batch, batch_size, self.norb, -1)
+#         )
+#         return fbs.reshape(n_walkers, -1)
 
 
+#     def calc_energy(self, walkers: jax.Array, ham_data: dict, wave_data: dict) -> jax.Array:
+#         n_walkers = walkers.shape[0]
+#         batch_size = n_walkers // self.n_batch
 
-    def __hash__(self) -> int:
-        return hash(tuple(self.__dict__.values()))
+#         def scanned_fun(carry, walker_batch):
+#             energy_batch = vmap(self._calc_energy_restricted, in_axes=(0, None, None))(
+#                 walker_batch, ham_data, wave_data
+#             )
+#             return carry, energy_batch
+
+#         _, energies = lax.scan(
+#             scanned_fun,
+#             None,
+#             walkers.reshape(self.n_batch, batch_size, self.norb, -1),
+#         )
+#         return energies.reshape(n_walkers)
+
+
+#     def get_rdm1(self, wave_data: dict) -> jax.Array:
+#         """Returns the one-body spin reduced density matrix of the trial.
+#         Used for calculating mean-field shift and as a default value in cases of large
+#         deviations in observable samples. If wave_data contains "rdm1" this value is used,
+#         calls otherwise _calc_rdm1.
+
+#         Args:
+#             wave_data : The trial wave function data.
+
+#         Returns:
+#             rdm1: The one-body spin reduced density matrix (2, norb, norb).
+#         """
+#         if "rdm1" in wave_data:
+#             return wave_data["rdm1"]
+#         else:
+#             return self._calc_rdm1(wave_data)
+
+#     # def get_init_walkers(
+#     #     self, wave_data: dict, n_walkers: int, restricted: bool = False
+#     # ) -> Union[Sequence, jax.Array]:
+#     #     """Get the initial walkers. Uses the rdm1 natural orbitals.
+
+#     #     Args:
+#     #         wave_data: The trial wave function data.
+#     #         n_walkers: The number of walkers.
+#     #         restricted: Whether the walkers should be restricted.
+
+#     #     Returns:
+#     #         walkers: The initial walkers.
+#     #             If restricted, a single jax.Array of shape (nwalkers, norb, nelec[0]).
+#     #             If unrestricted, a list of two jax.Arrays each of shape (nwalkers, norb, nelec[sigma]).
+#     #     """
+#     #     rdm1 = self.get_rdm1(wave_data)
+#     #     natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
+#     #     natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
+#     #     if restricted:
+#     #         if self.nelec[0] == self.nelec[1]:
+#     #             det_overlap = np.linalg.det(
+#     #                 natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
+#     #             )
+#     #             if (
+#     #                 np.abs(det_overlap) > 1e-3
+#     #             ):  # probably should scale this threshold with number of electrons
+#     #                 return jnp.array([natorbs_up + 0.0j] * n_walkers)
+#     #             else:
+#     #                 overlaps = np.array(
+#     #                     [
+#     #                         natorbs_up[:, i].T @ natorbs_dn[:, i]
+#     #                         for i in range(self.nelec[0])
+#     #                     ]
+#     #                 )
+#     #                 new_vecs = natorbs_up[:, : self.nelec[0]] + np.einsum(
+#     #                     "ij,j->ij", natorbs_dn[:, : self.nelec[1]], np.sign(overlaps)
+#     #                 )
+#     #                 new_vecs = np.linalg.qr(new_vecs)[0]
+#     #                 det_overlap = np.linalg.det(
+#     #                     new_vecs.T @ natorbs_up[:, : self.nelec[0]]
+#     #                 ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
+#     #                 if np.abs(det_overlap) > 1e-3:
+#     #                     return jnp.array([new_vecs + 0.0j] * n_walkers)
+#     #                 else:
+#     #                     raise ValueError(
+#     #                         "Cannot find a set of RHF orbitals with good trial overlap."
+#     #                     )
+#     #         else:
+#     #             # bring the dn orbital projection onto up space to the front
+#     #             dn_proj = natorbs_up.T.conj() @ natorbs_dn
+#     #             proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
+#     #             orbs = natorbs_up @ proj_orbs
+#     #             return jnp.array([orbs + 0.0j] * n_walkers)
+#     #     else:
+#     #         return [
+#     #             jnp.array([natorbs_up + 0.0j] * n_walkers),
+#     #             jnp.array([natorbs_dn + 0.0j] * n_walkers),
+#     #         ]
+
+#     def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
+#         """Build intermediates for measurements in ham_data. This method is called by the hamiltonian class.
+
+#         Args:
+#             ham_data: The hamiltonian data.
+#             wave_data: The trial wave function data.
+
+#         Returns:
+#             ham_data: The updated Hamiltonian data.
+#         """
+#         return ham_data
+
+
+
+#     def __hash__(self) -> int:
+#         return hash(tuple(self.__dict__.values()))
 
 
 
 # we assume afqmc is performed in the rhf orbital basis
+# @dataclass
+# class rhf(rwfn):
+
+#     norb: int
+#     nelec: int
+#     n_batch: int = 1
+#     nchol_chunk: int = 100
 @dataclass
 class rhf(rwfn):
-
-    norb: int
-    nelec: int
-    n_batch: int = 1
-    nchol_chunk: int = 100
 
     def __post_init__(self):
         assert (
             self.nelec[0] == self.nelec[1]
         ), "RHF requires equal number of up and down electrons."
 
-    def _calc_rdm1(self, wave_data: dict) -> jax.Array:
-        rdm1 = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
-        return rdm1
+    # def _calc_rdm1(self, wave_data: dict) -> jax.Array:
+    #     rdm1 = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
+    #     return rdm1
 
-    @partial(jit, static_argnums=0)
-    def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
-        nocc = self.nelec[0]
-        return jnp.linalg.det(walker[:nocc,:nocc]) ** 2
+    # @partial(jit, static_argnums=0)
+    # def _calc_overlap_restricted(self, walker: jax.Array, wave_data: dict) -> jax.Array:
+    #     nocc = self.nelec[0]
+    #     return jnp.linalg.det(walker[:nocc,:nocc]) ** 2
 
-    @partial(jit, static_argnums=0)
-    def _calc_green(self, walker: jax.Array, wave_data: dict) -> jax.Array:
-        green = (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
-        return green
+    # @partial(jit, static_argnums=0)
+    # def _calc_green(self, walker: jax.Array, wave_data: dict) -> jax.Array:
+    #     green = (walker.dot(jnp.linalg.inv(walker[: walker.shape[1], :]))).T
+    #     return green
     
-    @partial(jit, static_argnums=0)
-    def _calc_force_bias_restricted(
-        self, walker: Sequence, ham_data: dict, wave_data: dict
-    ) -> jax.Array:
-        nocc, norb = self.nelec[0], self.norb
-        rot_chol = ham_data["chol"].reshape(-1,norb,norb)[:,:nocc,:]
-        green = self._calc_green(walker, wave_data)
-        fb = 2.0 * oe.contract("gij,ij->g", rot_chol, green, backend="jax")
-        return fb
+    # @partial(jit, static_argnums=0)
+    # def _calc_force_bias_restricted(
+    #     self, walker: Sequence, ham_data: dict, wave_data: dict
+    # ) -> jax.Array:
+    #     nocc, norb = self.nelec[0], self.norb
+    #     rot_chol = ham_data["chol"].reshape(-1,norb,norb)[:,:nocc,:]
+    #     green = self._calc_green(walker, wave_data)
+    #     fb = 2.0 * oe.contract("gij,ij->g", rot_chol, green, backend="jax")
+    #     return fb
 
-    @partial(jit, static_argnums=0)
-    def _calc_energy_restricted(
-        self, 
-        walker: jax.Array, 
-        ham_data: dict, 
-        wave_data: dict
-        ):
-        nocc, norb = self.nelec[0], self.norb
-        h0 = ham_data["h0"]
-        rot_h1 = ham_data["h1"][0][:nocc,:]
-        rot_chol = ham_data["chol"].reshape(-1,norb,norb)[:,:nocc,:]
-        green = self._calc_green(walker, wave_data)
-        hg = oe.contract("pq,pq->", rot_h1, green, backend="jax")
-        e1 = 2 * hg
+    # @partial(jit, static_argnums=0)
+    # def _calc_energy_restricted(
+    #     self, 
+    #     walker: jax.Array, 
+    #     ham_data: dict, 
+    #     wave_data: dict
+    #     ):
+    #     nocc, norb = self.nelec[0], self.norb
+    #     h0 = ham_data["h0"]
+    #     rot_h1 = ham_data["h1"][0][:nocc,:]
+    #     rot_chol = ham_data["chol"].reshape(-1,norb,norb)[:,:nocc,:]
+    #     green = self._calc_green(walker, wave_data)
+    #     hg = oe.contract("pq,pq->", rot_h1, green, backend="jax")
+    #     e1 = 2 * hg
 
-        nchol = rot_chol.shape[0]
-        nchol_chunk = self.nchol_chunk
-        nchunks = -(-nchol // nchol_chunk)
-        pad = nchunks * nchol_chunk - nchol
-        rot_chol = jnp.pad(rot_chol, ((0, pad), (0, 0), (0, 0)))
-        rot_chol = rot_chol.reshape(nchunks, nchol_chunk, nocc, norb)
+    #     nchol = rot_chol.shape[0]
+    #     nchol_chunk = self.nchol_chunk
+    #     nchunks = -(-nchol // nchol_chunk)
+    #     pad = nchunks * nchol_chunk - nchol
+    #     rot_chol = jnp.pad(rot_chol, ((0, pad), (0, 0), (0, 0)))
+    #     rot_chol = rot_chol.reshape(nchunks, nchol_chunk, nocc, norb)
 
-        def scanned_fun(carry, x):
-            chol_c = x  # (nchol_chunk, nocc, norb)
-            lg_c = oe.contract("gpr,qr->gpq", chol_c, green, backend="jax")
-            tr_c = oe.contract("gpp->g", lg_c, backend="jax")
-            e2_1_c = 2 * jnp.sum(tr_c ** 2)
-            e2_2_c = -oe.contract("gpq,gqp->", lg_c, lg_c, backend="jax")
-            carry += e2_1_c + e2_2_c
-            return carry, 0.0
+    #     def scanned_fun(carry, x):
+    #         chol_c = x  # (nchol_chunk, nocc, norb)
+    #         lg_c = oe.contract("gpr,qr->gpq", chol_c, green, backend="jax")
+    #         tr_c = oe.contract("gpp->g", lg_c, backend="jax")
+    #         e2_1_c = 2 * jnp.sum(tr_c ** 2)
+    #         e2_2_c = -oe.contract("gpq,gqp->", lg_c, lg_c, backend="jax")
+    #         carry += e2_1_c + e2_2_c
+    #         return carry, 0.0
 
-        e2, _ = lax.scan(scanned_fun, 0.0, rot_chol)
+    #     e2, _ = lax.scan(scanned_fun, 0.0, rot_chol)
 
-        return h0 + e1 + e2
+    #     return h0 + e1 + e2
     
-    @partial(jit, static_argnums=0)
-    def _calc_ecorr(self, walker: jax.Array, ham_data: dict, wave_data: dict):
-        '''hf correlation energy'''
-        # <HF|H-E0|walker>/<HF|walker>
-        rot_h1 = ham_data['rot_h1']
-        nocc = rot_h1.shape[0]
-        rot_chol_ov = ham_data['rot_chol'][:, :nocc, nocc:]
-        green_ov = self._calc_green(walker, wave_data)[:nocc, nocc:]
+    # @partial(jit, static_argnums=0)
+    # def _calc_ecorr(self, walker: jax.Array, ham_data: dict, wave_data: dict):
+    #     '''hf correlation energy'''
+    #     # <HF|H-E0|walker>/<HF|walker>
+    #     rot_h1 = ham_data['rot_h1']
+    #     nocc = rot_h1.shape[0]
+    #     rot_chol_ov = ham_data['rot_chol'][:, :nocc, nocc:]
+    #     green_ov = self._calc_green(walker, wave_data)[:nocc, nocc:]
 
-        nchol = rot_chol_ov.shape[0]
-        nchol_chunk = self.nchol_chunk
-        nchunks = -(-nchol // nchol_chunk)
-        pad = nchunks * nchol_chunk - nchol
-        rot_chol_ov = jnp.pad(rot_chol_ov, ((0, pad), (0, 0), (0, 0)))
-        rot_chol_ov = rot_chol_ov.reshape(nchunks, nchol_chunk, nocc, -1)
+    #     nchol = rot_chol_ov.shape[0]
+    #     nchol_chunk = self.nchol_chunk
+    #     nchunks = -(-nchol // nchol_chunk)
+    #     pad = nchunks * nchol_chunk - nchol
+    #     rot_chol_ov = jnp.pad(rot_chol_ov, ((0, pad), (0, 0), (0, 0)))
+    #     rot_chol_ov = rot_chol_ov.reshape(nchunks, nchol_chunk, nocc, -1)
 
-        def scanned_fun(carry, x):
-            chol_c = x  # (nchol_chunk, nocc, nvir)
-            lg_c = oe.contract('gia,ja->gij', chol_c, green_ov, backend="jax")
-            trlg_c = oe.contract('gii->g', lg_c, backend="jax")
-            e1_c = oe.contract('g,g->', trlg_c, trlg_c, backend="jax") * 2
-            e2_c = oe.contract('gij,gji->', lg_c, lg_c, backend="jax")
-            carry += e1_c - e2_c
-            return carry, 0.0
+    #     def scanned_fun(carry, x):
+    #         chol_c = x  # (nchol_chunk, nocc, nvir)
+    #         lg_c = oe.contract('gia,ja->gij', chol_c, green_ov, backend="jax")
+    #         trlg_c = oe.contract('gii->g', lg_c, backend="jax")
+    #         e1_c = oe.contract('g,g->', trlg_c, trlg_c, backend="jax") * 2
+    #         e2_c = oe.contract('gij,gji->', lg_c, lg_c, backend="jax")
+    #         carry += e1_c - e2_c
+    #         return carry, 0.0
 
-        e_corr, _ = lax.scan(scanned_fun, 0.0, rot_chol_ov)
-        return jnp.real(e_corr)
+    #     e_corr, _ = lax.scan(scanned_fun, 0.0, rot_chol_ov)
+    #     return jnp.real(e_corr)
     
     @partial(jit, static_argnums=0)
     def _calc_eorb(self, walker: jax.Array, ham_data: dict, wave_data: dict):
@@ -319,17 +321,17 @@ class rhf(rwfn):
 
         return jnp.real(eorb)
 
-    @partial(jit, static_argnums=0)
-    def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
-        """Builds half rotated integrals for efficient force bias and energy calculations."""
+    # @partial(jit, static_argnums=0)
+    # def _build_measurement_intermediates(self, ham_data: dict, wave_data: dict) -> dict:
+    #     """Builds half rotated integrals for efficient force bias and energy calculations."""
 
-        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"][0]
-        ham_data["rot_chol"] = oe.contract(
-            "pi,gij->gpj",
-            wave_data["mo_coeff"].T.conj(),
-            ham_data["chol"].reshape(-1, self.norb, self.norb), 
-            backend="jax")
-        return ham_data
+    #     ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"][0]
+    #     ham_data["rot_chol"] = oe.contract(
+    #         "pi,gij->gpj",
+    #         wave_data["mo_coeff"].T.conj(),
+    #         ham_data["chol"].reshape(-1, self.norb, self.norb), 
+    #         backend="jax")
+    #     return ham_data
     
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
@@ -744,7 +746,14 @@ class pt2ccsd_ad(rhf):
         """Builds half rotated integrals for efficient force bias and energy calculations."""
         norb, nocc = self.norb, self.nelec[0]
         chol = ham_data["chol"].reshape(-1, norb, norb)
-        
+
+        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"][0]
+        ham_data["rot_chol"] = oe.contract(
+            "pi,gij->gpj",
+            wave_data["mo_coeff"].T.conj(),
+            ham_data["chol"].reshape(-1, self.norb, self.norb), 
+            backend="jax")
+
         # exp(T1^dagger) H exp(-T1^dagger)
         h1_bar = wave_data['exp_t1'] @ ham_data['h1'][0] @ wave_data['exp_mt1']
         ham_data['h1_bar'] = h1_bar
@@ -775,6 +784,7 @@ class pt2ccsd_ad(rhf):
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
 
+from afqmc import slater_tools
 
 @dataclass
 class pt2ccsd(rhf):
@@ -793,30 +803,37 @@ class pt2ccsd(rhf):
         nocc, norb = self.nelec[0], self.norb
         prjlo = wave_data['prjlo']
         e0 = ham_data['e0t1orb'] # <psi_0|H_bar|psi_0>
-        rot_fock_ov = ham_data['fock_bar'][:nocc,nocc:]
-        rot_chol_ov = ham_data['chol_bar'].reshape(-1,norb,norb)[:, :nocc, nocc:]
-        gf_ov = self._calc_green(walker, wave_data)[:nocc, nocc:]
+        # rot_fock_ov = ham_data['fock_bar'][:nocc,nocc:]
+        # rot_chol_ov = ham_data['chol_bar'].reshape(-1,norb,norb)[:, :nocc, nocc:]
+        # gf_ov = self._calc_green(walker, wave_data)[:nocc, nocc:]
 
-        e1 = oe.contract('ia,ia->', gf_ov, rot_fock_ov, backend="jax") * 2
+        # e1 = oe.contract('ia,ia->', gf_ov, rot_fock_ov, backend="jax") * 2
 
-        # Pad along the auxiliary axis so every chunk has the same size
-        nchol = rot_chol_ov.shape[0]
-        nchol_chunk = self.nchol_chunk
-        nchunks = -(-nchol // nchol_chunk)
-        pad = nchunks * nchol_chunk - nchol
-        rot_chol_ov = jnp.pad(rot_chol_ov, ((0, pad), (0, 0), (0, 0)))
-        rot_chol_ov = rot_chol_ov.reshape(nchunks, nchol_chunk, nocc, -1)
+        # # Pad along the auxiliary axis so every chunk has the same size
+        # nchol = rot_chol_ov.shape[0]
+        # nchol_chunk = self.nchol_chunk
+        # nchunks = -(-nchol // nchol_chunk)
+        # pad = nchunks * nchol_chunk - nchol
+        # rot_chol_ov = jnp.pad(rot_chol_ov, ((0, pad), (0, 0), (0, 0)))
+        # rot_chol_ov = rot_chol_ov.reshape(nchunks, nchol_chunk, nocc, -1)
 
-        def scanned_fun(carry, x):
-            chol_c = x  # (nchol_chunk, nocc, nvir)
-            lg_c = oe.contract('gia,ka->gik', chol_c, gf_ov, backend="jax")
-            e2_1_c = oe.contract('gik,ik,gjj->', lg_c, prjlo, lg_c, backend="jax") * 2
-            e2_2_c = oe.contract('gij,gjk,ik->', lg_c, lg_c, prjlo, backend="jax")
-            carry += e2_1_c - e2_2_c
-            return carry, 0.0
+        # def scanned_fun(carry, x):
+        #     chol_c = x  # (nchol_chunk, nocc, nvir)
+        #     lg_c = oe.contract('gia,ka->gik', chol_c, gf_ov, backend="jax")
+        #     e2_1_c = oe.contract('gik,ik,gjj->', lg_c, prjlo, lg_c, backend="jax") * 2
+        #     e2_2_c = oe.contract('gij,gjk,ik->', lg_c, lg_c, prjlo, backend="jax")
+        #     carry += e2_1_c - e2_2_c
+        #     return carry, 0.0
 
-        e2, _ = lax.scan(scanned_fun, 0.0, rot_chol_ov)
-        e_corr = e0 + e1 + e2
+        # e2, _ = lax.scan(scanned_fun, 0.0, rot_chol_ov)
+
+        e_corr12 = slater_tools.r_energy_corr_frag(
+            walker, walker, 
+            ham_data['fock_bar'], ham_data['chol_bar'], 
+            wave_data['prjlo'])
+
+        # e_corr = e0 + e1 + e2
+        e_corr = e0 + e_corr12
 
         return e_corr
 
@@ -991,18 +1008,27 @@ class pt2ccsd(rhf):
         norb, nocc = self.norb, self.nelec[0]
         chol = ham_data["chol"].reshape(-1, norb, norb)
 
+        ham_data["rot_h1"] = wave_data["mo_coeff"].T.conj() @ ham_data["h1"][0]
+        ham_data["rot_chol"] = oe.contract(
+            "pi,gij->gpj",
+            wave_data["mo_coeff"].T.conj(),
+            ham_data["chol"].reshape(-1, self.norb, self.norb), 
+            backend="jax")
+
         # exp(T1^dagger) H exp(-T1^dagger)
         h1_bar = wave_data['exp_t1'] @ ham_data['h1'][0] @ wave_data['exp_mt1']
         ham_data["h1_bar"] = h1_bar
-        chol_bar = jnp.einsum(
-            'pr,grs,sq->gpq', wave_data['exp_t1'], chol, wave_data['exp_mt1'])
+        chol_bar = oe.contract('pr,grs,sq->gpq', 
+                               wave_data['exp_t1'], chol, 
+                               wave_data['exp_mt1'], backend="jax")
         ham_data["chol_bar"] = chol_bar        
         # exp(T1^dagger) Fock exp(-T1^dagger)
         jeff = oe.contract('gpq,gjj->pq', chol_bar, chol_bar[:,:nocc,:nocc], backend="jax")
         keff = oe.contract('gpj,gjq->pq', chol_bar[:,:,:nocc],
                         chol_bar[:,:nocc,:], backend="jax")
         fock_bar = h1_bar + 2 * jeff - keff
-        ham_data['fock_bar'] = oe.contract('ip,ik->kp', fock_bar[:nocc, :], wave_data['prjlo'], backend="jax")
+        ham_data['fock_bar'] = fock_bar
+        # ham_data['fock_bar'] = oe.contract('ip,ik->kp', fock_bar[:nocc, :], wave_data['prjlo'], backend="jax")
         
         lt1 = oe.contract('ia,gja->gij', wave_data["t1"], chol[:, :nocc, nocc:], backend='jax')
         ham_data['e0t1orb'] = 2 * oe.contract('gik,ik,gjj->',lt1, wave_data['prjlo'], lt1, backend='jax') \

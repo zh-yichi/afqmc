@@ -118,120 +118,120 @@ class rwfn(ABC):
             "One-body spin RDM not found in wave_data and not implemented for this trial."
         )
 
-    def get_init_walkers(
-        self, wave_data: dict, n_walkers: int, restricted: bool = False
-    ) -> Union[Sequence, jax.Array]:
-        """Get the initial walkers. Uses the rdm1 natural orbitals.
+    # def get_init_walkers(
+    #     self, wave_data: dict, n_walkers: int, restricted: bool = False
+    # ) -> Union[Sequence, jax.Array]:
+    #     """Get the initial walkers. Uses the rdm1 natural orbitals.
 
-        Args:
-            wave_data: The trial wave function data.
-            n_walkers: The number of walkers.
-            restricted: Whether the walkers should be restricted.
+    #     Args:
+    #         wave_data: The trial wave function data.
+    #         n_walkers: The number of walkers.
+    #         restricted: Whether the walkers should be restricted.
 
-        Returns:
-            walkers: The initial walkers.
-                If restricted, a single jax.Array of shape (nwalkers, norb, nelec[0]).
-                If unrestricted, a list of two jax.Arrays each of shape (nwalkers, norb, nelec[sigma]).
-        """
-        rdm1 = self.get_rdm1(wave_data)
-        natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
-        natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
-        if restricted:
-            if self.nelec[0] == self.nelec[1]:
-                det_overlap = np.linalg.det(
-                    natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
-                )
-                if (
-                    np.abs(det_overlap) > 1e-3
-                ):  # probably should scale this threshold with number of electrons
-                    return jnp.array([natorbs_up + 0.0j] * n_walkers)
-                else:
-                    overlaps = np.array(
-                        [
-                            natorbs_up[:, i].T @ natorbs_dn[:, i]
-                            for i in range(self.nelec[0])
-                        ]
-                    )
-                    new_vecs = natorbs_up[:, : self.nelec[0]] + np.einsum(
-                        "ij,j->ij", natorbs_dn[:, : self.nelec[1]], np.sign(overlaps)
-                    )
-                    new_vecs = np.linalg.qr(new_vecs)[0]
-                    det_overlap = np.linalg.det(
-                        new_vecs.T @ natorbs_up[:, : self.nelec[0]]
-                    ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
-                    if np.abs(det_overlap) > 1e-3:
-                        return jnp.array([new_vecs + 0.0j] * n_walkers)
-                    else:
-                        raise ValueError(
-                            "Cannot find a set of RHF orbitals with good trial overlap."
-                        )
-            else:
-                # bring the dn orbital projection onto up space to the front
-                dn_proj = natorbs_up.T.conj() @ natorbs_dn
-                proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
-                orbs = natorbs_up @ proj_orbs
-                return jnp.array([orbs + 0.0j] * n_walkers)
-        else:
-            return [
-                jnp.array([natorbs_up + 0.0j] * n_walkers),
-                jnp.array([natorbs_dn + 0.0j] * n_walkers),
-            ]
+    #     Returns:
+    #         walkers: The initial walkers.
+    #             If restricted, a single jax.Array of shape (nwalkers, norb, nelec[0]).
+    #             If unrestricted, a list of two jax.Arrays each of shape (nwalkers, norb, nelec[sigma]).
+    #     """
+    #     rdm1 = self.get_rdm1(wave_data)
+    #     natorbs_up = jnp.linalg.eigh(rdm1[0])[1][:, ::-1][:, : self.nelec[0]]
+    #     natorbs_dn = jnp.linalg.eigh(rdm1[1])[1][:, ::-1][:, : self.nelec[1]]
+    #     if restricted:
+    #         if self.nelec[0] == self.nelec[1]:
+    #             det_overlap = np.linalg.det(
+    #                 natorbs_up[:, : self.nelec[0]].T @ natorbs_dn[:, : self.nelec[1]]
+    #             )
+    #             if (
+    #                 np.abs(det_overlap) > 1e-3
+    #             ):  # probably should scale this threshold with number of electrons
+    #                 return jnp.array([natorbs_up + 0.0j] * n_walkers)
+    #             else:
+    #                 overlaps = np.array(
+    #                     [
+    #                         natorbs_up[:, i].T @ natorbs_dn[:, i]
+    #                         for i in range(self.nelec[0])
+    #                     ]
+    #                 )
+    #                 new_vecs = natorbs_up[:, : self.nelec[0]] + np.einsum(
+    #                     "ij,j->ij", natorbs_dn[:, : self.nelec[1]], np.sign(overlaps)
+    #                 )
+    #                 new_vecs = np.linalg.qr(new_vecs)[0]
+    #                 det_overlap = np.linalg.det(
+    #                     new_vecs.T @ natorbs_up[:, : self.nelec[0]]
+    #                 ) * np.linalg.det(new_vecs.T @ natorbs_dn[:, : self.nelec[1]])
+    #                 if np.abs(det_overlap) > 1e-3:
+    #                     return jnp.array([new_vecs + 0.0j] * n_walkers)
+    #                 else:
+    #                     raise ValueError(
+    #                         "Cannot find a set of RHF orbitals with good trial overlap."
+    #                     )
+    #         else:
+    #             # bring the dn orbital projection onto up space to the front
+    #             dn_proj = natorbs_up.T.conj() @ natorbs_dn
+    #             proj_orbs = jnp.linalg.qr(dn_proj, mode="complete")[0]
+    #             orbs = natorbs_up @ proj_orbs
+    #             return jnp.array([orbs + 0.0j] * n_walkers)
+    #     else:
+    #         return [
+    #             jnp.array([natorbs_up + 0.0j] * n_walkers),
+    #             jnp.array([natorbs_dn + 0.0j] * n_walkers),
+    #         ]
         
-    def decompose_t2(self, t2, thresh: float = 1e-8):
-        # adapted from Yann
+    # def decompose_t2(self, t2, thresh: float = 1e-8):
+    #     # adapted from Yann
 
-        nO = self.nelec[0]
-        nV = self.norb - nO
-        nex = nO * nV
+    #     nO = self.nelec[0]
+    #     nV = self.norb - nO
+    #     nex = nO * nV
 
-        assert t2.shape == (nO, nV, nO, nV)
+    #     assert t2.shape == (nO, nV, nO, nV)
         
-        t2 = t2.reshape(nex, nex)
-        e_val, e_vec = jnp.linalg.eigh(t2)
+    #     t2 = t2.reshape(nex, nex)
+    #     e_val, e_vec = jnp.linalg.eigh(t2)
 
-        # Keep only important modes
-        mask = jnp.abs(e_val) > thresh
-        e_val_trunc = e_val[mask]
-        e_vec_trunc = e_vec[:, mask]
+    #     # Keep only important modes
+    #     mask = jnp.abs(e_val) > thresh
+    #     e_val_trunc = e_val[mask]
+    #     e_vec_trunc = e_vec[:, mask]
 
-        L = e_vec_trunc @ jnp.diag(jnp.sqrt(e_val_trunc + 0.0j))
+    #     L = e_vec_trunc @ jnp.diag(jnp.sqrt(e_val_trunc + 0.0j))
         
-        err = jnp.linalg.norm(t2 - L @ L.T)
-        print(f'# Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
-        print(f'# cutoff = {thresh:.2e} | error = {err:.2e}')
-        print(f'# number of T2 decomposition vectors {len(e_val_trunc)}')
+    #     err = jnp.linalg.norm(t2 - L @ L.T)
+    #     print(f'# Throw {len(e_val)-len(e_val_trunc)} vectors in T2 deomposition')
+    #     print(f'# cutoff = {thresh:.2e} | error = {err:.2e}')
+    #     print(f'# number of T2 decomposition vectors {len(e_val_trunc)}')
 
-        # L = e_vec @ jnp.diag(jnp.sqrt(e_val + 0.0j))
-        # assert jnp.abs(jnp.linalg.norm(t2 - L @ L.T)) < 1e-12
+    #     # L = e_vec @ jnp.diag(jnp.sqrt(e_val + 0.0j))
+    #     # assert jnp.abs(jnp.linalg.norm(t2 - L @ L.T)) < 1e-12
 
-        # Summation on the left
-        L = L.T.reshape(-1, nO, nV)
-        # t2_rec = jnp.einsum('gia,gjb->iajb', L, L)
-        # assert jnp.abs(wave_data['t2'] - t2_rec).max() < 1e-12
+    #     # Summation on the left
+    #     L = L.T.reshape(-1, nO, nV)
+    #     # t2_rec = jnp.einsum('gia,gjb->iajb', L, L)
+    #     # assert jnp.abs(wave_data['t2'] - t2_rec).max() < 1e-12
 
-        return L
+    #     return L
     
-    @partial(jit, static_argnums=0)
-    def _thouless(self, init_slater, t):
-        # calculate |psi'> = exp(t_ia a+ i)|psi>
-        norb, nocc = self.norb, self.nelec[0]
-        nvir = norb - nocc
-        assert t.shape == (nocc, nvir)
-        t_full = jnp.eye(norb, dtype=jnp.complex128)
-        exp_t = t_full.at[:nocc, nocc:].set(t)
-        # exp_tau = jsp.linalg.expm(t_full)
-        return exp_t.T @ init_slater
+    # @partial(jit, static_argnums=0)
+    # def _thouless(self, init_slater, t):
+    #     # calculate |psi'> = exp(t_ia a+ i)|psi>
+    #     norb, nocc = self.norb, self.nelec[0]
+    #     nvir = norb - nocc
+    #     assert t.shape == (nocc, nvir)
+    #     t_full = jnp.eye(norb, dtype=jnp.complex128)
+    #     exp_t = t_full.at[:nocc, nocc:].set(t)
+    #     # exp_tau = jsp.linalg.expm(t_full)
+    #     return exp_t.T @ init_slater
     
-    @partial(jit, static_argnums=0)
-    def _thouless_full(self, init_slater, t):
-        # calculate |psi'> = exp(t_pq p+ q)|psi>
-        from jax import scipy as jsp
-        norb, nocc = self.norb, self.nelec[0]
-        assert t.shape == (norb, norb)
-        t_full = jnp.zeros((norb, norb), dtype=jnp.complex128)
-        t_full = t_full.at[:nocc, nocc:].set(t)
-        exp_t = jsp.linalg.expm(t_full)
-        return exp_t.T @ init_slater
+    # @partial(jit, static_argnums=0)
+    # def _thouless_full(self, init_slater, t):
+    #     # calculate |psi'> = exp(t_pq p+ q)|psi>
+    #     from jax import scipy as jsp
+    #     norb, nocc = self.norb, self.nelec[0]
+    #     assert t.shape == (norb, norb)
+    #     t_full = jnp.zeros((norb, norb), dtype=jnp.complex128)
+    #     t_full = t_full.at[:nocc, nocc:].set(t)
+    #     exp_t = jsp.linalg.expm(t_full)
+    #     return exp_t.T @ init_slater
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))

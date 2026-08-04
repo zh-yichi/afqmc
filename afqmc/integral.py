@@ -166,6 +166,13 @@ def h1e_uas(mf, mo_coeff, ncas, ncore, useDF=False):
     return h1eff, energy_core
 
 @partial(jit, static_argnums=0)
+def get_rfock(nocc, h1, chol):
+    jeff = oe.contract('gpq,gjj->pq', chol, chol[:,:nocc,:nocc], backend="jax")
+    keff = oe.contract('gpj,gjq->pq', chol[:,:,:nocc], chol[:,:nocc,:], backend="jax")
+    fock = h1 + 2 * jeff - keff
+    return fock
+
+@partial(jit, static_argnums=0)
 def get_ufock(nocc, h1, chol):
     nocca, noccb = nocc
     h1a, h1b = h1
@@ -220,34 +227,6 @@ def common_as(mf, mo_coeff, ncas, ncore, torr=1e-10):
 
     return cas_coeff, a2c, b2c
 
-# def save_cc_amplitude(cc, t1, t2, amp_file):
-
-#     if isinstance(cc, UCCSD):
-#         # spin_type = 'unrestricted'
-#         t1a = np.array(cc.t1[0])
-#         t1b = np.array(cc.t1[1])
-#         t2aa, t2ab, t2bb = cc.t2
-#         t2aa = (t2aa - t2aa.transpose(0, 1, 3, 2)) / 2
-#         t2bb = (t2bb - t2bb.transpose(0, 1, 3, 2)) / 2
-#         t2aa = t2aa.transpose(0, 2, 1, 3)
-#         t2bb = t2bb.transpose(0, 2, 1, 3)
-#         t2ab = t2ab.transpose(0, 2, 1, 3)
-#         np.savez(
-#             amp_file,
-#             t1a=t1a,
-#             t1b=t1b,
-#             t2aa=t2aa,
-#             t2ab=t2ab,
-#             t2bb=t2bb,
-#         )
-#     elif isinstance(cc, CCSD):
-#         # spin_type = 'restricted'
-#         t2 = cc.t2
-#         t2 = t2.transpose(0, 2, 1, 3)
-#         t1 = np.array(cc.t1)
-#         np.savez(amp_file, t1=t1, t2=t2)
-
-#     return None
 
 def save_cc_amplitude(cc=None, t1=None, t2=None, amp_file=None):
     if t1 is None:
