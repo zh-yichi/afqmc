@@ -270,10 +270,10 @@ def run_afqmc(mf,
         print(f"PySCF NumPy Threads = {lib.num_threads()}")
 
         orbloc, lno_param = get_lnoparam(lo_coeff, lno_thresh, lno_pct_occ, lno_norb, loidx, ifrag, spin_type)
-        lno_coeff, can_coeff, lno_frozen, uocc_loc, can_loc, _ \
-            = tools.make_las(mlno, eris, orbloc, lno_type, lno_param)
-        # lno_coeff, lno_frozen, uocc_loc, _ \
-        #             = mlno.make_las(eris, orbloc, lno_type, lno_param)
+        # lno_coeff, can_coeff, lno_frozen, uocc_loc, can_loc, _ \
+        #     = tools.make_las(mlno, eris, orbloc, lno_type, lno_param) # this is in the order of activity
+        lno_coeff, lno_frozen, uocc_loc, _ \
+                    = mlno.make_las(eris, orbloc, lno_type, lno_param)
 
         maskact, lno_active, nactocc, nactvir, lno_tot = \
             get_las(mlno, orbloc, uocc_loc, lno_frozen, spin_type, loc_ctr)
@@ -285,8 +285,8 @@ def run_afqmc(mf,
         time0 = time.perf_counter()
         eorb_cc, t1, t2 = \
             lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=4)
-        # eorb_mp2 = lnomp2_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=4)
-        eorb_mp2 = lnomp2_kernel(mlno, can_coeff, lno_frozen, can_loc, maskact, verbose=4)
+        eorb_mp2 = lnomp2_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=4)
+        # eorb_mp2 = lnomp2_kernel(mlno, can_coeff, lno_frozen, can_loc, maskact, verbose=4)
         lnocc_time = time.perf_counter() - time0
 
         print(f'LNO-MP2 Orbital Energy:  {eorb_mp2:.8f}')
