@@ -1,15 +1,16 @@
-from abc import ABC
+# from abc import ABC
 from dataclasses import dataclass
 from functools import partial
-from typing import  Sequence, Tuple, Union
+# from typing import  Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
-import numpy as np
+# import numpy as np
 from jax import jit, jvp, lax, vmap
 import opt_einsum as oe
 
 from afqmc.wavefunctions.wavefunctions_restricted import rhf as rwfn
+from afqmc import integral
 
 
 # class rwfn(ABC):
@@ -1016,25 +1017,26 @@ class pt2ccsd(rhf):
             backend="jax")
 
         # exp(T1^dagger) H exp(-T1^dagger)
-        h1_bar = wave_data['exp_t1'] @ ham_data['h1'][0] @ wave_data['exp_mt1']
-        ham_data["h1_bar"] = h1_bar
-        chol_bar = oe.contract('pr,grs,sq->gpq', 
+        ham_data["h1_bar"] = wave_data['exp_t1'] @ ham_data['h1'][0] @ wave_data['exp_mt1']
+        # ham_data["h1_bar"] = h1_bar
+        ham_data["chol_bar"] = oe.contract('pr,grs,sq->gpq', 
                                wave_data['exp_t1'], chol, 
                                wave_data['exp_mt1'], backend="jax")
-        ham_data["chol_bar"] = chol_bar        
+        # ham_data["chol_bar"] = chol_bar
         # exp(T1^dagger) Fock exp(-T1^dagger)
-        jeff = oe.contract('gpq,gjj->pq', chol_bar, chol_bar[:,:nocc,:nocc], backend="jax")
-        keff = oe.contract('gpj,gjq->pq', chol_bar[:,:,:nocc],
-                        chol_bar[:,:nocc,:], backend="jax")
-        fock_bar = h1_bar + 2 * jeff - keff
-        ham_data['fock_bar'] = fock_bar
+        # jeff = oe.contract('gpq,gjj->pq', chol_bar, chol_bar[:,:nocc,:nocc], backend="jax")
+        # keff = oe.contract('gpj,gjq->pq', chol_bar[:,:,:nocc],
+        #                 chol_bar[:,:nocc,:], backend="jax")
+        # fock_bar = h1_bar + 2 * jeff - keff
+        # ham_data['fock_bar'] = fock_bar
+        ham_data['fock_bar'] = integral.get_rfock(nocc, ham_data["h1_bar"], ham_data["chol_bar"])
         # ham_data['fock_bar'] = oe.contract('ip,ik->kp', fock_bar[:nocc, :], wave_data['prjlo'], backend="jax")
         
         lt1 = oe.contract('ia,gja->gij', wave_data["t1"], chol[:, :nocc, nocc:], backend='jax')
         ham_data['e0t1orb'] = 2 * oe.contract('gik,ik,gjj->',lt1, wave_data['prjlo'], lt1, backend='jax') \
                     - oe.contract('gij,gjk,ik->',lt1, lt1, wave_data['prjlo'], backend='jax')
         
-        del h1_bar, chol_bar, chol, jeff, keff, fock_bar, lt1
+        del chol, lt1
         
         return ham_data
 

@@ -219,6 +219,7 @@ def run_afqmc(mf,
 
     mlno = get_lnoccsd(mf, lo_coeff, frag_lolist, nfrozen, thresh, spin_type)
     lno_thresh = mlno.lno_thresh
+    print(f"LNO THRESHOLD = {lno_thresh}")
     lno_type = ['1h','1h']
     eris = mlno.ao2mo()
 

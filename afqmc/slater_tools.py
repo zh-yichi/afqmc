@@ -226,6 +226,7 @@ def r_rot_energy(
 
     return energy
 
+@jit
 def r_energy_corr_frag(bra, ket, fock, chol, pfrag):
     '''
     calculate the fragment correlation energy
@@ -609,6 +610,7 @@ def u_energy_ad(bra, ket, h0, h1mod, chol):
     return h0 + e1 + e2
 
 # multislater bra implementation
+@jit
 def rms_overlap(bras, ket):
 
     def scan_slaters(carry, bra):
@@ -622,6 +624,7 @@ def rms_overlap(bras, ket):
 
     return olp
 
+@jit
 def rms_force_bias(bras, ket, chol):
 
     def scan_slaters(carry, bra):
@@ -637,6 +640,7 @@ def rms_force_bias(bras, ket, chol):
 
     return fb
 
+@jit
 def rms_rot_force_bias(bras, ket, rot_chol):
 
     def scan_slaters(carry, bra):
@@ -652,6 +656,7 @@ def rms_rot_force_bias(bras, ket, rot_chol):
 
     return fb
 
+@jit
 def rms_energy(bras, ket, h0, h1, chol):
 
     def scan_slaters(carry, bra):
@@ -667,6 +672,7 @@ def rms_energy(bras, ket, h0, h1, chol):
 
     return energy
 
+@jit
 def rms_rot_energy(bras, ket, h0, rot_h1, rot_chol):
 
     def scan_slaters(carry, bra):
