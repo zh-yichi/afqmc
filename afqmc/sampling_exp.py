@@ -259,7 +259,6 @@ class sampler:
     n_prop_steps: int
     n_blocks: int
     n_chol: int
-    n_slater: int
 
     @partial(jit, static_argnums=(0, 1, 2))
     def prop_nstep(self, prop, wave, prop_data, ham_data, wave_data):
@@ -291,44 +290,45 @@ class sampler:
         return prop_data
 
 
-    @partial(jit, static_argnums=(0, 3, 4))
+    @partial(jit, static_argnums=(0,1,2))
     def block_sample(
         self,
+        prop,
+        wave,
         prop_data,
         ham_data,
-        prop,
-        trial,
         wave_data,
         ):
         """Block scan function. Propagation and energy calculation."""
+        prop_data, wave_data = self.prop_nstep(prop, wave, prop_data, ham_data, wave_data)
+        
+        guide_olps = wave.calc_overlap(prop_data["walkers"], wave_data)
+        guide_enes = wave.calc_guide_energy(prop_data["walkers"], ham_data, wave_data)
 
-        prop_data = self.prop_nstep(prop, trial, prop_data, ham_data, wave_data)
+        outlier = jnp.abs(guide_enes - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
+        weights = jnp.where(outlier, 0.0, prop_data["weights"])
 
-        energies = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
-        outlier = jnp.abs(energies - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
-                
-        wts = prop_data["weights"]
+        trial_olps = wave.calc_trial_overlap(prop_data["walkers"], wave_data)
+        trial_enes = wave.calc_energy(prop_data["walkers"], ham_data, wave_data)
 
-        wt, en, err = weighted_average(wts, energies)
-        # wt = jnp.sum(wts)
-        # en = jnp.sum(wts * energies) / wt
-        # err = 0
+        prop_data["overlaps"] = guide_olps
+
+        olp_ratio = trial_olps / guide_olps
+        weighps = weights * olp_ratio
+
+        wp, sample_mean, sample_err = weighted_average(weighps, trial_enes)
 
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
-        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
-        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * en
-        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
-        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+        prop_data["overlaps"] = wave.calc_overlap(prop_data["walkers"], wave_data)
 
-        return prop_data, (wt, en, err)
+        return prop_data, (wp, sample_mean)
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
 
 @dataclass
-class stocc_sampler:
+class stocc_sampler(sampler):
     n_walkers: int
     n_prop_steps: int
     n_blocks: int
@@ -354,6 +354,7 @@ class stocc_sampler:
 
         def scan_fn(carry, field):
             prop_data, wave_data = carry
+            # update stocc every step
             slaters, prop_data["key"] = cc_tools.get_stoccsd(mo_t, tau, nslater, prop_data["key"])
             wave_data = {**wave_data, "slaters": slaters}
             prop_data = prop.propagate(wave, ham_data, prop_data, field, wave_data)
@@ -361,92 +362,47 @@ class stocc_sampler:
 
         (prop_data, wave_data), _ = lax.scan(scan_fn, (prop_data, wave_data), fields)
 
-        prop_data["n_killed_walkers"] = (
-                prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
-            )
+        prop_data["n_killed_walkers"] \
+            = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
 
         prop_data = prop.orthonormalize_walkers(prop_data)
 
         return prop_data, wave_data
 
-    @partial(jit, static_argnums=(0,1,2))
-    def sample_energy(
-        self,
-        prop,
-        wave,
-        prop_data,
-        ham_data,
-        wave_data,
-        ):
-        """Block scan function. Propagation and energy calculation."""
-        prop_data = self.prop_nstep(prop, wave, prop_data, ham_data, wave_data)
+    # @partial(jit, static_argnums=(0,1,2))
+    # def block_sample(
+    #     self,
+    #     prop,
+    #     wave,
+    #     prop_data,
+    #     ham_data,
+    #     wave_data,
+    #     ):
+    #     """Block scan function. Propagation and energy calculation."""
+    #     prop_data, wave_data = self.prop_nstep(prop, wave, prop_data, ham_data, wave_data)
         
-        guide_olps = wave.calc_overlap(prop_data["walkers"], wave_data)
-        trial_olps = wave.calc_trial_overlap(prop_data["walkers"], wave_data)
-        prop_data["overlaps"] = guide_olps
+    #     guide_olps = wave.calc_overlap(prop_data["walkers"], wave_data)
+    #     guide_enes = wave.calc_guide_energy(prop_data["walkers"], ham_data, wave_data)
 
-        olp_ratio = trial_olps / guide_olps
-        wps = prop_data["weights"] * olp_ratio
-        samples = wave.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        wp_mean, sample_mean, sample_err = weighted_average(wps, samples)
-        tot_wp = jnp.sum(wps)
+    #     outlier = jnp.abs(guide_enes - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
+    #     weights = jnp.where(outlier, 0.0, prop_data["weights"])
 
-        # outlier = jnp.abs(energies - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        # weights = jnp.where(outlier, 0.0, prop_data["weights"])
+    #     trial_olps = wave.calc_trial_overlap(prop_data["walkers"], wave_data)
+    #     trial_enes = wave.calc_energy(prop_data["walkers"], ham_data, wave_data)
 
-        # blk_wt = jnp.sum(weights)
-        # blk_wt = jnp.sum(weights)
-        # blk_et = jnp.sum(weights * energies) / blk_wp
+    #     prop_data["overlaps"] = guide_olps
 
-        # prop_data["pop_control_ene_shift"] = 0.9 * prop_data["pop_control_ene_shift"] + 0.1 * blk_eg
-        prop_data = prop.stochastic_reconfiguration_local(prop_data)
-        prop_data["overlaps"] = wave.calc_overlap(prop_data["walkers"], wave_data)
+    #     olp_ratio = trial_olps / guide_olps
+    #     weighps = weights * olp_ratio
 
-        return prop_data, (tot_wp, sample_mean)
+    #     wp, sample_mean, sample_err = weighted_average(weighps, trial_enes)
+
+    #     prop_data = prop.stochastic_reconfiguration_local(prop_data)
+    #     prop_data["overlaps"] = wave.calc_overlap(prop_data["walkers"], wave_data)
+
+    #     return prop_data, (wp, sample_mean)
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
-
-@dataclass
-class sampler_exp(sampler):
-    """An experimental energy sampler for general Guide/Trial combination"""
-
-    @partial(jit, static_argnums=(0,1,2))
-    def sample_energy(
-        self,
-        prop,
-        wave,
-        prop_data,
-        ham_data,
-        wave_data,
-        ):
-        """Block scan function. Propagation and energy calculation."""
-        prop_data = self.prop_nstep(prop, wave, prop_data, ham_data, wave_data)
-        
-        guide_olps = wave.calc_overlap(prop_data["walkers"], wave_data)
-        trial_olps = wave.calc_trial_overlap(prop_data["walkers"], wave_data)
-        prop_data["overlaps"] = guide_olps
-
-        olp_ratio = trial_olps / guide_olps
-        wps = prop_data["weights"] * olp_ratio
-        samples = wave.calc_energy(prop_data["walkers"], ham_data, wave_data)
-        wp_mean, sample_mean, sample_err = weighted_average(wps, samples)
-        tot_wp = jnp.sum(wps)
-
-        # outlier = jnp.abs(energies - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
-        # weights = jnp.where(outlier, 0.0, prop_data["weights"])
-
-        # blk_wt = jnp.sum(weights)
-        # blk_wt = jnp.sum(weights)
-        # blk_et = jnp.sum(weights * energies) / blk_wp
-
-        # prop_data["pop_control_ene_shift"] = 0.9 * prop_data["pop_control_ene_shift"] + 0.1 * blk_eg
-        prop_data = prop.stochastic_reconfiguration_local(prop_data)
-        prop_data["overlaps"] = wave.calc_overlap(prop_data["walkers"], wave_data)
-
-        return prop_data, (tot_wp, sample_mean)
-    
-    def __hash__(self) -> int:
-        return hash(tuple(self.__dict__.values()))
 

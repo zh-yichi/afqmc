@@ -694,183 +694,171 @@ def init_afqmc(options=None,
     return ham_data, ham, prop, trial, wave_data, sampler, options
 
 
-def init_afqmc_exp(
-        options=None,
-        option_file="options.bin",
-        amp_file="amplitudes.npz",
-        chol_file="FCIDUMP_chol"
-        ):
-    from .wavefunctions import (wfn_exp, 
-                                rhf_wfn, uhf_wfn, 
-                                rms_wfn, ums_wfn, 
-                                rcisd_wfn, ucisd_wfn, 
-                                rpt2ccsd_wfn, upt2ccsd_wfn,
-                                rstoccsd_wfn, ustoccsd_wfn)
+# def init_afqmc_exp(
+#         options=None,
+#         option_file="options.bin",
+#         amp_file="amplitudes.npz",
+#         chol_file="FCIDUMP_chol"
+#         ):
+#     from .wavefunctions import (wfn_exp, 
+#                                 rhf_wfn, uhf_wfn, 
+#                                 rms_wfn, ums_wfn, 
+#                                 rcisd_wfn, ucisd_wfn, 
+#                                 rpt2ccsd_wfn, upt2ccsd_wfn,
+#                                 rstoccsd_wfn, ustoccsd_wfn)
     
-    options = get_qmc_options(options, option_file)
+#     options = get_qmc_options(options, option_file)
 
-    h0, h1, chol, ms, nelec_sp, norb, spin_type = load_chol(chol_file)
+#     h0, h1, chol, ms, nelec_sp, norb, spin_type = load_chol(chol_file)
 
-    # print("\nLoad system from Integral File")
+#     ms, nelec, norb = int(ms), int(nelec), int(norb)
+#     nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
 
-    # with h5py.File(chol_file, "r") as fh5:
-    #     [nelec, norb, ms] = fh5["header"]
-    #     spin_type = fh5["spin_type"][()]
-    #     h0 = jnp.array(fh5.get("energy_core"))
-    #     h1 = jnp.array(fh5.get("hcore"))
-    #     chol = jnp.array(fh5.get("chol"))
+#     # ham = hamiltonian.hamiltonian(norb)
+#     ham_data = {}
+#     ham_data["h0"] = h0
+
+#     if spin_type == 'restricted':
+#         ham_data["h1"] = (jnp.array(h1), jnp.array(h1))
+#         nchol = chol.shape[0]
+#         ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
+#     elif spin_type == 'unrestricted':
+#         ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2, 
+#                           jnp.array(h1[1] + h1[0].T) / 2)
+#         nchol = chol[0].shape[0]
+#         ham_data["chol"] = (jnp.array(chol[0].reshape(chol[0].shape[0], -1)),
+#                             jnp.array(chol[1].reshape(chol[1].shape[0], -1)))
+
+#     options["nchol_chunk"] = cholesky.chunk_chol(
+#         chol, options["nchol_chunk"], options["max_memory"]/options["n_walkers"])
+
+#     print("\nQMC System")
+#     print(f"Number of electrons: {nelec_sp}")
+#     print(f"Spin Multiplicity:   {ms}")
+#     print(f"Number of orbitals:  {norb}")
+#     print(f"Number of Chol:      {nchol}")
+
+#     print("\nQMC Parameters")
+#     for op in options:
+#         if options[op] is not None:
+#             print(f"{str(op):<15s} - {str(options[op]):>10s}")
+
+#     wave_data = {}
+#     if "ci" in options["trial"] or "ci" in options["guide"]:
+#         wave_data = load_ci_amplitude(wave_data, amp_file)
+#     if "cc" in options["trial"] or "cc" in options["guide"]:
+#         wave_data = load_cc_amplitude(wave_data, amp_file)
+
+#     if spin_type == "restricted":
+#         wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec_sp[0]]
+#         wave_data["rdm1"] = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
+#         # guide
+#         if options["guide"] == "rhf":
+#             guide_overlap_fn = rhf_wfn.overlap
+#             guide_force_bias_fn = rhf_wfn.rot_force_bias
+#             guide_energy_fn = rhf_wfn.rot_energy
+#         if options["guide"] == "rcisd":
+#             guide_overlap_fn = rcisd_wfn.overlap
+#             guide_force_bias_fn = rcisd_wfn.force_bias
+#             guide_energy_fn = rcisd_wfn.rot_energy
+#         if options["guide"] == "rstoccsd":
+#             guide_overlap_fn = rstoccsd_wfn.overlap
+#             guide_force_bias_fn = rstoccsd_wfn.force_bias
+#             guide_energy_fn = rstoccsd_wfn.rot_energy
+
+#         # trial
+#         if options["trial"] == "rhf":
+#             trial_overlap_fn = rhf_wfn.overlap
+#             trial_energy_fn = rhf_wfn.rot_energy
+#             trial_intermediate_fn = rhf_wfn.build_intermediate
+#             energy_formula_fn = rhf_wfn.energy_formula
+#         elif options["trial"] == "rcisd":
+#             trial_overlap_fn = rcisd_wfn.overlap
+#             trial_energy_fn = rcisd_wfn.energy
+#             trial_intermediate_fn = rcisd_wfn.build_intermediate
+#             energy_formula_fn = rcisd_wfn.energy_formula
+#         elif options["trial"] == "rpt2ccsd":
+#             trial_overlap_fn = rpt2ccsd_wfn.overlap
+#             trial_energy_fn = rpt2ccsd_wfn.energy
+#             trial_intermediate_fn = rpt2ccsd_wfn.build_intermediate
+#             energy_formula_fn = rpt2ccsd_wfn.energy_formula
+#         elif options["trial"] == "rstoccsd":
+#             trial_overlap_fn = rstoccsd_wfn.overlap
+#             trial_energy_fn = rstoccsd_wfn.energy
+#             trial_intermediate_fn = rstoccsd_wfn.build_intermediate
+#             energy_formula_fn = rstoccsd_wfn.energy_formula
+
+#     elif spin_type == "unrestricted":
+#         nocc_a, nocc_b = nelec_sp
+#         wave_data["mo_coeff"] = (jnp.eye(norb)[:,:nocc_a],
+#                                  jnp.eye(norb)[:,:nocc_b])
+#         wave_data["rdm1"] = (jnp.array([wave_data["mo_coeff"][0] @ wave_data["mo_coeff"][0].T]),
+#                              jnp.array([wave_data["mo_coeff"][1] @ wave_data["mo_coeff"][1].T]))
+#         # guide
+#         if options["guide"] == "uhf":
+#             guide_overlap_fn = uhf_wfn.overlap
+#             guide_force_bias_fn = uhf_wfn.force_bias
+#         if options["guide"] == "ucisd":
+#             guide_overlap_fn = ucisd_wfn.overlap
+#             guide_force_bias_fn = ucisd_wfn.force_bias
+
+#         # trial
+#         if options["trial"] == "uhf":
+#             trial_overlap_fn = uhf_wfn.overlap
+#             trial_energy_fn = uhf_wfn.rot_energy
+#             trial_intermediate_fn = uhf_wfn.build_intermediate
+#             energy_formula_fn = uhf_wfn.energy_formula
+#         elif options["trial"] == "ucisd":
+#             trial_overlap_fn = ucisd_wfn.overlap
+#             trial_energy_fn = ucisd_wfn.energy
+#             trial_intermediate_fn = ucisd_wfn.build_intermediate
+#             energy_formula_fn = ucisd_wfn.energy_formula
+#         elif options["trial"] == "upt2ccsd":
+#             trial_overlap_fn = upt2ccsd_wfn.overlap
+#             trial_energy_fn = upt2ccsd_wfn.energy
+#             trial_intermediate_fn = upt2ccsd_wfn.build_intermediate
+#             energy_formula_fn = upt2ccsd_wfn.energy_formula
+#         elif options["trial"] == "upt2ccsd_bar":
+#             trial_overlap_fn = upt2ccsd_wfn.overlap_bar
+#             trial_energy_fn = upt2ccsd_wfn.energy_bar
+#             trial_intermediate_fn = upt2ccsd_wfn.build_intermediate_bar
+#             energy_formula_fn = upt2ccsd_wfn.energy_formula
+
+#     wave = wfn_exp.wfn(
+#         guide_overlap_fn=guide_overlap_fn,
+#         guide_force_bias_fn=guide_force_bias_fn,
+#         guide_energy_fn=guide_energy_fn,
+#         trial_overlap_fn=trial_overlap_fn,
+#         trial_energy_fn=trial_energy_fn,
+#         energy_formula_fn=energy_formula_fn,
+#         intermediate_fn=trial_intermediate_fn,
+#         nelec=nelec_sp,
+#         norb=norb,
+#         nchol=nchol,
+#         nchol_chunk=options["nchol_chunk"],
+#         nwalker_batch=options["nwalker_batch"],
+#         mix_precision=options["mix_precision"],
+#         )
+
+#     if options["walker_type"] == "rhf":
+#         prop = propagation.propagator_restricted(
+#                 options["dt"], 
+#                 options["n_walkers"], 
+#                 options["n_exp_terms"],
+#                 options["n_batch"]
+#             )
+#     elif options["walker_type"] == "uhf":
+#         prop = propagation.propagator_unrestricted(
+#                 options["dt"],
+#                 options["n_walkers"],
+#                 options["n_exp_terms"],
+#                 options["n_batch"],
+#             )
+
+#     sampler = sampling.sampler_exp(
+#         n_prop_steps=options["n_prop_steps"],
+#         n_blocks=options["n_blocks"],
+#         n_chol=nchol,
+#         )
     
-    # if isinstance(spin_type, bytes):
-    #     spin_type = spin_type.decode()
-
-    # assert spin_type in ["restricted", "unrestricted"]
-
-    # if spin_type == 'restricted':
-    #     h1 = jnp.array(h1).reshape(norb, norb)
-    #     chol = jnp.array(chol).reshape(-1, norb, norb)
-
-    # elif spin_type == 'unrestricted':
-    #     h1 = jnp.array(h1).reshape(2, norb, norb)
-    #     chol = jnp.array(chol).reshape(2, -1, norb, norb)
-
-    # assert type(ms) is np.int64
-    # assert type(nelec) is np.int64
-    # assert type(norb) is np.int64
-
-    ms, nelec, norb = int(ms), int(nelec), int(norb)
-    nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
-
-    # ham = hamiltonian.hamiltonian(norb)
-    ham_data = {}
-    ham_data["h0"] = h0
-
-    if spin_type == 'restricted':
-        ham_data["h1"] = (jnp.array(h1), jnp.array(h1))
-        nchol = chol.shape[0]
-        ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
-    elif spin_type == 'unrestricted':
-        ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2, 
-                          jnp.array(h1[1] + h1[0].T) / 2)
-        nchol = chol[0].shape[0]
-        ham_data["chol"] = (jnp.array(chol[0].reshape(chol[0].shape[0], -1)),
-                            jnp.array(chol[1].reshape(chol[1].shape[0], -1)))
-
-    options["nchol_chunk"] = cholesky.chunk_chol(
-        chol, options["nchol_chunk"], options["max_memory"]/options["n_walkers"])
-
-    print("\nQMC System")
-    print(f"Number of electrons: {nelec_sp}")
-    print(f"Spin Multiplicity:   {ms}")
-    print(f"Number of orbitals:  {norb}")
-    print(f"Number of Chol:      {nchol}")
-
-    print("\nQMC Parameters")
-    for op in options:
-        if options[op] is not None:
-            print(f"{str(op):<15s} - {str(options[op]):>10s}")
-
-    wave_data = {}
-    if "ci" in options["trial"] or "ci" in options["guide"]:
-        wave_data = load_ci_amplitude(wave_data, amp_file)
-    if "cc" in options["trial"] or "cc" in options["guide"]:
-        wave_data = load_cc_amplitude(wave_data, amp_file)
-
-    if spin_type == "restricted":
-        wave_data["mo_coeff"] = jnp.eye(norb)[:, : nelec_sp[0]]
-        wave_data["rdm1"] = jnp.array([wave_data["mo_coeff"] @ wave_data["mo_coeff"].T] * 2)
-        # guide
-        if options["guide"] == "rhf":
-            guide_overlap_fn = rhf_wfn.overlap
-            guide_force_bias_fn = rhf_wfn.rot_force_bias
-        if options["guide"] == "rcisd":
-            guide_overlap_fn = rcisd_wfn.overlap
-            guide_force_bias_fn = rcisd_wfn.force_bias
-
-        # trial
-        if options["trial"] == "rhf":
-            trial_overlap_fn = rhf_wfn.overlap
-            trial_energy_fn = rhf_wfn.rot_energy
-            trial_intermediate_fn = rhf_wfn.build_intermediate
-            energy_formula_fn = rhf_wfn.energy_formula
-        elif options["trial"] == "rcisd":
-            trial_overlap_fn = rcisd_wfn.overlap
-            trial_energy_fn = rcisd_wfn.energy
-            trial_intermediate_fn = rcisd_wfn.build_intermediate
-            energy_formula_fn = rcisd_wfn.energy_formula
-        elif options["trial"] == "rpt2ccsd":
-            trial_overlap_fn = rpt2ccsd_wfn.overlap
-            trial_energy_fn = rpt2ccsd_wfn.energy
-            trial_intermediate_fn = rpt2ccsd_wfn.build_intermediate
-            energy_formula_fn = rpt2ccsd_wfn.energy_formula
-
-    elif spin_type == "unrestricted":
-        nocc_a, nocc_b = nelec_sp
-        wave_data["mo_coeff"] = (jnp.eye(norb)[:,:nocc_a],
-                                 jnp.eye(norb)[:,:nocc_b])
-        wave_data["rdm1"] = (jnp.array([wave_data["mo_coeff"][0] @ wave_data["mo_coeff"][0].T]),
-                             jnp.array([wave_data["mo_coeff"][1] @ wave_data["mo_coeff"][1].T]))
-        # guide
-        if options["guide"] == "uhf":
-            guide_overlap_fn = uhf_wfn.overlap
-            guide_force_bias_fn = uhf_wfn.force_bias
-        if options["guide"] == "ucisd":
-            guide_overlap_fn = ucisd_wfn.overlap
-            guide_force_bias_fn = ucisd_wfn.force_bias
-
-        # trial
-        if options["trial"] == "uhf":
-            trial_overlap_fn = uhf_wfn.overlap
-            trial_energy_fn = uhf_wfn.rot_energy
-            trial_intermediate_fn = uhf_wfn.build_intermediate
-            energy_formula_fn = uhf_wfn.energy_formula
-        elif options["trial"] == "ucisd":
-            trial_overlap_fn = ucisd_wfn.overlap
-            trial_energy_fn = ucisd_wfn.energy
-            trial_intermediate_fn = ucisd_wfn.build_intermediate
-            energy_formula_fn = ucisd_wfn.energy_formula
-        elif options["trial"] == "upt2ccsd":
-            trial_overlap_fn = upt2ccsd_wfn.overlap
-            trial_energy_fn = upt2ccsd_wfn.energy
-            trial_intermediate_fn = upt2ccsd_wfn.build_intermediate
-            energy_formula_fn = upt2ccsd_wfn.energy_formula
-        elif options["trial"] == "upt2ccsd_bar":
-            trial_overlap_fn = upt2ccsd_wfn.overlap_bar
-            trial_energy_fn = upt2ccsd_wfn.energy_bar
-            trial_intermediate_fn = upt2ccsd_wfn.build_intermediate_bar
-            energy_formula_fn = upt2ccsd_wfn.energy_formula
-
-    wave = wfn_exp.wfn(    
-        guide_overlap_fn=guide_overlap_fn,
-        guide_force_bias_fn=guide_force_bias_fn,
-        trial_overlap_fn=trial_overlap_fn,
-        trial_energy_fn=trial_energy_fn,
-        trial_intermediate_fn=trial_intermediate_fn,
-        energy_formula_fn=energy_formula_fn,
-        nelec=nelec_sp,
-        norb=norb,
-        nchol=nchol,
-        nchol_chunk=options["nchol_chunk"],
-        )
-
-    if options["walker_type"] == "rhf":
-        prop = propagation.propagator_restricted(
-                options["dt"], 
-                options["n_walkers"], 
-                options["n_exp_terms"],
-                options["n_batch"]
-            )
-    elif options["walker_type"] == "uhf":
-        prop = propagation.propagator_unrestricted(
-                options["dt"],
-                options["n_walkers"],
-                options["n_exp_terms"],
-                options["n_batch"],
-            )
-
-    sampler = sampling.sampler_exp(
-        n_prop_steps=options["n_prop_steps"],
-        n_blocks=options["n_blocks"],
-        n_chol=nchol,
-        )
-    
-    return ham, prop, wave, ham_data, wave_data, sampler, options
+#     return prop, wave, ham_data, wave_data, sampler, options

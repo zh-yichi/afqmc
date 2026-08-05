@@ -80,13 +80,22 @@ def decompose_ut2(t2, thresh=1e-8):
 
     return (taua, taub)
 
+# def decompose_t2(t2, thresh=1e-8):
+#     if isinstance(t2, jax.array) and len(t2.shape) == 4:
+#         return decompose_rt2(t2, thresh)
+#     elif isinstance(t2, tuple) and len(t2) == 3:
+#         return decompose_ut2(t2, thresh)
+#     else:
+#         raise TypeError(f"T2 amplitude should either be a rank-4 tensor"
+#                         f"or a tuple of 3 (aa,ab,bb) rank-4 tensors.")
+
 def decompose_t2(t2, thresh=1e-8):
-    if isinstance(t2, jax.array) and len(t2.shape) == 4:
+    if isinstance(t2, jax.Array) and len(t2.shape) == 4:
         return decompose_rt2(t2, thresh)
     elif isinstance(t2, tuple) and len(t2) == 3:
         return decompose_ut2(t2, thresh)
     else:
-        raise TypeError(f"T2 amplitude should either be a rank-4 tensor"
+        raise TypeError(f"T2 amplitude should either be a rank-4 tensor "
                         f"or a tuple of 3 (aa,ab,bb) rank-4 tensors.")
 
 

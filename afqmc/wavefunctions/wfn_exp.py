@@ -9,10 +9,11 @@ from .. import walker_tools
 class wfn:
     guide_overlap_fn: Callable       # defined by guide
     guide_force_bias_fn: Callable    # defined by guide
+    guide_energy_fn: Callable        # defined by guide
     trial_overlap_fn: Callable       # defined by trial
     trial_energy_fn: Callable        # defined by trial
-    trial_intermediate_fn: Callable  # defined by trial
     energy_formula_fn: Callable      # defined by trial
+    intermediate_fn: Callable        # defined by both
     nelec: tuple[int, int]
     norb: int | tuple[int, int]
     nchol: int
