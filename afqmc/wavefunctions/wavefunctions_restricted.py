@@ -1263,27 +1263,6 @@ class pt2ccsd_bar(pt2ccsd):
         hg = oe.contract("pi,pi->", h1[:nocc, :], green, backend="jax")
         e1_0 = 2 * hg
 
-        # double excitations (unchanged)
-        # t_iajb =! t_jbia since the i axis is projected onto LNO !!!
-        # t2g_c_1 = oe.contract("iajb,ia->jb", t2, green_occ, backend="jax")
-        # t2g_c_2 = oe.contract("iajb,jb->ia", t2, green_occ, backend="jax")
-        # t2g_e_1 = oe.contract("iajb,ib->ja", t2, green_occ, backend="jax")
-        # t2g_e_2 = oe.contract("iajb,ja->ib", t2, green_occ, backend="jax")
-        # t2_green_c_1 = oe.contract("pb,jb,jq->pq", greenp, t2g_c_1, green, backend="jax") # t_iajb G_ia G_jq Gp_pb (-)
-        # t2_green_c_2 = oe.contract("pa,ia,iq->pq", greenp, t2g_c_2, green, backend="jax") # t_iajb G_jb G_iq Gp_pa (-)
-        # t2_green_e_1 = oe.contract("pa,ja,jq->pq", greenp, t2g_e_1, green, backend="jax") # t_iajb G_ib G_jq Gp_pa (+)
-        # t2_green_e_2 = oe.contract("pb,ib,iq->pq", greenp, t2g_e_2, green, backend="jax") # t_iajb G_ja G_iq Gp_pb (+)
-        # t2g_c = t2g_c_1 + t2g_c_2
-        # t2g_e = t2g_e_1 + t2g_e_2
-        # t2_green_c = t2_green_c_1 + t2_green_c_2
-        # t2_green_e = t2_green_e_1 + t2_green_e_2
-        # t2_green = t2_green_c - t2_green_e * 0.5
-        # t2g = t2g_c - t2g_e * 0.5
-        # gt2g = oe.contract("ia,ia->", t2g, green_occ, backend="jax")
-        # e1_2_1 = 2 * hg * gt2g
-        # e1_2_2 = -2 * oe.contract("pq,pq->", h1, t2_green, backend="jax")
-        # e1_2 = e1_2_1 + e1_2_2
-
         t2g_c = oe.contract("iajb,ia->jb", t2, green[:nocc,nocc:], backend="jax")
         t2g_e = oe.contract("iajb,ib->ja", t2, green[:nocc,nocc:], backend="jax")
         t2_green_c = oe.contract("pb,jb,jq->pq", greenp, t2g_c, green, backend="jax")
