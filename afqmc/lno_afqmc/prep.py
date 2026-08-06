@@ -8,19 +8,17 @@ from jax import numpy as jnp
 from jax import scipy as jsp
 import opt_einsum as oe
 
-import h5py, pickle, time
+# import h5py, pickle, time
 import numpy as np
-from pyscf import lib
-from pyscf.cc.ccsd import CCSD
-from pyscf.cc.uccsd import UCCSD
+# from pyscf import lib
+# from pyscf.cc.ccsd import CCSD
+# from pyscf.cc.uccsd import UCCSD
 from functools import partial
 
-from afqmc import cholesky, prep, t2_tools
+from afqmc import cholesky, prep
 from afqmc.lno_afqmc import propagation, sampling, integral, cfs_sampling
 from afqmc.lno_afqmc import wavefunctions_restricted as lno_wavefunctions
 from afqmc.lno_afqmc import wavefunctions_unrestricted as ulno_wavefunctions
-
-from afqmc import prep
 
 init_hf_prop_data = prep.init_hf_prop_data
 

@@ -370,8 +370,8 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 t1_full[:nocc, nocc:] = wave_data["t1"]
                 wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
                 wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
-                wave_data["tau"] = t2_tools.decompose_t2(wave_data["t2"], options["t2_thresh"])
-                print(f"Rank Decomposed T2 (t_iajb -> tau_yia tau_yjb) shape {wave_data["tau"].shape}")
+                wave_data['tau'] = t2_tools.decompose_t2(wave_data['t2'], options['t2_thresh'])
+                print(f"Rank Decomposed T2 (t_iajb -> tau_yia tau_yjb) shape {wave_data['tau'].shape}")
 
 
                 
@@ -500,7 +500,7 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                                              wave_data["t2bb"]), 
                                              options["t2_thresh"])
                 print(f"Rank Decomposed T2 (t_iajb -> tau_yjb) shape:  "
-                      f"alpha - {wave_data["tau_a"].shape} | beta - {wave_data["tau_b"].shape}")
+                      f"alpha - {wave_data['tau_a'].shape} | beta - {wave_data['tau_b'].shape}")
 
             elif "cisd" in options["trial"]:
                 # wave_data = load_cc_amplitude(wave_data, amp_file)
