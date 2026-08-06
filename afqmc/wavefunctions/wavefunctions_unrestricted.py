@@ -1351,7 +1351,7 @@ class upt2ccsd_bar(upt2ccsd):
 
         # o0 = jnp.linalg.det(walker_up[:nocc_a,:]) \
         #     * jnp.linalg.det(walker_dn[:nocc_b,:])
-        o0 = self._calc_overlap(walker_up, walker_dn, wave_data)
+        # o0 = self._calc_overlap(walker_up, walker_dn, wave_data)
         
         t2aa = wave_data["t2aa"]
         t2ab = wave_data["t2ab"]
@@ -1451,9 +1451,11 @@ class upt2ccsd_bar(upt2ccsd):
                                     backend="jax")
             tr_lt2g_a_c = oe.contract("gqq->g", lt2g_a_c.astype(jnp.complex128), backend="jax")
             tr_lt2g_b_c = oe.contract("gqq->g", lt2g_b_c.astype(jnp.complex128), backend="jax")
+
             carry[1] += -(((tr_lt2g_a_c.astype(ctype) + tr_lt2g_b_c.astype(ctype)) 
                             @ (tr_gl_a.astype(ctype) + tr_gl_b.astype(ctype))
                             ) / 2).astype(jnp.complex128)
+            
             carry[2] += ((oe.contract("giq,giq->", 
                                         gl_a_c.astype(ctype), 
                                         lt2g_a_c[:,:nocc_a,:].astype(ctype), 
@@ -1554,6 +1556,166 @@ class upt2ccsd_bar(upt2ccsd):
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
 
+
+@dataclass
+class upt2ccsd_red(upt2ccsd_bar):
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy_pt(
+        self,
+        walker_up: jax.Array,
+        walker_dn: jax.Array,
+        ham_data: dict,
+        wave_data: dict,
+    ) -> complex:
+        '''
+        <bra|T2(h1+h2)|ket>/<bra|ket> with rank-decomposed T2 (be careful: tau is complex!):
+            t2aa = 2 * sum_y tau_a[y,i,a] tau_a[y,j,b]
+            t2ab =     sum_y tau_a[y,i,a] tau_b[y,j,b]
+            t2bb = 2 * sum_y tau_b[y,i,a] tau_b[y,j,b]
+        '''
+        if self.mix_precision:
+            rtype = jnp.float32
+            ctype = jnp.complex64
+        else:
+            rtype = jnp.float64
+            ctype = jnp.complex128
+
+        norb_a, nocc_a = walker_up.shape
+        norb_b, nocc_b = walker_dn.shape
+
+        tau_a = wave_data["tau_a"]          # (ny, nocc_a, nvir_a)
+        tau_b = wave_data["tau_b"]          # (ny, nocc_b, nvir_b)
+
+        chol_a = ham_data["chol_bar"][0]
+        chol_b = ham_data["chol_bar"][1]
+        h1_a = ham_data["h1_bar"][0]
+        h1_b = ham_data["h1_bar"][1]
+
+        walker_up = wave_data['exp_t1a'] @ walker_up
+        walker_dn = wave_data['exp_t1b'] @ walker_dn
+
+        green_a = (walker_up.dot(jnp.linalg.inv(walker_up[:nocc_a, :]))).T
+        green_b = (walker_dn.dot(jnp.linalg.inv(walker_dn[:nocc_b, :]))).T
+        greenov_a = green_a[:nocc_a, nocc_a:]
+        greenov_b = green_b[:nocc_b, nocc_b:]
+        greenp_a = jnp.vstack((greenov_a, -jnp.eye(norb_a - nocc_a)))
+        greenp_b = jnp.vstack((greenov_b, -jnp.eye(norb_b - nocc_b)))
+
+        hg_a = oe.contract("pq,pq->", h1_a[:nocc_a, :], green_a, backend="jax")
+        hg_b = oe.contract("pq,pq->", h1_b[:nocc_b, :], green_b, backend="jax")
+        e1_0 = hg_a + hg_b  # <bra|h1|ket>/<bra|ket>
+
+        # ---- <bra|T2 h1|ket>: scan over the decomposition rank y ----
+        def scan_tau1(carry, x):
+            tau_a_y, tau_b_y = x
+            # spin a
+            taug_a   = oe.contract("ia,ja->ij", tau_a_y, greenov_a, backend="jax")
+            tr_a     = oe.contract("ii->", taug_a, backend="jax")
+            taugp_a  = oe.contract("jb,pb->jp", tau_a_y, greenp_a, backend="jax")
+            taugpg_a = oe.contract("jp,jq->pq", taugp_a, green_a[:nocc_a, :], backend="jax")
+            # spin b
+            taug_b   = oe.contract("ia,ja->ij", tau_b_y, greenov_b, backend="jax")
+            tr_b     = oe.contract("ii->", taug_b, backend="jax")
+            taugp_b  = oe.contract("jb,pb->jp", tau_b_y, greenp_b, backend="jax")
+            taugpg_b = oe.contract("jp,jq->pq", taugp_b, green_b[:nocc_b, :], backend="jax")
+
+            carry[0] += tr_a ** 2 + tr_b ** 2 + tr_a * tr_b   # gt2g   = <bra|T2|ket>
+            carry[1] += (2 * tr_a + tr_b) * taugpg_a          # t2_green_a_a (4*aaa + aba)
+            carry[2] += (2 * tr_b + tr_a) * taugpg_b          # t2_green_b_b (4*bbb + abb)
+            return carry, 0.0
+
+        init = [jnp.zeros((), jnp.complex128),                 # gt2g          (scalar)
+                jnp.zeros((norb_a, norb_a), jnp.complex128),   # t2_green_a_a  (matrix)
+                jnp.zeros((norb_b, norb_b), jnp.complex128)]   # t2_green_b_b  (matrix)
+        [gt2g, t2_green_a_a, t2_green_b_b], _ = lax.scan(scan_tau1, init, (tau_a, tau_b))
+
+        e1_2_1 = e1_0 * gt2g
+        e1_2_2_a = -oe.contract("pq,pq->", h1_a, t2_green_a_a, backend="jax")
+        e1_2_2_b = -oe.contract("pq,pq->", h1_b, t2_green_b_b, backend="jax")
+        e1_2 = e1_2_1 + e1_2_2_a + e1_2_2_b  # <bra|T2 h1|ket>/<bra|ket>
+
+        # ---- <bra|T2 h2|ket>: scan over cholesky chunks ----
+        nchol = chol_a.shape[0]
+        nchunks = -(-nchol // self.nchol_chunk)
+        pad = nchunks * self.nchol_chunk - nchol
+        chol_a = jnp.pad(chol_a, ((0, pad), (0, 0), (0, 0)))
+        chol_b = jnp.pad(chol_b, ((0, pad), (0, 0), (0, 0)))
+        chol_a = chol_a.reshape(nchunks, self.nchol_chunk, *chol_a.shape[-2:])
+        chol_b = chol_b.reshape(nchunks, self.nchol_chunk, *chol_b.shape[-2:])
+
+        def scanned_fun(carry, x):
+            chol_a_c, chol_b_c = x
+
+            # e2_0 = <h2>   (no T2 — identical to the dense function)
+            gl_a_c = oe.contract("ir,gpr->gip",
+                                    green_a.astype(jnp.complex128),
+                                    chol_a_c.astype(jnp.float64),
+                                    backend="jax").astype(jnp.complex128)
+            gl_b_c = oe.contract("ir,gpr->gip",
+                                    green_b.astype(jnp.complex128),
+                                    chol_b_c.astype(jnp.float64),
+                                    backend="jax")
+            tr_gl_a = oe.contract("gii->g", gl_a_c[:, :nocc_a, :nocc_a], backend="jax").astype(jnp.complex128)
+            tr_gl_b = oe.contract("gii->g", gl_b_c[:, :nocc_b, :nocc_b], backend="jax").astype(jnp.complex128)
+            ex_gl_a = oe.contract("gij,gji->g", gl_a_c[:, :nocc_a, :nocc_a], gl_a_c[:, :nocc_a, :nocc_a], backend="jax").astype(jnp.complex128)
+            ex_gl_b = oe.contract("gij,gji->g", gl_b_c[:, :nocc_b, :nocc_b], gl_b_c[:, :nocc_b, :nocc_b], backend="jax").astype(jnp.complex128)
+            e2_0_1_c = jnp.sum((tr_gl_a + tr_gl_b) ** 2) / 2.0
+            e2_0_2_c = -jnp.sum(ex_gl_a + ex_gl_b) / 2.0
+            carry[0] += (e2_0_1_c + e2_0_2_c).astype(jnp.complex128)
+
+            # e2_2_2 = <T2 h2> pieces that only need t2_green (no T2 directly)
+            lt2g_a_c = oe.contract("gpr,qr->gpq", chol_a_c.astype(jnp.float64),
+                                    (2 * t2_green_a_a).astype(jnp.complex128), backend="jax")
+            lt2g_b_c = oe.contract("gpr,qr->gpq", chol_b_c.astype(jnp.float64),
+                                    (2 * t2_green_b_b).astype(jnp.complex128), backend="jax")
+            tr_lt2g_a_c = oe.contract("gqq->g", lt2g_a_c, backend="jax")
+            tr_lt2g_b_c = oe.contract("gqq->g", lt2g_b_c, backend="jax")
+            carry[1] += -(((tr_lt2g_a_c.astype(ctype) + tr_lt2g_b_c.astype(ctype))
+                            @ (tr_gl_a.astype(ctype) + tr_gl_b.astype(ctype))) / 2).astype(jnp.complex128)
+            carry[2] += ((oe.contract("giq,giq->", gl_a_c.astype(ctype), lt2g_a_c[:, :nocc_a, :].astype(ctype), backend="jax")
+                        + oe.contract("giq,giq->", gl_b_c.astype(ctype), lt2g_b_c[:, :nocc_b, :].astype(ctype), backend="jax")) / 2).astype(jnp.complex128)
+
+            # e2_2_3 = decomposed T2 two-body — inner scan over y
+            glgp_a_c = oe.contract("giq,qa->gia", gl_a_c, greenp_a.astype(jnp.complex128), backend="jax")
+            glgp_b_c = oe.contract("giq,qa->gia", gl_b_c, greenp_b.astype(jnp.complex128), backend="jax")
+
+            def scan_tau2(carry, x):
+                tau_a_y, tau_b_y = x
+                # A_s[g] = sum_ia glgp_s[g,i,a] tau_s[y,i,a]
+                A_a = oe.contract("gia,ia->g", glgp_a_c.astype(ctype), tau_a_y.astype(ctype), backend="jax")
+                A_b = oe.contract("gia,ia->g", glgp_b_c.astype(ctype), tau_b_y.astype(ctype), backend="jax")
+                carry[0] += oe.contract("g,g->", A_a, A_a, backend="jax").astype(jnp.complex128)  # l2t2_aa
+                carry[1] += oe.contract("g,g->", A_b, A_b, backend="jax").astype(jnp.complex128)  # l2t2_bb
+                carry[2] += oe.contract("g,g->", A_a, A_b, backend="jax").astype(jnp.complex128)  # l2t2_ab
+                return carry, 0.0
+
+            init2 = [jnp.zeros((), jnp.complex128),
+                    jnp.zeros((), jnp.complex128),
+                    jnp.zeros((), jnp.complex128)]
+            [l2t2_aa, l2t2_bb, l2t2_ab], _ = lax.scan(scan_tau2, init2, (tau_a, tau_b))
+            carry[3] += (l2t2_aa + l2t2_bb + l2t2_ab).astype(jnp.complex128)
+            return carry, 0.0
+
+        init_c = [jnp.zeros((), jnp.complex128)] * 4
+        [e2_0, e2_2_2_1, e2_2_2_2, e2_2_3], _ = lax.scan(
+            scanned_fun, init_c, (chol_a, chol_b)
+        )
+
+        e2_2_1 = e2_0 * gt2g
+        e2_2_2 = e2_2_2_1 + e2_2_2_2
+        e2_2 = e2_2_1 + e2_2_2 + e2_2_3  # <bra|T2 h2|ket>/<bra|ket>
+
+        ot1 = jnp.linalg.det(walker_up[:nocc_a, :]) \
+            * jnp.linalg.det(walker_dn[:nocc_b, :])  # <bra|ket_bar>
+        t2 = gt2g
+        e0 = e1_0 + e2_0
+        e1 = e1_2 + e2_2
+        return ot1, t2, e0, e1
+
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
 
 # @dataclass
 # class upt2ccsd_eff(upt2ccsd):

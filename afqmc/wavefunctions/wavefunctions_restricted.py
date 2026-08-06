@@ -1383,6 +1383,162 @@ class pt2ccsd_bar(pt2ccsd):
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
 
+
+@dataclass
+class pt2ccsd_red(pt2ccsd_bar):
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy_pt(self, walker, ham_data, wave_data):
+        # becareful tau is complex!
+
+        if self.mix_precision:
+            rtype = jnp.float32
+            ctype = jnp.complex64
+        else:
+            rtype = jnp.float64
+            ctype = jnp.complex128
+        
+        nocc, norb = self.nelec[0], self.norb
+        nchol_chunk = self.nchol_chunk  # nchol per chunk
+
+        tau = wave_data["tau"]
+        h1 = ham_data["h1_bar"]
+        chol = ham_data["chol_bar"]
+        walker_bar = wave_data['exp_t1'] @ walker
+
+        obar = jnp.linalg.det(walker_bar[:walker_bar.shape[1], :]) ** 2
+
+        green = (walker_bar.dot(jnp.linalg.inv(walker_bar[: walker_bar.shape[1], :]))).T
+        green_occ = green[:, nocc:]
+        greenp = jnp.vstack((green_occ, -jnp.eye(norb - nocc)))
+        green_ov = green[:nocc,nocc:]
+
+        rot_chol = chol[:, :nocc, :]
+        nchol = chol.shape[0]
+
+        # 1 body energy
+        hg = oe.contract("pi,pi->", h1[:nocc, :], green, backend="jax")
+        e1_0 = 2 * hg
+
+        def scan_tau1(carry, x):
+            tau_y = x
+            taug_y = oe.contract("ia,ja->ij", tau_y, green_ov, backend="jax")
+            taugp_y = oe.contract("jb,pb->jp", tau_y, greenp, backend="jax")
+            taugpg_y = oe.contract("jp,jq->pq", taugp_y, green[:nocc,:], backend="jax")
+            taugg_y = oe.contract("ji,jq->iq", taug_y, green[:nocc,:], backend="jax")
+            tr_taug_y = oe.contract("ii->", taug_y, backend="jax")
+            # t2o_c = oe.contract("y,y->", tr_taug, tr_taug, backend="jax")
+            carry[0] += tr_taug_y ** 2
+            carry[1] += oe.contract("ij,ji->", taug_y, taug_y, backend="jax")
+
+            t2_green_c = tr_taug_y * taugpg_y
+            t2_green_e = oe.contract("ip,iq->pq", taugp_y, taugg_y, backend="jax")
+            carry[2] += 2 * t2_green_c - t2_green_e
+
+            return carry, 0.0
+        
+        init = [jnp.zeros((), jnp.complex128),                 # t2o_c   (scalar)
+                jnp.zeros((), jnp.complex128),                 # t2o_e   (scalar)
+                jnp.zeros((norb, norb), jnp.complex128)]       # t2_green (matrix)
+
+        [t2o_c, t2o_e, t2_green], _ = lax.scan(scan_tau1, init, tau)
+
+        t2o = 2 * t2o_c - t2o_e # <HF|T2|walker>
+
+        e1_2_1 = t2o * e1_0
+
+        e1_2_2 = -2 * oe.contract("pq,pq->", h1, t2_green, backend="jax")
+        e1_2 = e1_2_1 + e1_2_2 # <HF|T2 h1|walker>/<HF|walker>
+
+        # pad with zero cholesky vectors — contributes nothing to any contraction
+        npad = (-nchol) % nchol_chunk
+        chol = jnp.concatenate([chol, jnp.zeros((npad, norb, norb))], axis=0)
+        rot_chol = jnp.concatenate([rot_chol, jnp.zeros((npad, nocc, norb))], axis=0)
+
+        # reshape into chunks: (n_chunks, chunk_size, ...)
+        nchunk = (nchol + npad) // nchol_chunk
+        chol = chol.reshape(nchunk, nchol_chunk, norb, norb)
+        rot_chol = rot_chol.reshape(nchunk, nchol_chunk, nocc, norb)
+
+        # two body — scan over chunks, explicit contractions within a chunk
+        def scan_chunk(carry, x):
+            chol_c, rot_chol_c = x  # (chunk_size, norb, norb), (chunk_size, nocc, norb)
+
+            gl = oe.contract("ir,gqr->giq", green, chol_c, backend="jax")
+            gl_c = oe.contract("gii->g", gl[:, :, :nocc], backend="jax")
+            e2_0_c = oe.contract("g,g->", gl_c, gl_c, backend="jax") * 2
+            e2_0_e = -oe.contract("gij,gji->", gl[:, :, :nocc], gl[:, :, :nocc], backend="jax")
+            carry[0] += e2_0_c + e2_0_e
+
+            lt2g = oe.contract("gpr,pr->g", 
+                                chol_c.astype(rtype), 
+                                t2_green.astype(ctype), 
+                                backend="jax")
+            carry[1] += -oe.contract("g,g->", 
+                                        lt2g.astype(ctype), 
+                                        gl_c.astype(ctype), 
+                                        backend="jax")
+
+            lt2_green = oe.contract("gir,qr->giq", 
+                                    rot_chol_c.astype(rtype), 
+                                    t2_green.astype(ctype), 
+                                    backend="jax")
+            # t_iajb |G_ia G_js Gp_pb| G_qr L_pr L_qs
+            carry[2] += 0.5 * oe.contract("giq,giq->", 
+                                            gl.astype(ctype), 
+                                            lt2_green.astype(ctype), 
+                                            backend="jax")
+
+            # t_iajb G_ir G_js Gp_pa Gp_qb L_pr L_qs type
+            glgp = oe.contract("gir,rb->gib", 
+                                gl.astype(ctype), 
+                                greenp.astype(ctype), 
+                                backend="jax")
+            
+            def scan_tau2(carry, x):
+                tau_y = x
+                tauglgp_y = oe.contract("ia,gja->gij", 
+                                    tau_y.astype(ctype),
+                                    glgp.astype(ctype), 
+                                    backend="jax")
+                tr_tauglgp_y = oe.contract("gii->g", 
+                                    tauglgp_y.astype(ctype),
+                                    backend="jax")
+                carry[0] += oe.contract("g,g->", 
+                                    tr_tauglgp_y.astype(ctype), 
+                                    tr_tauglgp_y.astype(ctype), 
+                                    backend="jax").astype(jnp.complex128)
+                carry[1] += oe.contract("gij,gji->", 
+                                    tauglgp_y.astype(ctype), 
+                                    tauglgp_y.astype(ctype), 
+                                    backend="jax").astype(jnp.complex128)
+                return carry, 0.0
+            
+            init = [jnp.zeros((), jnp.complex128),                
+                    jnp.zeros((), jnp.complex128)]       
+
+            [l2t2_c, l2t2_e], _ = lax.scan(scan_tau2, init, tau)
+
+            carry[3] += (2*l2t2_c - l2t2_e).astype(jnp.complex128)
+
+            return carry, 0.0
+
+        [e2_0, e2_2_2_1, e2_2_2_2, e2_2_3], _ = lax.scan(
+            scan_chunk, [0.0, 0.0, 0.0, 0.0], (chol, rot_chol)
+        )
+
+        e2_2_1 = e2_0 * t2o
+        e2_2_2 = 4 * (e2_2_2_1 + e2_2_2_2)
+        e2_2 = e2_2_1 + e2_2_2 + e2_2_3
+
+        e0 = e1_0 + e2_0  # <psi|(h1+h2)|phi>/<psi|phi>
+        e1 = e1_2 + e2_2  # <psi|t2(h1+h2)|phi>/<psi|phi>
+
+        return obar, t2o, e0, e1
+
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
 # @dataclass
 # class pt2ccsd_cisd(cisd):
 

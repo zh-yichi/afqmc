@@ -359,30 +359,21 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
                 wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
 
-            if "cisd" in options["trial"]:
-                wave_data = load_ci_amplitude(wave_data, amp_file)
-                trial = wavefunctions_restricted.pt2ccsd_cisd(norb, nelec_sp, 
-                                                              n_batch=options["n_batch"],
-                                                              nchol_chunk=nchol_chunk, 
-                                                              mix_precision=options["mix_precision"],
-                                                              )
+            if "red" in options["trial"]:
+                trial = wavefunctions_restricted.pt2ccsd_red(norb, nelec_sp, 
+                                                                n_batch=options["n_batch"],
+                                                                nchol_chunk=nchol_chunk, 
+                                                                mix_precision=options["mix_precision"],
+                                                                )
                 nocc = nelec_sp[0]
                 t1_full = np.zeros((norb, norb))
                 t1_full[:nocc, nocc:] = wave_data["t1"]
                 wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
                 wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
+                wave_data["tau"] = t2_tools.decompose_t2(wave_data["t2"], options["t2_thresh"])
+                print(f"Rank Decomposed T2 (t_iajb -> tau_yia tau_yjb) shape {wave_data["tau"].shape}")
 
-            if "ci2" in options["trial"]:
-                trial = wavefunctions_restricted.pt2ccsd_ci2(norb, nelec_sp, 
-                                                             n_batch=options["n_batch"],
-                                                             nchol_chunk=nchol_chunk, 
-                                                             mix_precision=options["mix_precision"],
-                                                             )
-                nocc = nelec_sp[0]
-                t1_full = np.zeros((norb, norb))
-                t1_full[:nocc, nocc:] = wave_data["t1"]
-                wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
-                wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
+
                 
             if "ad" in options["trial"]:
                 nocc = nelec_sp[0]
@@ -423,13 +414,6 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
 
         if "uhf" in options["trial"]:
             trial = wavefunctions_unrestricted.uhf(norb, nelec_sp, n_batch=options["n_batch"])
-            # if "wrong" in options["trial"]:
-            #     wave_data = load_cc_amplitude(wave_data, amp_file)
-            #     wave_data['mo_coeff'] = slater_tools.thouless(
-            #     wave_data['mo_coeff'], (wave_data["t1a"], wave_data["t1b"]))
-            #     # wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
-            #     #                          jnp.array(wave_data['mo_tb']))
-            #     print(wave_data['mo_coeff'])
 
         elif options["trial"] == "ucisd":
             wave_data = load_ci_amplitude(wave_data, amp_file)
@@ -491,26 +475,33 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
                 wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
                 wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
-            
-            # if "wrong" in options["trial"]:
-            #     trial = wavefunctions_unrestricted.upt2ccsd_bar(
-            #         norb, nelec_sp, 
-            #         n_batch=options["n_batch"], 
-            #         nchol_chunk=nchol_chunk,
-            #         mix_precision=options["mix_precision"],
-            #         )
-            #     wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
-            #                              jnp.array(wave_data['mo_tb']))
-            #     t1a, t1b = wave_data["t1a"], wave_data["t1b"]
-            #     t1a_full = np.zeros((norb, norb), dtype=np.float64)
-            #     t1b_full = np.zeros((norb, norb), dtype=np.float64)
-            #     t1a_full[:nocc_a, nocc_a:] = t1a
-            #     t1b_full[:nocc_b, nocc_b:] = t1b
-            #     wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
-            #     wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
-            #     wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
-            #     wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
-            
+
+            if "red" in options["trial"]:
+                trial = wavefunctions_unrestricted.upt2ccsd_red(
+                    norb, nelec_sp, 
+                    n_batch=options["n_batch"], 
+                    nchol_chunk=nchol_chunk,
+                    mix_precision=options["mix_precision"],
+                    )
+                wave_data['mo_ta'] = None
+                wave_data['mo_tb'] = None
+                t1a, t1b = wave_data["t1a"], wave_data["t1b"]
+                t1a_full = np.zeros((norb, norb), dtype=np.float64)
+                t1b_full = np.zeros((norb, norb), dtype=np.float64)
+                t1a_full[:nocc_a, nocc_a:] = t1a
+                t1b_full[:nocc_b, nocc_b:] = t1b
+                wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
+                wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
+                wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
+                wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
+                (wave_data["tau_a"], wave_data["tau_b"]) \
+                    = t2_tools.decompose_t2((wave_data["t2aa"],
+                                             wave_data["t2ab"],
+                                             wave_data["t2bb"]), 
+                                             options["t2_thresh"])
+                print(f"Rank Decomposed T2 (t_iajb -> tau_yjb) shape:  "
+                      f"alpha - {wave_data["tau_a"].shape} | beta - {wave_data["tau_b"].shape}")
+
             elif "cisd" in options["trial"]:
                 # wave_data = load_cc_amplitude(wave_data, amp_file)
                 wave_data = load_ci_amplitude(wave_data, amp_file)
@@ -550,28 +541,7 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                                                     wave_data['mo_tb'][:nocc_b,:nocc_b].T,
                                                     wave_data["t2bb"], 
                                                     backend='jax')
-                # if "wrong" in options["trial"]:
-                #     wave_data['mo_coeff'] = (jnp.array(wave_data['mo_ta']), 
-                #                              jnp.array(wave_data['mo_tb']))
-                    
-            # if "eff" in options["trial"]:
-            #     trial = wavefunctions_unrestricted.upt2ccsd_eff(
-            #         norb, nelec_sp, n_batch=options["n_batch"])
-            #     wave_data["rot_t2aa"] = oe.contract('ik,jl,kalb->iajb',
-            #                                         wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-            #                                         wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-            #                                         wave_data["t2aa"], 
-            #                                         backend='jax')
-            #     wave_data["rot_t2ab"] = oe.contract('ik,jl,kalb->iajb',
-            #                                         wave_data['mo_ta'][:nocc_a,:nocc_a].T,
-            #                                         wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-            #                                         wave_data["t2ab"], 
-            #                                         backend='jax')
-            #     wave_data["rot_t2bb"] = oe.contract('ik,jl,kalb->iajb',
-            #                                         wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-            #                                         wave_data['mo_tb'][:nocc_b,:nocc_b].T,
-            #                                         wave_data["t2bb"], 
-            #                                         backend='jax')
+
 
         elif options["trial"] == "ustoccsd2":
             wave_data = load_cc_amplitude(wave_data, amp_file)
