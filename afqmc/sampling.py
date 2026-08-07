@@ -448,7 +448,90 @@ class sampler_pt2(sampler):
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
 
+from . import cc_tools
 
+@dataclass
+class sampler_stocc_pt2(sampler):
+
+    @partial(jit, static_argnums=(0, 1, 2))
+    def prop_nstep(self, prop, wave, prop_data, ham_data, wave_data):
+        """Phaseless propagation scan function over steps."""
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(
+                self.n_prop_steps,
+                prop.n_walkers,
+                self.n_chol,
+            ),
+        )
+
+        mo_t = wave_data['mo_t']
+        tau  = wave_data['tau']
+        nslater = wave.n_slater
+
+        def scan_fn(carry, field):
+            prop_data, wave_data = carry
+            # update stocc every step
+            slaters, prop_data["key"] = cc_tools.get_stoccsd(mo_t, tau, nslater, prop_data["key"])
+            wave_data = {**wave_data, "slaters": slaters}
+            prop_data = prop.propagate(wave, ham_data, prop_data, field, wave_data)
+            return (prop_data, wave_data), None
+
+        (prop_data, wave_data), _ = lax.scan(scan_fn, (prop_data, wave_data), fields)
+
+        prop_data["n_killed_walkers"] \
+            = prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+
+        prop_data = prop.orthonormalize_walkers(prop_data)
+
+        return prop_data, wave_data
+
+    @partial(jit, static_argnums=(0,3,4))
+    def block_sample(
+        self,
+        prop_data,
+        ham_data,
+        prop,
+        trial,
+        wave_data,
+        ):
+        """Block scan function. Propagation and energy calculation."""
+        
+        prop_data, wave_data = self.prop_nstep(prop, trial, prop_data, ham_data, wave_data)
+
+        og_sp = trial.calc_overlap(prop_data["walkers"], wave_data)
+        eg_sp = jnp.real(trial.calc_energy(prop_data["walkers"], ham_data, wave_data))
+        
+        outlier = jnp.abs(eg_sp - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
+        # wts = jnp.where(outlier, 0.0, prop_data["weights"])
+        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+
+        ot_sp, t2_sp, e0_sp, e1_sp = trial.calc_energy_pt(prop_data["walkers"], ham_data, wave_data)
+
+        wts = prop_data["weights"]
+        wps = wts * ot_sp / og_sp
+
+        wt = jnp.sum(wts)
+        eg = jnp.sum(wts * eg_sp) / wt
+
+        wp = jnp.sum(wps)
+        t2 = jnp.sum(wps * t2_sp) / wp
+        e0 = jnp.sum(wps * e0_sp) / wp
+        e1 = jnp.sum(wps * e1_sp) / wp
+
+        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * eg.real
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+
+        return prop_data, (wt, eg, wp, t2, e0, e1)
+    
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+    
 
 @dataclass
 class sampler_stoccsd(sampler):

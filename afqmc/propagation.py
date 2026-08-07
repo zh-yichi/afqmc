@@ -301,10 +301,7 @@ class propagator_restricted(propagator):
         ham_data["h0_prop"] = (
             -ham_data["h0"] - jnp.sum(ham_data["mf_shifts"] ** 2) / 2.0
         )
-        # ham_data["h0_prop_fp"] = [
-        #     (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0],
-        #     (ham_data["h0_prop"] + ham_data["ene0"]) / trial.nelec[0],
-        # ]
+
         v0 = 0.5 * jnp.einsum(
             "gik,gjk->ij",
             ham_data["chol"].reshape(-1, trial.norb, trial.norb),
@@ -323,6 +320,92 @@ class propagator_restricted(propagator):
         )
         ham_data["exp_h1"] = jsp.linalg.expm(-self.dt * h1_mod / 2.0)
         return ham_data
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+from . import cc_tools
+
+@dataclass
+class propagator_restricted_stocc(propagator_restricted):
+    dt: float = 0.01
+    n_walkers: int = 50
+    n_exp_terms: int = 6
+    n_batch: int = 1
+    n_slater: int = 10
+
+    @partial(jit, static_argnums=(0, 1))
+    def propagate(
+        self,
+        guide,
+        ham_data: dict,
+        prop_data: dict,
+        fields: jax.Array,
+        wave_data: dict,
+    ) -> dict:
+        """Phaseless AFQMC propagation for sto updated guide.
+
+        Args:
+            guide: guide wave function handler
+            ham_data: dictionary containing the Hamiltonian data
+            prop_data: dictionary containing the propagation data
+            fields: auxiliary fields
+            wave_data: wave function data
+
+        Returns:
+            prop_data: dictionary containing the updated propagation data
+        """
+        overlaps_last = guide.calc_overlap(prop_data["walkers"], wave_data)
+        wave_data["slaters"], prop_data["key"] = cc_tools.get_stoccsd(
+            wave_data["mo_t"], wave_data["tau"], self.n_slater, prop_data["key"])
+        overlaps_prst = guide.calc_overlap(prop_data["walkers"], wave_data)
+        force_bias = guide.calc_force_bias(prop_data["walkers"], ham_data, wave_data)
+
+        field_shifts = -jnp.sqrt(self.dt) * (1.0j * force_bias - ham_data["mf_shifts"]
+                                             ) * (overlaps_prst / overlaps_last)[:, None]
+        shifted_fields = fields - field_shifts
+        shift_term = jnp.sum(shifted_fields * ham_data["mf_shifts"], axis=1)
+        fb_term = jnp.sum(
+            fields * field_shifts - field_shifts * field_shifts / 2.0, axis=1
+        )
+
+        prop_data["walkers"] = self._apply_trotprop(
+            ham_data, prop_data["walkers"], shifted_fields
+        )
+
+        overlaps_new = guide.calc_overlap(prop_data["walkers"], wave_data)
+        # I(x,xbar,walkers,trial) = <trial|walkers>_new/<trial|walkers>_old
+        #                                 * exp(x_g xbar_g - 1/2 xbar_g xbar_g)
+        imp_fun = (
+            jnp.exp(
+                -jnp.sqrt(self.dt) * shift_term
+                + fb_term # pop_control_ene_shift = estimated ground state energy
+                + self.dt * (prop_data["pop_control_ene_shift"] + ham_data["h0_prop"])
+            )
+            * overlaps_new
+            / overlaps_last
+        )
+        theta = jnp.angle(
+            jnp.exp(-jnp.sqrt(self.dt) * shift_term)
+            * overlaps_new
+            / overlaps_last
+        )
+        imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
+        imp_fun_phaseless = jnp.array(
+            jnp.where(jnp.isnan(imp_fun_phaseless), 0.0, imp_fun_phaseless)
+        )
+        imp_fun_phaseless = jnp.where(
+            imp_fun_phaseless < 1.0e-3, 0.0, imp_fun_phaseless
+        )
+        imp_fun_phaseless = jnp.where(imp_fun_phaseless > 100.0, 0.0, imp_fun_phaseless)
+        # prop_data["imp_fun"] = imp_fun_phaseless
+        prop_data["weights"] = imp_fun_phaseless * prop_data["weights"]
+        prop_data["weights"] = jnp.array(jnp.where(prop_data["weights"] > 100, 0.0, prop_data["weights"]))
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"] - 0.1 * jnp.array(
+            jnp.log(jnp.sum(prop_data["weights"]) / self.n_walkers) / self.dt
+        )
+        prop_data["overlaps"] = overlaps_new
+        return prop_data, wave_data
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))

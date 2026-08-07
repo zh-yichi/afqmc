@@ -10,10 +10,11 @@ class wfn:
     guide_overlap_fn: Callable       # defined by guide
     guide_force_bias_fn: Callable    # defined by guide
     guide_energy_fn: Callable        # defined by guide
+    guide_intermediate_fn: Callable  # defined by guide
     trial_overlap_fn: Callable       # defined by trial
     trial_energy_fn: Callable        # defined by trial
     energy_formula_fn: Callable      # defined by trial
-    intermediate_fn: Callable        # defined by both
+    trial_intermediate_fn: Callable  # defined by trial
     nelec: tuple[int, int]
     norb: int | tuple[int, int]
     nchol: int
@@ -46,6 +47,10 @@ class wfn:
         return self.guide_force_bias_fn(self, walker, ham_data, wave_data)
 
     @partial(jit, static_argnums=0)
+    def _guide_energy(self, walker, ham_data, wave_data):
+        return self.trial_energy_fn(self, walker, ham_data, wave_data)
+
+    @partial(jit, static_argnums=0)
     def _trial_overlap(self, walker, wave_data):
         return self.trial_overlap_fn(self, walker, wave_data)
     
@@ -53,12 +58,11 @@ class wfn:
     def _trial_energy(self, walker, ham_data, wave_data):
         return self.trial_energy_fn(self, walker, ham_data, wave_data)
     
-    @partial(jit, static_argnums=0)
-    def build_trial_intermediate(self, ham_data, wave_data):
-        return self.trial_intermediate_fn(self, ham_data, wave_data)
-    
-    def calc_sample_energy(self, weights, samples, ham_data):
-        return self.energy_formula_fn(weights, samples, ham_data)
+    # @partial(jit, static_argnums=0)
+    def build_intermediate(self, ham_data, wave_data):
+        ham_data, wave_data = self.guide_intermediate_fn(self, ham_data, wave_data)
+        ham_data, wave_data = self.trial_intermediate_fn(self, ham_data, wave_data)
+        return ham_data, wave_data
     
     @partial(jit, static_argnums=0)
     def calc_overlap(self, walkers, wave_data):
@@ -69,9 +73,16 @@ class wfn:
         return walker_tools.map_over_walkers(self._guide_force_bias, walkers, self.nwalker_batch, ham_data, wave_data)
 
     @partial(jit, static_argnums=0)
+    def calc_guide_energy(self, walkers, ham_data, wave_data):
+        return walker_tools.map_over_walkers(self._guide_energy, walkers, self.nwalker_batch, ham_data, wave_data)
+
+    @partial(jit, static_argnums=0)
     def calc_trial_overlap(self, walkers, wave_data):
         return walker_tools.map_over_walkers(self._trial_overlap, walkers, self.nwalker_batch, wave_data)
 
     @partial(jit, static_argnums=0)
     def calc_energy(self, walkers, ham_data, wave_data):
         return walker_tools.map_over_walkers(self._trial_energy, walkers, self.nwalker_batch, ham_data, wave_data)
+
+    def energy_formula(self, weights, samples, ham_data):
+        return self.energy_formula_fn(weights, samples, ham_data)

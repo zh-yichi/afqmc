@@ -2,7 +2,7 @@ from jax import numpy as jnp
 from jax import jit
 import opt_einsum as oe
 from functools import partial
-from .. import slater_tools, sampling
+from .. import slater_tools, sampling_exp
 
 # implementation in QMC sampling
 @partial(jit, static_argnums=0)
@@ -59,8 +59,10 @@ def build_intermediate(trial, ham_data: dict, wave_data: dict) -> dict:
 
 def energy_formula(weights, samples, ham_data):
     # energy_terms shape: (nsamples, terms)
-    weight_mean, sample_mean, sample_err = sampling.weighted_average(weights, samples)
-    weight = weight_mean.real
-    energy = sample_mean.real
-    energy_err = sample_err.real
+    weights = jnp.atleast_1d(weights)
+    samples = jnp.atleast_1d(samples)
+    weight_tot, sample_mean, sample_err = sampling_exp.weighted_average(weights, samples)
+    weight = weights.mean()
+    energy = sample_mean
+    energy_err = sample_err
     return weight, energy, energy_err

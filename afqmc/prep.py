@@ -13,7 +13,7 @@ import jax.numpy as jnp
 from jax import scipy as jsp
 from jax import random
 
-from . import hamiltonian, cholesky, walker_tools, slater_tools, t2_tools
+from . import hamiltonian, cholesky, walker_tools, slater_tools, t2_tools, cc_tools
 from . import propagation, sampling, fp_sampling
 from .wavefunctions import wavefunctions_restricted
 from .wavefunctions import wavefunctions_unrestricted
@@ -385,6 +385,26 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['rot_t2'] = rot_t2
                 trial = wavefunctions_restricted.pt2ccsd_ad(norb, nelec_sp, 
                                                             n_batch=options["n_batch"])
+                
+        elif "stocc_pt2" in options["trial"]:
+            wave_data = load_cc_amplitude(wave_data, amp_file)
+            wave_data["mo_t"] = slater_tools.thouless(wave_data["mo_coeff"], wave_data["t1"])
+            trial = wavefunctions_restricted.stocc_pt2(norb, nelec_sp, 
+                                                       n_batch=options['n_batch'],
+                                                       nchol_chunk=nchol_chunk, 
+                                                       mix_precision=options['mix_precision'],
+                                                       n_slater=options['n_slater']
+                                                       )
+            nocc = nelec_sp[0]
+            t1_full = np.zeros((norb, norb))
+            t1_full[:nocc, nocc:] = wave_data['t1']
+            wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
+            wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
+            wave_data['tau'] = t2_tools.decompose_t2(wave_data['t2'], options['t2_thresh'])
+            print(f"Rank Decomposed T2 (t_iajb -> tau_yia tau_yjb) shape {wave_data['tau'].shape}")
+            wave_data['slaters'], _ = cc_tools.get_stoccsd(
+               wave_data["mo_t"], wave_data['tau'], options['n_slater'], random.PRNGKey(options["seed"]+1))
+
 
         elif "stoccsd" in options["trial"]:
             wave_data = load_cc_amplitude(wave_data, amp_file)
@@ -592,7 +612,14 @@ def get_sampler(options, nchol):
                 options["n_prop_steps"],
                 options["n_blocks"],
                 nchol,)
-            
+
+    elif 'stocc_pt2' in options['trial']:
+        sampler = sampling.sampler_stocc_pt2(
+            options["n_prop_steps"],
+            options["n_blocks"],
+            nchol,)
+
+
     elif 'stoccsd' in options['trial']:
         if '2' in options['trial']:
             sampler = sampling.sampler_stoccsd2(

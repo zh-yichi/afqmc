@@ -55,7 +55,7 @@ def load_cc_amplitude(wave_data=None, amp_file="amplitudes.npz"):
 
     return wave_data
 
-def init_prop_data_exp(
+def init_prop_data(
     wave,
     wave_data,
     ham_data,
@@ -75,25 +75,25 @@ def init_prop_data_exp(
     elif options["init_walkers"] == "stocc":
         # starting with different walkers need to multiply the overlap update factor
         walkers00 = walker_tools.replicate_walker(wave_data["mo_coeff"], options["n_walkers"])
-        g_olps00 = wave.calc_guide_overlap(walkers00, wave_data)
+        g_olps00 = wave.calc_overlap(walkers00, wave_data)
         walkers0, prop_data = walker_tools.get_ccsd_walkers(
             prop_data, wave_data, options["n_walkers"], options["walker_type"]
         )
-        g_olps0 = wave.calc_guide_overlap(walkers0, wave_data)
+        g_olps0 = wave.calc_overlap(walkers0, wave_data)
         prop_data["weights"] *= jnp.real(g_olps0 / g_olps00)
 
     t_olps0 = wave.calc_trial_overlap(walkers0, wave_data)
     weighps = prop_data["weights"] * t_olps0 / g_olps0
     t_enes = wave.calc_energy(walkers0, ham_data, wave_data)
-    wp, t_ene, err \
-            = wave.calc_sample_energy(weighps, t_enes, ham_data)
+    init_w, init_e, err \
+            = wave.energy_formula(weighps, t_enes, ham_data)
 
     prop_data["walkers"] = walkers0
     prop_data["overlaps"] = g_olps0
-    prop_data["e_estimate"] = wave.energy_formula(wp, t_ene)
+    prop_data["e_estimate"] = init_e
     prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
 
-    return prop_data
+    return prop_data, init_w, init_e
 
 def get_qmc_options(options=None, option_file="options.bin"):
     if options is None:
@@ -117,13 +117,12 @@ def get_qmc_options(options=None, option_file="options.bin"):
         options["walker_type"] = options.get("walker_type", "uhf")
     if "stocc" not in options["trial"]:
         options["n_slater"] = options.get("n_slater", 10)
-    options["init_walkers"] = options.get("hf", 1)
     options["nwalker_batch"] = options.get("nwalker_batch", 1)
     options["max_error"] = options.get("max_error", 0.0)
     options["nchol_chunk"] = options.get("nchol_chunk", 100)
     options["max_memory"] = options.get("max_memory", 2000) # MB
     options["mix_precision"] = options.get("mix_precision", True)
-    # options["free_projection"] = options.get("free_projection", False)
+    options["init_walkers"] = options.get("init_walkers", "hf")
 
     print("\nQMC Parameters")
     for op in options:
@@ -168,7 +167,7 @@ def load_chol(chol_file="FCIDUMP_chol"):
 
 def get_hamiltonian(h0, h1, chol, norb):
 
-    ham = hamiltonian.hamiltonian(norb)
+    # ham = hamiltonian.hamiltonian(norb)
     ham_data = {}
     ham_data["h0"] = h0
     
@@ -187,7 +186,7 @@ def get_hamiltonian(h0, h1, chol, norb):
         ham_data["chol"] = (jnp.array(chol[0].reshape(nchol, -1)),
                             jnp.array(chol[1].reshape(nchol, -1)))
         
-    return ham, ham_data, nchol
+    return ham_data, nchol
 
 def init_afqmc(
         options=None,
@@ -206,22 +205,7 @@ def init_afqmc(
 
     h0, h1, chol, ms, nelec_sp, norb, spin_type = load_chol(chol_file)
 
-    ms, nelec, norb = int(ms), int(nelec), int(norb)
-    nelec_sp = ((nelec + abs(ms)) // 2, (nelec - abs(ms)) // 2)
-
-    ham_data = {}
-    ham_data["h0"] = h0
-
-    if spin_type == 'restricted':
-        ham_data["h1"] = (jnp.array(h1), jnp.array(h1))
-        nchol = chol.shape[0]
-        ham_data["chol"] = jnp.array(chol.reshape(chol.shape[0], -1))
-    elif spin_type == 'unrestricted':
-        ham_data["h1"] = (jnp.array(h1[0] + h1[0].T) / 2, 
-                          jnp.array(h1[1] + h1[0].T) / 2)
-        nchol = chol[0].shape[0]
-        ham_data["chol"] = (jnp.array(chol[0].reshape(chol[0].shape[0], -1)),
-                            jnp.array(chol[1].reshape(chol[1].shape[0], -1)))
+    ham_data, nchol = get_hamiltonian(h0, h1, chol, norb)
 
     options["nchol_chunk"] = cholesky.chunk_chol(
         chol, options["nchol_chunk"], options["max_memory"]/options["n_walkers"])
@@ -251,14 +235,20 @@ def init_afqmc(
             guide_overlap_fn = rhf_wfn.overlap
             guide_force_bias_fn = rhf_wfn.rot_force_bias
             guide_energy_fn = rhf_wfn.rot_energy
+            guide_intermediate_fn = rhf_wfn.build_intermediate
         if options["guide"] == "rcisd":
             guide_overlap_fn = rcisd_wfn.overlap
             guide_force_bias_fn = rcisd_wfn.force_bias
-            guide_energy_fn = rcisd_wfn.rot_energy
+            guide_energy_fn = rcisd_wfn.energy
+            guide_intermediate_fn = rcisd_wfn.build_intermediate
         if options["guide"] == "rstoccsd":
             guide_overlap_fn = rstoccsd_wfn.overlap
             guide_force_bias_fn = rstoccsd_wfn.force_bias
             guide_energy_fn = rstoccsd_wfn.rot_energy
+            guide_intermediate_fn = rstoccsd_wfn.build_intermediate
+            wave_data['t2_thresh'] = options['t2_thresh']
+            wave_data['n_slater'] = options['n_slater']
+            wave_data['seed'] = options['seed'] + 1
 
         # trial
         if options["trial"] == "rhf":
@@ -281,6 +271,9 @@ def init_afqmc(
             trial_energy_fn = rstoccsd_wfn.energy
             trial_intermediate_fn = rstoccsd_wfn.build_intermediate
             energy_formula_fn = rstoccsd_wfn.energy_formula
+            wave_data['t2_thresh'] = options['t2_thresh']
+            wave_data['n_slater'] = options['n_slaters']
+            wave_data['seed'] = options['seed'] + 1
 
     elif spin_type == "unrestricted":
         nocc_a, nocc_b = nelec_sp
@@ -322,10 +315,11 @@ def init_afqmc(
         guide_overlap_fn=guide_overlap_fn,
         guide_force_bias_fn=guide_force_bias_fn,
         guide_energy_fn=guide_energy_fn,
+        guide_intermediate_fn=guide_intermediate_fn,
         trial_overlap_fn=trial_overlap_fn,
         trial_energy_fn=trial_energy_fn,
         energy_formula_fn=energy_formula_fn,
-        intermediate_fn=trial_intermediate_fn,
+        trial_intermediate_fn=trial_intermediate_fn,
         nelec=nelec_sp,
         norb=norb,
         nchol=nchol,
@@ -339,21 +333,29 @@ def init_afqmc(
                 options["dt"], 
                 options["n_walkers"], 
                 options["n_exp_terms"],
-                options["n_batch"]
+                options["nwalker_batch"]
             )
     elif options["walker_type"] == "uhf":
         prop = propagation.propagator_unrestricted(
                 options["dt"],
                 options["n_walkers"],
                 options["n_exp_terms"],
-                options["n_batch"],
+                options["nwalker_batch"],
             )
     if "stocc" in options["guide"]:
         sampler = sampling_exp.stocc_sampler(
-            n_walkers=options["n_walkers"],
-            n_prop_steps=options["n_prop_steps"],
-            n_blocks=options["n_blocks"],
-            n_chol=nchol,
+                n_walkers=options["n_walkers"],
+                n_prop_steps=options["n_prop_steps"],
+                n_blocks=options["n_blocks"],
+                n_chol=nchol,
+                n_slater=options["n_slater"],
+                )
+        prop = propagation.propagator_restricted_stocc(
+                options["dt"], 
+                options["n_walkers"], 
+                options["n_exp_terms"],
+                options["nwalker_batch"],
+                n_slater = options["n_slater"], 
             )
     else:
         sampler = sampling_exp.sampler(
@@ -361,7 +363,6 @@ def init_afqmc(
             n_prop_steps=options["n_prop_steps"],
             n_blocks=options["n_blocks"],
             n_chol=nchol,
-            n_slater=options["n_slater"]
             )
     
     return prop, wave, ham_data, wave_data, sampler, options
