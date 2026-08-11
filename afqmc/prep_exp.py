@@ -62,9 +62,9 @@ def init_prop_data(
     options
     ):
 
-    print(f"\nInitalize QMC walkers by {options["init_walkers"]}")
+    print(f"\nInitalize QMC walkers by {options['init_walkers']}")
     prop_data = {}
-    prop_data["n_killed_walkers"] = 0
+    prop_data['n_killed_walkers'] = 0
     prop_data["key"] = random.PRNGKey(options["seed"])
 
     prop_data["weights"] = jnp.ones(options["n_walkers"], dtype=jnp.float64)
@@ -88,9 +88,10 @@ def init_prop_data(
     init_w, init_e, err \
             = wave.energy_formula(weighps, t_enes, ham_data)
 
+    init_w *= options["n_walkers"]
     prop_data["walkers"] = walkers0
     prop_data["overlaps"] = g_olps0
-    prop_data["e_estimate"] = init_e
+    prop_data["e_estimate"] = init_e.real
     prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
 
     return prop_data, init_w, init_e

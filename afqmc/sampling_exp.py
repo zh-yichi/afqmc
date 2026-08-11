@@ -27,7 +27,7 @@ def weighted_average(weights, samples):
     nsample = len(weights)                     # static under jit
     samples = samples.reshape(nsample, -1)     # handle the single-term case
 
-    w_sum = jnp.sum(weights)
+    w_sum  = jnp.sum(weights)
     sample_mean = jnp.sum(weights[:, None] * samples, axis=0) / w_sum
 
     if nsample == 1:
@@ -324,6 +324,9 @@ class sampler:
 
         prop_data = prop.stochastic_reconfiguration_local(prop_data)
         prop_data["overlaps"] = wave.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data["n_killed_walkers"] += prop_data["weights"].size \
+            - jnp.count_nonzero(prop_data["weights"])
 
         return prop_data, (wp, sample_mean, sample_err)
 
@@ -352,15 +355,8 @@ class stocc_sampler(sampler):
             ),
         )
 
-        # mo_t = wave_data['mo_t']
-        # tau  = wave_data['tau']
-        # nslater = self.n_slater
-
         def scan_fn(carry, field):
             prop_data, wave_data = carry
-            # update stocc every step
-            # slaters, prop_data["key"] = cc_tools.get_stoccsd(mo_t, tau, nslater, prop_data["key"])
-            # wave_data = {**wave_data, "slaters": slaters}
             prop_data, wave_data = prop.propagate(wave, ham_data, prop_data, field, wave_data)
             return (prop_data, wave_data), None
 
