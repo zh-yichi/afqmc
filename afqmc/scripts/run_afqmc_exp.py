@@ -19,6 +19,9 @@ ham_data, wave_data = wave.build_intermediate(ham_data, wave_data)
 ham_data = prop._build_propagation_intermediates(ham_data, wave, wave_data)
 prop_data, init_w, init_e = prep_exp.init_prop_data(wave, wave_data, ham_data, options)
 
+print(f'propagator:   {prop}')
+print(f'wavefunction: {wave}')
+
 print("\nEquilibration")
 print(f"{'1/T':>5s}  {'weight':>10s}  "
       f"{'energy':>12s}  {'Time':>10s}")

@@ -118,23 +118,23 @@ class propagator(ABC):
             prop_data: dictionary containing the updated propagation data
         """
         force_bias = trial.calc_force_bias(prop_data["walkers"], ham_data, wave_data)
-        field_shifts = -jnp.sqrt(self.dt) * (1.0j * force_bias - ham_data["mf_shifts"])
-        shifted_fields = fields - field_shifts
-        shift_term = jnp.sum(shifted_fields * ham_data["mf_shifts"], axis=1)
+        field_shifts = -jnp.sqrt(self.dt) * (1.0j * force_bias - ham_data["mf_shifts"]) # xbar
+        shifted_fields = fields - field_shifts # x-xbar
+        shift_term = jnp.sum(shifted_fields * ham_data["mf_shifts"], axis=1) # (x-xbar)*m
         fb_term = jnp.sum(
             fields * field_shifts - field_shifts * field_shifts / 2.0, axis=1
-        )
+        ) # x*xbar - xbar^2/2
 
         prop_data["walkers"] = self._apply_trotprop(
             ham_data, prop_data["walkers"], shifted_fields
-        )
+        ) # exp(-th1/2) exp(sqrt(t)(x-xbar)v) exp(-th1/2) |w>
 
         overlaps_new = trial.calc_overlap(prop_data["walkers"], wave_data)
         # I(x,xbar,walkers,trial) = <trial|walkers_new>/<trial|walkers_old> 
         #                                 * exp(x_g xbar_g - 1/2 xbar_g xbar_g)
         imp_fun = (
             jnp.exp(
-                -jnp.sqrt(self.dt) * shift_term
+                -jnp.sqrt(self.dt) * shift_term # from sqrt(t)(x-xbar)(v-m)
                 + fb_term # pop_control_ene_shift = estimated ground state energy
                 + self.dt * (prop_data["pop_control_ene_shift"] + ham_data["h0_prop"])
             )
@@ -343,52 +343,36 @@ class propagator_restricted_stocc(propagator_restricted):
         fields: jax.Array,
         wave_data: dict,
     ) -> dict:
-        """Phaseless AFQMC propagation for sto updated guide.
-
-        Args:
-            guide: guide wave function handler
-            ham_data: dictionary containing the Hamiltonian data
-            prop_data: dictionary containing the propagation data
-            fields: auxiliary fields
-            wave_data: wave function data
-
-        Returns:
-            prop_data: dictionary containing the updated propagation data
-        """
-        overlaps_last = guide.calc_overlap(prop_data["walkers"], wave_data)
         wave_data["slaters"], prop_data["key"] = cc_tools.get_stoccsd(
             wave_data["mo_t"], wave_data["tau"], self.n_slater, prop_data["key"])
-        overlaps_prst = guide.calc_overlap(prop_data["walkers"], wave_data)
         force_bias = guide.calc_force_bias(prop_data["walkers"], ham_data, wave_data)
-
-        field_shifts = -jnp.sqrt(self.dt) * (1.0j * force_bias - ham_data["mf_shifts"]
-                                             ) * (overlaps_prst / overlaps_last)[:, None]
-        shifted_fields = fields - field_shifts
-        shift_term = jnp.sum(shifted_fields * ham_data["mf_shifts"], axis=1)
+        field_shifts = -jnp.sqrt(self.dt) * (1.0j * force_bias - ham_data["mf_shifts"]) # xbar
+        shifted_fields = fields - field_shifts # x-xbar
+        shift_term = jnp.sum(shifted_fields * ham_data["mf_shifts"], axis=1) # (x-xbar)*m
         fb_term = jnp.sum(
             fields * field_shifts - field_shifts * field_shifts / 2.0, axis=1
-        )
+        ) # x*xbar - xbar^2/2
 
         prop_data["walkers"] = self._apply_trotprop(
             ham_data, prop_data["walkers"], shifted_fields
-        )
+        ) # exp(-th1/2) exp(sqrt(t)(x-xbar)v) exp(-th1/2) |w>
 
         overlaps_new = guide.calc_overlap(prop_data["walkers"], wave_data)
-        # I(x,xbar,walkers,trial) = <trial|walkers>_new/<trial|walkers>_old
+        # I(x,xbar,walkers,trial) = <trial|walkers_new>/<trial|walkers_old> 
         #                                 * exp(x_g xbar_g - 1/2 xbar_g xbar_g)
         imp_fun = (
             jnp.exp(
-                -jnp.sqrt(self.dt) * shift_term
+                -jnp.sqrt(self.dt) * shift_term # from sqrt(t)(x-xbar)(v-m)
                 + fb_term # pop_control_ene_shift = estimated ground state energy
                 + self.dt * (prop_data["pop_control_ene_shift"] + ham_data["h0_prop"])
             )
             * overlaps_new
-            / overlaps_last
+            / prop_data["overlaps"]
         )
         theta = jnp.angle(
             jnp.exp(-jnp.sqrt(self.dt) * shift_term)
             * overlaps_new
-            / overlaps_last
+            / prop_data["overlaps"]
         )
         imp_fun_phaseless = jnp.abs(imp_fun) * jnp.cos(theta)
         imp_fun_phaseless = jnp.array(
