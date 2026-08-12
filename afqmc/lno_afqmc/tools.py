@@ -35,6 +35,39 @@ def uiao_localization(mf, lo_file=None):
         np.savez('./lo_coeff.npz', lo_coeff_a=lo_coeff_a,lo_coeff_b=lo_coeff_b)
     return lo_coeff, frag_lolist, moliao.elements
 
+# def uiao_localization(mf, lo_file=None):
+#     # IAO localization
+#     mol = mf.mol
+#     frozen = elements.chemcore(mol)
+#     orbocca = mf.mo_coeff[0][:,frozen:np.count_nonzero(mf.mo_occ[0])]
+#     orboccb = mf.mo_coeff[1][:,frozen:np.count_nonzero(mf.mo_occ[1])]
+#     orboccc = np.hstack([orbocca, orboccb])
+
+#     # svd combined orbitals
+#     s = mf.get_ovlp()                       # AO overlap, (nao, nao)
+#     G = orboccc.T @ s @ orboccc             # MO–MO Gram matrix, (n, n), symmetric PSD
+#     w, V = np.linalg.eigh(G)                # eigh == SVD for symmetric PSD
+#     w, V = w[::-1], V[:, ::-1]              # descending
+#     tol  = 1e-8 * w[0]                      # relative threshold
+#     keep = w > tol
+#     print(f"union dimension = {keep.sum()} of {len(w)}")
+#     # S-orthonormal orbitals spanning span(moa) ∪ span(mob)
+#     orboccc = orboccc @ (V[:, keep] / np.sqrt(w[keep]))
+#     # sanity check: physically orthonormal
+#     assert np.allclose(orboccc.T @ s @ orboccc, np.eye(keep.sum()), atol=1e-8)
+
+#     lo_coeff_c = lo.iao.iao(mol, orboccc)
+#     lo_coeff_c = lo.orth.vec_lowdin(lo_coeff_c, mf.get_ovlp())
+#     lo_coeff = [lo_coeff_c, lo_coeff_c]
+#     moliao = lo.iao.reference_mol(mol)
+#     frag_lolist = autofrag_iao(moliao)
+#     frag_lolist = [[i,i] for i in frag_lolist]
+
+#     if lo_file is not None:
+#         np.savez('./lo_coeff.npz', lo_coeff_a=lo_coeff[0],lo_coeff_b=lo_coeff[0])
+        
+#     return lo_coeff, frag_lolist, moliao.elements
+
 def iao_localization(mf, lo_file=None):
     if isinstance(mf, scf.rhf.RHF):
         return riao_localization(mf, lo_file)
@@ -77,16 +110,16 @@ def mo_span(mo1, s1e, mo2):
     return span12, span21
 
 
-def check_rspan(lo, s1e, mo, thresh=1e-10):
+def check_rspan(lo, s1e, mo):
     # lo passed as mo1 -> span12 tests  mo ⊆ span(lo)  (lo spans at least mo)
     span12, span21 = mo_span(lo, s1e, mo)
-    return span12 < thresh, span21 < thresh
+    return span12, span21
 
 
-def check_uspan(lo, s1e, mo, thresh=1e-10):
+def check_uspan(lo, s1e, mo):
     span12_a, span21_a = mo_span(lo[0], s1e, mo[0])
     span12_b, span21_b = mo_span(lo[1], s1e, mo[1])
-    return span12_a < thresh and span12_b < thresh, span21_a < thresh and span21_b < thresh
+    return (span12_a, span12_b), (span21_a, span21_b)
 
 
 def check_span(mf, lo_coeff_occ, frozen=0, thresh=1e-10):
@@ -99,11 +132,16 @@ def check_span(mf, lo_coeff_occ, frozen=0, thresh=1e-10):
                 np.count_nonzero(mf.mo_occ[1]))
         mo_coeff_occ = (mf.mo_coeff[0][:, frozen[0]:nocc[0]],
                         mf.mo_coeff[1][:, frozen[1]:nocc[1]])
-        span12, span21= check_uspan(lo_coeff_occ, s1e, mo_coeff_occ, thresh)
+        p12, p21 \
+            = check_uspan(lo_coeff_occ, s1e, mo_coeff_occ)
+        span12 = p12[0] < thresh and p12[1] < thresh
+        span21 = p21[0] < thresh and p21[1] < thresh
     elif isinstance(mf, scf.rhf.RHF):
         nocc = np.count_nonzero(mf.mo_occ)
         mo_coeff_occ = mf.mo_coeff[:, frozen:nocc]
-        span12, span21 = check_rspan(lo_coeff_occ, s1e, mo_coeff_occ, thresh)
+        p12, p21 = check_rspan(lo_coeff_occ, s1e, mo_coeff_occ)
+        span12 = p12 < thresh
+        span21 = p21 < thresh
     else:
         raise TypeError(f'unsupported mean-field type: {type(mf)}')
 
@@ -111,7 +149,8 @@ def check_span(mf, lo_coeff_occ, frozen=0, thresh=1e-10):
           f'MO occ span the occupied LO occ space - {span21}.')
     
     if not span12:
-        raise ValueError(f"LOs DO NOT SPAN MOs, CHECK THE LOCALIZATION!!!")
+        raise ValueError(f"LOs DO NOT SPAN MOs, CHECK THE LOCALIZATION!!!"
+                         f"the projection lost are {p12} {p21}")
     
     return None
 
