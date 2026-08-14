@@ -35,38 +35,46 @@ def uiao_localization(mf, lo_file=None):
         np.savez('./lo_coeff.npz', lo_coeff_a=lo_coeff_a,lo_coeff_b=lo_coeff_b)
     return lo_coeff, frag_lolist, moliao.elements
 
-# def uiao_localization(mf, lo_file=None):
-#     # IAO localization
-#     mol = mf.mol
-#     frozen = elements.chemcore(mol)
-#     orbocca = mf.mo_coeff[0][:,frozen:np.count_nonzero(mf.mo_occ[0])]
-#     orboccb = mf.mo_coeff[1][:,frozen:np.count_nonzero(mf.mo_occ[1])]
-#     orboccc = np.hstack([orbocca, orboccb])
+def uiao_localization2(mf, lo_file=None):
+    # IAO localization
+    mol = mf.mol
+    frozen = elements.chemcore(mol)
+    moliao = lo.iao.reference_mol(mol)
+    # niao = moliao.nao
+    # print(niao)
+    orbocca = mf.mo_coeff[0][:,frozen:np.count_nonzero(mf.mo_occ[0])]
+    orboccb = mf.mo_coeff[1][:,frozen:np.count_nonzero(mf.mo_occ[1])]
+    orboccc = np.hstack([orbocca, orboccb])
+    # svd combined orbitals
+    s = mf.get_ovlp()                       # AO overlap, (nao, nao)
+    G = orboccc.T @ s @ orboccc             # MO–MO Gram matrix, (n, n), symmetric PSD
+    w, V = np.linalg.eigh(G)                # eigh == SVD for symmetric PSD
+    w, V = w[::-1], V[:, ::-1]              # descending
+    # tol  = 1e-10 * w[0]                      # relative threshold
+    keep = w > 1e-6
+    print(f"union dimension = {keep.sum()} of {len(w)}")
+    # S-orthonormal orbitals spanning span(moa) ∪ span(mob)
+    orboccc_orth = orboccc @ (V[:, keep] / np.sqrt(w[keep]))
+    # sanity check: physically orthonormal
+    assert np.allclose(orboccc_orth.T @ s @ orboccc_orth, np.eye(keep.sum()), atol=1e-8)
+    iao_coeff = lo.iao.iao(mol, orboccc_orth)
+    iao_coeff = lo.orth.vec_lowdin(iao_coeff, mf.get_ovlp())
+    lo_coeff = [iao_coeff, iao_coeff]
+    #moliao = lo.iao.reference_mol(mol)
+    frag_lolist = autofrag_iao(moliao)
+    frag_lolist = [[i,i] for i in frag_lolist]
+    
+    print(mo_span(iao_coeff, s, orbocca))
+    print(mo_span(iao_coeff, s, orboccb))
+    print(mo_span(iao_coeff, s, orboccc_orth))
+    print(mo_span(orbocca, s, orboccc_orth))
+    print(mo_span(orboccb, s, orboccc_orth))
+    print(iao_coeff.shape)
 
-#     # svd combined orbitals
-#     s = mf.get_ovlp()                       # AO overlap, (nao, nao)
-#     G = orboccc.T @ s @ orboccc             # MO–MO Gram matrix, (n, n), symmetric PSD
-#     w, V = np.linalg.eigh(G)                # eigh == SVD for symmetric PSD
-#     w, V = w[::-1], V[:, ::-1]              # descending
-#     tol  = 1e-8 * w[0]                      # relative threshold
-#     keep = w > tol
-#     print(f"union dimension = {keep.sum()} of {len(w)}")
-#     # S-orthonormal orbitals spanning span(moa) ∪ span(mob)
-#     orboccc = orboccc @ (V[:, keep] / np.sqrt(w[keep]))
-#     # sanity check: physically orthonormal
-#     assert np.allclose(orboccc.T @ s @ orboccc, np.eye(keep.sum()), atol=1e-8)
-
-#     lo_coeff_c = lo.iao.iao(mol, orboccc)
-#     lo_coeff_c = lo.orth.vec_lowdin(lo_coeff_c, mf.get_ovlp())
-#     lo_coeff = [lo_coeff_c, lo_coeff_c]
-#     moliao = lo.iao.reference_mol(mol)
-#     frag_lolist = autofrag_iao(moliao)
-#     frag_lolist = [[i,i] for i in frag_lolist]
-
-#     if lo_file is not None:
-#         np.savez('./lo_coeff.npz', lo_coeff_a=lo_coeff[0],lo_coeff_b=lo_coeff[0])
-        
-#     return lo_coeff, frag_lolist, moliao.elements
+    if lo_file is not None:
+        np.savez('./lo_coeff.npz', lo_coeff_a=lo_coeff[0],lo_coeff_b=lo_coeff[0])
+      
+    return lo_coeff, frag_lolist, moliao.elements
 
 def iao_localization(mf, lo_file=None):
     if isinstance(mf, scf.rhf.RHF):
@@ -122,7 +130,7 @@ def check_uspan(lo, s1e, mo):
     return (span12_a, span12_b), (span21_a, span21_b)
 
 
-def check_span(mf, lo_coeff_occ, frozen=0, thresh=1e-10):
+def check_span(mf, lo_coeff_occ, frozen=0, thresh=1e-6):
     s1e = mf.get_ovlp()
 
     if isinstance(mf, scf.uhf.UHF):

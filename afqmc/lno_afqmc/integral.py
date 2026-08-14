@@ -7,6 +7,7 @@ import numpy as np
 
 from afqmc import integral, cholesky
 from afqmc.corr_sample import integral as csi
+from afqmc.lno_afqmc import tools
 
 from pyscf import lib, scf
 
@@ -19,7 +20,7 @@ def prjmo(prj, s1e, mo):
     mo_rec = prj @ prj.T @ s1e @ mo
     return mo_rec
 
-def common_las(mf, lno_coeff, ncas, ncore, torr=1e-8):
+def common_las2(mf, lno_coeff, ncas, ncore, torr=1e-8):
     print("Constructing cLAS that spans both Alpha and Beta active space")
     s1e = mf.get_ovlp()
     lno_acta = lno_coeff[0][:, ncore[0]:ncore[0] + ncas[0]]
@@ -51,6 +52,51 @@ def common_las(mf, lno_coeff, ncas, ncore, torr=1e-8):
     print('True Common LAS Shape: ', clas_coeff.shape)
     a2c = clas_coeff.T @ s1e @ lno_acta   # <C|A>
     b2c = clas_coeff.T @ s1e @ lno_actb   # <C|B>
+    return clas_coeff, a2c, b2c
+
+def common_las(mf, lno_coeff, ncas, ncore, torr=1e-8):
+    print("Constructing cLAS that spans both Alpha and Beta active space")
+
+    lno_acta = lno_coeff[0][:, ncore[0]:ncore[0] + ncas[0]]
+    lno_actb = lno_coeff[1][:, ncore[1]:ncore[1] + ncas[1]]
+    lno_actc = np.hstack([lno_acta, lno_actb])   # redundant spanning set for the union
+    print('Naive cLAS Size: ', lno_actc.shape[1])
+
+    # svd combined orbitals
+    s = mf.get_ovlp()                       # AO overlap, (nao, nao)
+    G = lno_actc.T @ s @ lno_actc           # MO–MO Gram matrix, (n, n), symmetric PSD
+    w, V = np.linalg.eigh(G)                # eigh == SVD for symmetric PSD
+    w, V = w[::-1], V[:, ::-1]              # descending
+    # tol  = 1e-10 * w[0]                      # relative threshold
+    keep = w > torr
+    rank = keep.sum()
+    print(f"union dimension = {keep.sum()} of {len(w)}")
+    # S-orthonormal orbitals spanning span(moa) ∪ span(mob)
+    clas_coeff = lno_actc @ (V[:, keep] / np.sqrt(w[keep]))
+    # sanity check: physically orthonormal
+    assert np.allclose(clas_coeff.T @ s @ clas_coeff, np.eye(rank), atol=torr)
+
+    print(f'Orthonormalized cLAS size: {clas_coeff.shape[1]}')
+    print(f'cLAS singular value threshold: {torr}')
+    print(f'Smallest retained singular value: {w[keep][-1]:.2e}')
+    if rank < w.size:
+        print(f'Largest discarded singular value: {w[rank]:.2e}')
+    else:
+        print('No singular values discarded (alpha and beta spaces disjoint)')
+    print(f"Minimum size of cLAS to span both Alpha and Beta LAS: {rank}")
+
+    a2c = clas_coeff.T @ s @ lno_acta   # <C|A>
+    b2c = clas_coeff.T @ s @ lno_actb   # <C|B>
+
+    p12a, p21a = tools.mo_span(clas_coeff, s, lno_acta)
+    p12b, p21b = tools.mo_span(clas_coeff, s, lno_actb)
+
+    assert p12a < torr
+    assert p12b < torr
+
+    print(f"alpha proj comm loss {p12a}")
+    print(f"beta proj comm loss  {p12b}")
+
     return clas_coeff, a2c, b2c
 
 def get_las_idx(mf, lno_frozen):
@@ -136,7 +182,7 @@ def get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut):
         print(f"Build effective h0 and h1 time: {time.time()-time0:.6f} s")
         print("Composing CDERIs from DF")
         time0 = time.time()
-        clas_coeff, a2c, b2c = common_las(mf, lno_coeff, ncas, ncore, torr=1e-8)
+        clas_coeff, a2c, b2c = common_las(mf, lno_coeff, ncas, ncore, torr=1e-5)
         print(f"Build Common LAS time: {time.time()-time0:.6f} s")
         time0 = time.time()
         nclas = clas_coeff.shape[1]

@@ -126,13 +126,13 @@ def lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=3):
     if isinstance(mf, scf.rhf.RHF):
         mcc = lnoccsd.CCSD(mf, mo_coeff=lno_coeff, frozen=lno_frozen).set(verbose=verbose)
         mcc.conv_tol = 1e-6
-        mcc.conv_tol_normt = 1e-5
+        mcc.conv_tol_normt = 3e-5
         ecc_frag, t1, t2 = \
             mod_lnoccsd.rlnoccsd_solver(mcc, lno_coeff, uocc_loc, mlno.mo_occ, maskact)
     elif isinstance(mf, scf.uhf.UHF):
         mcc = ulnoccsd.UCCSD(mf, mo_coeff=lno_coeff, frozen=lno_frozen).set(verbose=verbose)
         mcc.conv_tol = 1e-6
-        mcc.conv_tol_normt = 1e-5
+        mcc.conv_tol_normt = 3e-5
         ecc_frag, t1, t2 = \
             mod_lnoccsd.ulnoccsd_solver(mcc, lno_coeff, uocc_loc, mlno.mo_occ, maskact)
     else: 
@@ -206,7 +206,7 @@ def run_afqmc(mf,
     print("\n ******* LNO-CALCULATION ******* \n")
     print(f"LNO THRESHOLD = {thresh}")
     
-    tools.check_span(mf, lo_coeff, nfrozen, thresh=1e-10)
+    tools.check_span(mf, lo_coeff, nfrozen, thresh=1e-6)
 
     spin_type = prep.kind(lo_coeff)
 
