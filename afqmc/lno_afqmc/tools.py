@@ -1,29 +1,47 @@
 import re
 import numpy as np
+from collections import defaultdict
 
 from pyscf import gto, lo, scf
+from pyscf.scf import atom_hf
 from pyscf.data import elements
 from pyscf.lno import tools
 
-from collections import defaultdict
 
+def _fix_ecpbas(mol):
+    """Repair `_ecpbas` on a mol restored from a chkfile.
 
-def free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8):
+    gto.mole.dumps() serializes an empty `_ecpbas` -- zeros((0, BAS_SLOTS)) --
+    with .tolist(), which collapses it to a bare []; loads() then rebuilds it
+    as shape (0,). Mole.build() only reassigns `_ecpbas` when an ECP is
+    present, so the 1D array survives and anything doing `_ecpbas[:, 0]`
+    (e.g. pyscf.scf.atom_hf) raises IndexError. Only bites ECP-free molecules.
+    """
+    if np.asarray(mol._ecpbas).ndim != 2:
+        mol._ecpbas = np.zeros((0, gto.BAS_SLOTS), dtype=np.int32)
+    return mol
+
+def free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8, x2c=None):
     """Free-atom occupied HF orbitals (core+valence) in the uncontracted
-    working basis, packaged as a PySCF basis dict for use as `minao`."""
+    working basis, packaged as a PySCF basis dict for use as `minao`.
+
+    x2c : None -> enable scalar relativity iff the working basis is a
+           relativistically recontracted one (-DK, -DKH, x2c-, ANO-RCC, ...);
+           True/False to force it on or off.
+    """
+    _fix_ecpbas(mol)
+    if x2c is None:
+        x2c = _is_relativistic_basis(mol.basis)
+
     elems = set(mol.elements)
 
     # uncontracted working basis, per element
     unc = {sym: gto.uncontract(mol._basis[sym]) for sym in elems}
 
-    # spherically-averaged atomic HF in that uncontracted basis
-    pmol = mol.copy()
-    pmol.build(False, False, basis=unc)
-    atm_scf = scf.atom_hf.get_atm_nrhf(pmol)          # {sym: (e_hf, e, c, occ)}
-
     ref_basis = {}
     for sym in elems:
-        # single-atom mol only to read the (l, exponent) shell layout
+        # single-atom mol: carries both the (l, exponent) shell layout and the
+        # atomic SCF, so no whole-molecule copy goes through atom_hf
         a1 = gto.M(atom=f'{sym} 0 0 0', basis={sym: unc[sym]},
                    spin=gto.charge(sym) % 2, verbose=0)
         ao_loc = a1.ao_loc_nr()
@@ -32,8 +50,17 @@ def free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8):
             shells_by_l[a1.bas_angular(ib)].append(
                 (float(a1.bas_exp(ib)[0]), ao_loc[ib]))
 
-        _, _, c, occ = atm_scf[sym]
-        assert c.shape[0] == a1.nao
+        # spherically-averaged atomic HF in the uncontracted basis. sfx2c1e
+        # only swaps get_hcore, so the angular averaging in .eig() still holds
+        # (for a single atom the X2C hcore stays spherically symmetric).
+        amf = (atom_hf.AtomHF1e(a1) if a1.nelectron == 1
+               else atom_hf.AtomSphAverageRHF(a1))
+        if x2c:
+            amf = amf.sfx2c1e()
+        amf.verbose = 0
+        amf.run()
+
+        c, occ = amf.mo_coeff, amf.mo_occ
         occ_cols = c[:, occ > occ_tol]            # occupied core + valence
 
         shells = []
@@ -65,6 +92,27 @@ def _is_ccpvxz_family(basis):
         return is_cc(basis)
     if isinstance(basis, dict):
         return bool(basis) and all(is_cc(v) for v in basis.values())
+    return False
+
+# relativistically recontracted basis families: Douglas-Kroll (cc-pVTZ-DK,
+# cc-pwCVTZ-DK3), DKH (Sapporo-DKH3-TZP), X2C (x2c-TZVPall), ANO-RCC, ZORA,
+# Dyall. Matched on the name with whitespace/hyphens/underscores stripped.
+_RELATIVISTIC = re.compile(r'(dk\d?$|dkh\d?|^x2c|anorcc|^zora|^dyall)')
+
+def _is_relativistic_basis(basis):
+    """True if ANY element uses a relativistically recontracted basis.
+
+    `any` rather than `all`: a mixed input still means the molecular SCF was
+    run with scalar relativity, so the free-atom reference should match.
+    """
+    def is_rel(name):
+        if not isinstance(name, str):     # parsed/custom basis object -> unknown
+            return False
+        return bool(_RELATIVISTIC.search(re.sub(r'[\s\-_]', '', name.lower())))
+    if isinstance(basis, str):
+        return is_rel(basis)
+    if isinstance(basis, dict):
+        return any(is_rel(v) for v in basis.values())
     return False
 
 def name_fragments(frag_atmlist, elements, sep=""):
@@ -99,11 +147,11 @@ def riao_fragment(mf, nfrozen, frag_type='atom', more_loc=None, minao='minao'):
     if more_loc is None:
         frag_list = tools.autofrag_iao(moliao, 'atom', frag_atmlist)
     elif more_loc == 'boys':
-        lo_coeff = lo.Boys(mol).kernel(lo_coeff)
+        lo_coeff = lo.Boys(mol, lo_coeff).kernel()
         lo_coeff = lo.orth.vec_lowdin(lo_coeff, s1e)
         frag_list = tools.map_lo_to_frag(mol, lo_coeff, frag_atmlist)
     elif more_loc == 'pm':
-        lo_coeff = lo.PM(mol).kernel(lo_coeff)
+        lo_coeff = lo.PM(mol, lo_coeff).kernel()
         lo_coeff = lo.orth.vec_lowdin(lo_coeff, s1e)
         frag_list = tools.map_lo_to_frag(mol, lo_coeff, frag_atmlist)
     else:
@@ -143,16 +191,16 @@ def uiao_fragment(mf, nfrozen, frag_type='atom', more_loc=None, minao='minao'):
         frag_list = tools.autofrag_iao(moliao, 'atom', frag_atmlist)
         frag_list = [[i,i] for i in frag_list]
     elif more_loc == 'boys':
-        lo_coeff_a = lo.Boys(mol).kernel(lo_coeff_a)
+        lo_coeff_a = lo.Boys(mol, lo_coeff_a).kernel()
         lo_coeff_a = lo.orth.vec_lowdin(lo_coeff_a, s1e)
-        lo_coeff_b = lo.Boys(mol).kernel(lo_coeff_b)
+        lo_coeff_b = lo.Boys(mol, lo_coeff_b).kernel()
         lo_coeff_b = lo.orth.vec_lowdin(lo_coeff_b, s1e)
         lo_coeff = [lo_coeff_a, lo_coeff_b]
         frag_list = tools.map_lo_to_frag(mol, lo_coeff, frag_atmlist)
     elif more_loc == 'pm':
-        lo_coeff_a = lo.PM(mol).kernel(lo_coeff_a)
+        lo_coeff_a = lo.PM(mol, lo_coeff_a).kernel()
         lo_coeff_a = lo.orth.vec_lowdin(lo_coeff_a, s1e)
-        lo_coeff_b = lo.PM(mol).kernel(lo_coeff_b)
+        lo_coeff_b = lo.PM(mol, lo_coeff_b).kernel()
         lo_coeff_b = lo.orth.vec_lowdin(lo_coeff_b, s1e)
         lo_coeff = [lo_coeff_a, lo_coeff_b]
         frag_list = tools.map_lo_to_frag(mol, lo_coeff, frag_atmlist)
@@ -170,7 +218,8 @@ def uiao_fragment(mf, nfrozen, frag_type='atom', more_loc=None, minao='minao'):
 
     return lo_coeff, frag_list, frag_name
 
-def iao_fragment(mf, nfrozen=None, frag_type='h2heavy', more_loc=None, minao='minao'):
+def iao_fragment(mf, nfrozen=None, frag_type='h2heavy', more_loc=None,
+                 minao='minao', x2c=None):
     mol = mf.mol
 
     if nfrozen is None:
@@ -179,7 +228,12 @@ def iao_fragment(mf, nfrozen=None, frag_type='h2heavy', more_loc=None, minao='mi
     if not _is_ccpvxz_family(mol.basis):
         print('Detected basis set not in the cc-pVXZ family. '
               'Run free atom scf to generate reference basis.')
-        minao = free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8)
+        if x2c is None:
+            x2c = _is_relativistic_basis(mol.basis)
+        if x2c:
+            print('Detected relativistic basis set. '
+                  'Run free atom scf with scalar relativistic (sfX2C1e) effects.')
+        minao = free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8, x2c=x2c)
 
     if isinstance(mf, scf.rhf.RHF):
         return riao_fragment(mf, nfrozen, frag_type, more_loc, minao)

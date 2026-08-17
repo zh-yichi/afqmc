@@ -381,4 +381,4 @@ def run_afqmc(mf,
         
         f.write('=' * width + '\n\n')
 
-    return None
+    return e_mp, e_cc, e_qmc, e_qmc_err, lno_max
