@@ -346,19 +346,19 @@ def run_afqmc(mf,
     tot_qmc_time = np.sum(lno_qmc_time)
 
     with open(f'lno_result.out', 'w') as f:
-        width = 100
+        width = 110
         f.write('=' * width + '\n')
         f.write(f'{"LNO-AFQMC Results":^{width}}\n')
         f.write('=' * width + '\n')
 
-        f.write(f'{"Num":>4s}  {"Fragment":>10s}  {"LAS SIZE":>10s}  '
+        f.write(f'{"Num":>4s}  {"Fragment":>16s}  {"LAS SIZE":>10s}  '
                 f'{"E(MP2)":>10s}  {"E(CCSD)":>10s}  '
                 f'{"E(AFQMC)":>10s}  {"Error":>8s}  '
                 f'{"t(CCSD)":>8s}  {"t(AFQMC)":>8s}\n')
         f.write('-' * width + '\n')
         
         for n, i in enumerate(run_frag):
-            f.write(f"{i+1:4d}  {frag_name[n]:>10s}  {lno_size[n]:10s}  "
+            f.write(f"{i+1:4d}  {frag_name[n]:>16s}  {lno_size[n]:10s}  "
                     f"{lno_emp[n]:10.8f}  {lno_ecc[n]:10.8f}  "
                     f"{lno_eqmc[n]:10.5f}  {lno_eqmc_err[n]:8.5f}  "
                     f"{lno_cc_time[n]:8.2f}  {lno_qmc_time[n]:8.2f}\n")
