@@ -1,104 +1,211 @@
+import re
 import numpy as np
 
-from pyscf import lo, scf
+from pyscf import gto, lo, scf
 from pyscf.data import elements
-from pyscf.lno.tools import autofrag_iao
+from pyscf.lno import tools
 
-def riao_localization(mf, lo_file=None):
+from collections import defaultdict
+
+
+def free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8):
+    """Free-atom occupied HF orbitals (core+valence) in the uncontracted
+    working basis, packaged as a PySCF basis dict for use as `minao`."""
+    elems = set(mol.elements)
+
+    # uncontracted working basis, per element
+    unc = {sym: gto.uncontract(mol._basis[sym]) for sym in elems}
+
+    # spherically-averaged atomic HF in that uncontracted basis
+    pmol = mol.copy()
+    pmol.build(False, False, basis=unc)
+    atm_scf = scf.atom_hf.get_atm_nrhf(pmol)          # {sym: (e_hf, e, c, occ)}
+
+    ref_basis = {}
+    for sym in elems:
+        # single-atom mol only to read the (l, exponent) shell layout
+        a1 = gto.M(atom=f'{sym} 0 0 0', basis={sym: unc[sym]},
+                   spin=gto.charge(sym) % 2, verbose=0)
+        ao_loc = a1.ao_loc_nr()
+        shells_by_l = defaultdict(list)           # l -> [(exp, ao_start), ...]
+        for ib in range(a1.nbas):
+            shells_by_l[a1.bas_angular(ib)].append(
+                (float(a1.bas_exp(ib)[0]), ao_loc[ib]))
+
+        _, _, c, occ = atm_scf[sym]
+        assert c.shape[0] == a1.nao
+        occ_cols = c[:, occ > occ_tol]            # occupied core + valence
+
+        shells = []
+        for l in sorted(shells_by_l):
+            exps   = np.array([e for e, _ in shells_by_l[l]])
+            starts = [s for _, s in shells_by_l[l]]
+            p, ncomp = len(exps), 2 * l + 1
+            # radial coeffs over exponents, all m-components stacked
+            A = np.stack([occ_cols[s:s+ncomp, :] for s in starts])  # (p, ncomp, nocc)
+            Rrad = A.reshape(p, -1)                                   # (p, ncomp*nocc)
+            u, sv, _ = np.linalg.svd(Rrad, full_matrices=False)
+            for i in np.where(sv > sv_tol * sv.max())[0]:            # distinct radial fns
+                d = u[:, i]
+                shells.append([l] + [[float(exps[k]), float(d[k])] for k in range(p)])
+        ref_basis[sym] = shells
+    return ref_basis
+
+# plain all-electron Dunning cc-pVXZ, incl. aug- and core-valence variants;
+# anchored $ so relativistic/PP suffixes (-dk, -pp, -f12) deliberately fail
+_CCPVXZ = re.compile(r'^(daug|aug)?ccp(w?c)?v[dtq56]z$')
+
+def _is_ccpvxz_family(basis):
+    """True only if EVERY element uses a cc-pVXZ-family basis name."""
+    def is_cc(name):
+        if not isinstance(name, str):     # parsed/custom basis object -> not cc-pVXZ
+            return False
+        return bool(_CCPVXZ.match(re.sub(r'[\s\-_]', '', name.lower())))
+    if isinstance(basis, str):
+        return is_cc(basis)
+    if isinstance(basis, dict):
+        return bool(basis) and all(is_cc(v) for v in basis.values())
+    return False
+
+def name_fragments(frag_atmlist, elements, sep=""):
+    """
+    Build a name for each fragment by tagging every atom with its
+    element symbol and its original index.
+
+    frag_atmlist : list of lists of atom indices
+    elements     : list mapping atom index -> element symbol
+    sep          : string placed between atoms in a fragment name
+    """
+    return [sep.join(f"{elements[i]}{i}" for i in frag)
+            for frag in frag_atmlist]
+
+def riao_fragment(mf, nfrozen, frag_type='atom', more_loc=None, minao='minao'):
     # IAO localization
     mol = mf.mol
-    frozen = elements.chemcore(mol)
-    orbocc = mf.mo_coeff[:,frozen:np.count_nonzero(mf.mo_occ)]
-    lo_coeff = lo.iao.iao(mol, orbocc)
-    lo_coeff = lo.orth.vec_lowdin(lo_coeff, mf.get_ovlp())
-    moliao = lo.iao.reference_mol(mol)
-    frag_lolist = autofrag_iao(moliao)
-    if lo_file is not None:
-        np.savez('./lo_coeff.npz', lo_coeff=lo_coeff)
-    return lo_coeff, frag_lolist, moliao.elements
+    s1e = mf.get_ovlp()
+    moliao = lo.iao.reference_mol(mol, minao)
+    nocc = np.count_nonzero(mf.mo_occ)
+    orbocc = mf.mo_coeff[:,nfrozen:nocc]
+    lo_coeff = lo.iao.iao(mol, orbocc, minao=minao)
+    lo_coeff = lo.orth.vec_lowdin(lo_coeff, s1e)
 
-def uiao_localization(mf, lo_file=None):
-    # IAO localization
-    mol = mf.mol
-    frozen = elements.chemcore(mol)
-    orbocc_a = mf.mo_coeff[0][:,frozen:np.count_nonzero(mf.mo_occ[0])]
-    orbocc_b = mf.mo_coeff[1][:,frozen:np.count_nonzero(mf.mo_occ[1])]
-    lo_coeff_a = lo.iao.iao(mol, orbocc_a)
-    lo_coeff_a = lo.orth.vec_lowdin(lo_coeff_a, mf.get_ovlp())
-    lo_coeff_b = lo.iao.iao(mol, orbocc_b)
-    lo_coeff_b = lo.orth.vec_lowdin(lo_coeff_b, mf.get_ovlp())
-    lo_coeff = [lo_coeff_a, lo_coeff_b]
-    moliao = lo.iao.reference_mol(mol)
-    frag_lolist = autofrag_iao(moliao)
-    frag_lolist = [[i,i] for i in frag_lolist]
-    if lo_file is not None:
-        np.savez('./lo_coeff.npz', lo_coeff_a=lo_coeff_a,lo_coeff_b=lo_coeff_b)
-    return lo_coeff, frag_lolist, moliao.elements
+    if frag_type == 'atom':
+        frag_atmlist = tools.autofrag_atom(moliao, H2heavy=False)
+    elif frag_type == 'h2heavy':
+        frag_atmlist = tools.autofrag_atom(moliao, H2heavy=True)
+    else:
+        raise ValueError(f'Unsupported fragment type {str(frag_type)}')
 
-def uiao_localization2(mf, lo_file=None):
-    # IAO localization
-    mol = mf.mol
-    frozen = elements.chemcore(mol)
-    moliao = lo.iao.reference_mol(mol)
-    # niao = moliao.nao
-    # print(niao)
-    orbocca = mf.mo_coeff[0][:,frozen:np.count_nonzero(mf.mo_occ[0])]
-    orboccb = mf.mo_coeff[1][:,frozen:np.count_nonzero(mf.mo_occ[1])]
-    orboccc = np.hstack([orbocca, orboccb])
-    # svd combined orbitals
-    s = mf.get_ovlp()                       # AO overlap, (nao, nao)
-    G = orboccc.T @ s @ orboccc             # MO–MO Gram matrix, (n, n), symmetric PSD
-    w, V = np.linalg.eigh(G)                # eigh == SVD for symmetric PSD
-    w, V = w[::-1], V[:, ::-1]              # descending
-    # tol  = 1e-10 * w[0]                      # relative threshold
-    keep = w > 1e-6
-    print(f"union dimension = {keep.sum()} of {len(w)}")
-    # S-orthonormal orbitals spanning span(moa) ∪ span(mob)
-    orboccc_orth = orboccc @ (V[:, keep] / np.sqrt(w[keep]))
-    # sanity check: physically orthonormal
-    assert np.allclose(orboccc_orth.T @ s @ orboccc_orth, np.eye(keep.sum()), atol=1e-8)
-    iao_coeff = lo.iao.iao(mol, orboccc_orth)
-    iao_coeff = lo.orth.vec_lowdin(iao_coeff, mf.get_ovlp())
-    lo_coeff = [iao_coeff, iao_coeff]
-    #moliao = lo.iao.reference_mol(mol)
-    frag_lolist = autofrag_iao(moliao)
-    frag_lolist = [[i,i] for i in frag_lolist]
+    if more_loc is None:
+        frag_list = tools.autofrag_iao(moliao, 'atom', frag_atmlist)
+    elif more_loc == 'boys':
+        lo_coeff = lo.Boys(mol).kernel(lo_coeff)
+        lo_coeff = lo.orth.vec_lowdin(lo_coeff, s1e)
+        frag_list = tools.map_lo_to_frag(mol, lo_coeff, frag_atmlist)
+    elif more_loc == 'pm':
+        lo_coeff = lo.PM(mol).kernel(lo_coeff)
+        lo_coeff = lo.orth.vec_lowdin(lo_coeff, s1e)
+        frag_list = tools.map_lo_to_frag(mol, lo_coeff, frag_atmlist)
+    else:
+        raise ValueError(f'Unsupported lo type {str(more_loc)}')
+
+    frag_name = name_fragments(frag_atmlist, moliao.elements, sep="")
+
+    ortho = lo_coeff.conj().T @ s1e @ lo_coeff
+    assert np.allclose(ortho, np.eye(ortho.shape[1]), atol=1e-8), \
+        f"IAOs not orthonormal: max dev {np.abs(ortho - np.eye(ortho.shape[1])).max():.2e}"
     
-    print(mo_span(iao_coeff, s, orbocca))
-    print(mo_span(iao_coeff, s, orboccb))
-    print(mo_span(iao_coeff, s, orboccc_orth))
-    print(mo_span(orbocca, s, orboccc_orth))
-    print(mo_span(orboccb, s, orboccc_orth))
-    print(iao_coeff.shape)
+    return lo_coeff, frag_list, frag_name
 
-    if lo_file is not None:
-        np.savez('./lo_coeff.npz', lo_coeff_a=lo_coeff[0],lo_coeff_b=lo_coeff[0])
-      
-    return lo_coeff, frag_lolist, moliao.elements
+def uiao_fragment(mf, nfrozen, frag_type='atom', more_loc=None, minao='minao'):
+    # IAO localization
+    mol = mf.mol
+    s1e = mf.get_ovlp()
+    moliao = lo.iao.reference_mol(mol, minao)
+    nocca = np.count_nonzero(mf.mo_occ[0])
+    noccb = np.count_nonzero(mf.mo_occ[1])
+    orbocc_a = mf.mo_coeff[0][:,nfrozen:nocca]
+    orbocc_b = mf.mo_coeff[1][:,nfrozen:noccb]
+    lo_coeff_a = lo.iao.iao(mol, orbocc_a, minao)
+    lo_coeff_a = lo.orth.vec_lowdin(lo_coeff_a, s1e)
+    lo_coeff_b = lo.iao.iao(mol, orbocc_b, minao)
+    lo_coeff_b = lo.orth.vec_lowdin(lo_coeff_b, s1e)
 
-def iao_localization(mf, lo_file=None):
+    if frag_type == 'atom':
+        frag_atmlist = tools.autofrag_atom(moliao, H2heavy=False)
+    elif frag_type == 'h2heavy':
+        frag_atmlist = tools.autofrag_atom(moliao, H2heavy=True)
+    else:
+        raise ValueError(f'Unsupported fragment type {str(frag_type)}')
+
+    if more_loc is None:
+        lo_coeff = [lo_coeff_a, lo_coeff_b]
+        frag_list = tools.autofrag_iao(moliao, 'atom', frag_atmlist)
+        frag_list = [[i,i] for i in frag_list]
+    elif more_loc == 'boys':
+        lo_coeff_a = lo.Boys(mol).kernel(lo_coeff_a)
+        lo_coeff_a = lo.orth.vec_lowdin(lo_coeff_a, s1e)
+        lo_coeff_b = lo.Boys(mol).kernel(lo_coeff_b)
+        lo_coeff_b = lo.orth.vec_lowdin(lo_coeff_b, s1e)
+        lo_coeff = [lo_coeff_a, lo_coeff_b]
+        frag_list = tools.map_lo_to_frag(mol, lo_coeff, frag_atmlist)
+    elif more_loc == 'pm':
+        lo_coeff_a = lo.PM(mol).kernel(lo_coeff_a)
+        lo_coeff_a = lo.orth.vec_lowdin(lo_coeff_a, s1e)
+        lo_coeff_b = lo.PM(mol).kernel(lo_coeff_b)
+        lo_coeff_b = lo.orth.vec_lowdin(lo_coeff_b, s1e)
+        lo_coeff = [lo_coeff_a, lo_coeff_b]
+        frag_list = tools.map_lo_to_frag(mol, lo_coeff, frag_atmlist)
+    else:
+        raise TypeError(f'Unsupported lo type {str(more_loc)}')
+
+    frag_name = name_fragments(frag_atmlist, moliao.elements, sep="")
+
+    ortho_a = lo_coeff[0].conj().T @ s1e @ lo_coeff[0]
+    ortho_b = lo_coeff[1].conj().T @ s1e @ lo_coeff[1]
+    assert np.allclose(ortho_a, np.eye(ortho_a.shape[1]), atol=1e-8), \
+        f"IAOs not orthonormal: max dev {np.abs(ortho_a - np.eye(ortho_a.shape[1])).max():.2e}"
+    assert np.allclose(ortho_b, np.eye(ortho_b.shape[1]), atol=1e-8), \
+        f"IAOs not orthonormal: max dev {np.abs(ortho_b - np.eye(ortho_b.shape[1])).max():.2e}"
+
+    return lo_coeff, frag_list, frag_name
+
+def iao_fragment(mf, nfrozen=None, frag_type='h2heavy', more_loc=None, minao='minao'):
+    mol = mf.mol
+
+    if nfrozen is None:
+        nfrozen = elements.chemcore(mol)
+
+    if not _is_ccpvxz_family(mol.basis):
+        print('Detected basis set not in the cc-pVXZ family. '
+              'Run free atom scf to generate reference basis.')
+        minao = free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8)
+
     if isinstance(mf, scf.rhf.RHF):
-        return riao_localization(mf, lo_file)
+        return riao_fragment(mf, nfrozen, frag_type, more_loc, minao)
     elif isinstance(mf, scf.uhf.UHF):
-        return uiao_localization(mf, lo_file)
+        return uiao_fragment(mf, nfrozen, frag_type, more_loc, minao)
+    else:
+        raise TypeError(f'Unsupported mf type {type(mf)}')
 
-def plot_density(mol, orbloc, lno_coeff, lno_active, spin_type, idx):
-    from pyscf.tools import cubegen
-    # plot density as rho(r) = sum_p |psi_p(r)|^2
-    if spin_type == "restricted":
-        dm_ctr = orbloc @ orbloc.T
-        _ = cubegen.density(mol, f'ctr_density_{idx}.cube', dm_ctr)
-        dm_las = lno_coeff[:,lno_active] @ lno_coeff[:,lno_active].T
-        _ = cubegen.density(mol, f'las_density_{idx}.cube', dm_las)
+# def plot_density(mf, orbloc, lno_split, idx):
+#     from pyscf.tools import cubegen
+#     # plot density as rho(r) = sum_p |psi_p(r)|^2
+#     mol = mf.mol
+#     if spin_type == "restricted":
+#         dm_ctr = orbloc @ orbloc.T
+#         _ = cubegen.density(mol, f'ctr_density_{idx+1}.cube', dm_ctr)
+#         dm_las = lno_coeff[:,lno_active] @ lno_coeff[:,lno_active].T
+#         _ = cubegen.density(mol, f'las_density_{idx+1}.cube', dm_las)
 
-    elif spin_type == "unrestricted":
-        dm_ctr = orbloc[0] @ orbloc[0].T + orbloc[1] @ orbloc[1].T
-        _ = cubegen.density(mol, f'ctr_density_{idx}.cube', dm_ctr)
-        dm_las = (lno_coeff[0][:,lno_active[0]] @ lno_coeff[0][:,lno_active[0]].T
-                  +lno_coeff[1][:,lno_active[1]] @ lno_coeff[1][:,lno_active[1]].T)
-        _ = cubegen.density(mol, f'las_density_{idx}.cube', dm_las)
+#     elif spin_type == "unrestricted":
+#         dm_ctr = orbloc[0] @ orbloc[0].T + orbloc[1] @ orbloc[1].T
+#         _ = cubegen.density(mol, f'ctr_density_{idx+1}.cube', dm_ctr)
+#         dm_las = (lno_coeff[0][:,lno_active[0]] @ lno_coeff[0][:,lno_active[0]].T
+#                   +lno_coeff[1][:,lno_active[1]] @ lno_coeff[1][:,lno_active[1]].T)
+#         _ = cubegen.density(mol, f'las_density_{idx+1}.cube', dm_las)
         
-    return None
+#     return None
 
 
 def mo_span(mo1, s1e, mo2):
@@ -379,3 +486,75 @@ def make_las(mlno, eris, orbloc, lno_type, lno_param):
         return make_rlas(mlno, eris, orbloc, lno_type, lno_param)
     elif isinstance(mlno._scf, scf.uhf.UHF):
         return make_ulas(mlno, eris, orbloc, lno_type, lno_param)
+
+
+def split_lno(mlno, lno_coeff, lno_frozen):
+    mf = mlno._scf
+    mol = mf.mol
+    mo_occ = mlno.mo_occ
+
+    if isinstance(mf, scf.rhf.RHF):
+        nocc = np.count_nonzero(mo_occ)
+
+        idx_act    = np.array([i for i in range(mol.nao) if i not in lno_frozen], dtype=int)
+        idx_frzocc = np.array([i for i in range(nocc) if i not in idx_act], dtype=int)
+        idx_actocc = np.array([i for i in range(nocc) if i in idx_act], dtype=int)
+        idx_actvir = np.array([i for i in range(nocc, mol.nao) if i in idx_act], dtype=int)
+        idx_frzvir = np.array([i for i in range(nocc, mol.nao) if i not in idx_act], dtype=int)
+
+        lno_frzocc = lno_coeff[:, idx_frzocc]
+        lno_actocc = lno_coeff[:, idx_actocc]
+        lno_actvir = lno_coeff[:, idx_actvir]
+        lno_frzvir = lno_coeff[:, idx_frzvir]
+
+        nfrzocc = len(idx_frzocc)
+        nactocc = len(idx_actocc)
+        nactvir = len(idx_actvir)
+        nfrzvir = len(idx_frzvir)
+
+        # nact    = len(idx_actocc) + len(idx_actvir)
+
+        lno_split = [lno_frzocc, lno_actocc, lno_actvir, lno_frzvir]
+
+    elif isinstance(mf, scf.uhf.UHF):
+        nocc_a = np.count_nonzero(mo_occ[0])
+        nocc_b = np.count_nonzero(mo_occ[1])
+
+        idx_act_a = np.array([i for i in range(mol.nao) if i not in lno_frozen[0]], dtype=int)
+        idx_act_b = np.array([i for i in range(mol.nao) if i not in lno_frozen[1]], dtype=int)
+
+        idx_frzocc_a = np.array([i for i in range(nocc_a) if i not in idx_act_a], dtype=int)
+        idx_actocc_a = np.array([i for i in range(nocc_a) if i in idx_act_a], dtype=int)
+        idx_actvir_a = np.array([i for i in range(nocc_a, mol.nao) if i in idx_act_a], dtype=int)
+        idx_frzvir_a = np.array([i for i in range(nocc_a, mol.nao) if i not in idx_act_a], dtype=int)
+        idx_frzocc_b = np.array([i for i in range(nocc_b) if i not in idx_act_b], dtype=int)
+        idx_actocc_b = np.array([i for i in range(nocc_b) if i in idx_act_b], dtype=int)
+        idx_actvir_b = np.array([i for i in range(nocc_b, mol.nao) if i in idx_act_b], dtype=int)
+        idx_frzvir_b = np.array([i for i in range(nocc_b, mol.nao) if i not in idx_act_b], dtype=int)
+
+        lno_frzocc_a = lno_coeff[0][:, idx_frzocc_a]
+        lno_actocc_a = lno_coeff[0][:, idx_actocc_a]
+        lno_actvir_a = lno_coeff[0][:, idx_actvir_a]
+        lno_frzvir_a = lno_coeff[0][:, idx_frzvir_a]
+        lno_frzocc_b = lno_coeff[1][:, idx_frzocc_b]
+        lno_actocc_b = lno_coeff[1][:, idx_actocc_b]
+        lno_actvir_b = lno_coeff[1][:, idx_actvir_b]
+        lno_frzvir_b = lno_coeff[1][:, idx_frzvir_b]
+
+        nfrzocc = [len(idx_frzocc_a), len(idx_frzocc_b)]
+        nactocc = [len(idx_actocc_a), len(idx_actocc_b)]
+        nactvir = [len(idx_actvir_a), len(idx_actvir_b)]
+        nfrzvir = [len(idx_frzvir_a), len(idx_frzvir_b)]
+        # nact    = [len(idx_actocc_a) + len(idx_actvir_a),
+        #            len(idx_actocc_b) + len(idx_actvir_b)] 
+
+        lno_split_a = [lno_frzocc_a, lno_actocc_a, lno_actvir_a, lno_frzvir_a]
+        lno_split_b = [lno_frzocc_b, lno_actocc_b, lno_actvir_b, lno_frzvir_b]
+        lno_split = [lno_split_a, lno_split_b]
+
+    print(f'nfrozen occupied orbitals:  {nfrzocc}')
+    print(f'nactive occupied orbitals:  {nactocc}')
+    print(f'nactive virtual orbitals:   {nactvir}')
+    print(f'nfrozen virtual orbitals:   {nfrzvir}')
+
+    return lno_split, nfrzocc, nactocc, nactvir, nfrzvir
