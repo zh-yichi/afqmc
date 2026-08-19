@@ -13,9 +13,8 @@ from pyscf.lno import lnoccsd
 from pyscf.lno import ulnoccsd
 from collections.abc import Iterable
 
-from afqmc.lno_afqmc import prep, tools, integral
+from afqmc.lno_afqmc import tools, integral
 from afqmc.lno_afqmc import mod_lnoccsd
-
 
 from functools import partial
 import time, gc, pickle
@@ -70,58 +69,6 @@ def get_lnoparam(mf, lo_coeff, lno_thresh, lno_pct_occ, lno_norb, loidx, ifrag):
         raise NotImplementedError('LNO Only Support Restricted and Unrestricted MF!')
 
     return orbloc, lno_param
-
-# def get_las(mlno, orbloc, uocc_loc, lno_frozen, spin_type, loc_ctr):
-#     mf = mlno._scf
-#     mol = mf.mol
-#     mo_occ = mlno.mo_occ
-#     if spin_type == "unrestricted":
-#         if uocc_loc[0].size > 0 and uocc_loc[1].size == 0:
-#             lno_elec_type = 'alpha'
-#         elif uocc_loc[0].size == 0 and uocc_loc[1].size > 0:
-#             lno_elec_type = 'beta'
-#         else:
-#             lno_elec_type = 'mixed'
-
-#         if loc_ctr is None:
-#             ao_max_a = prep.ao_comp(mf, orbloc[0])
-#             ao_max_b = prep.ao_comp(mf, orbloc[1])
-#             loc_ctr = ao_max_a + ao_max_b
-#             print(f"LNO Center {loc_ctr}")
-
-#         lno_frozen, maskact = ulnoccsd.get_maskact(lno_frozen, [mo_occ[0].size, mo_occ[1].size])
-#         occidxa = mo_occ[0] > 1e-10
-#         occidxb = mo_occ[1] > 1e-10
-#         moidxa, moidxb = maskact
-#         nactocc_a = int(np.sum(moidxa & occidxa))
-#         nactvir_a = int(np.sum(moidxa & ~occidxa))
-#         nactocc_b = int(np.sum(moidxb & occidxb))
-#         nactvir_b = int(np.sum(moidxb & ~occidxb))
-#         nactocc = [nactocc_a, nactocc_b]
-#         nactvir = [nactvir_a, nactvir_b]
-#         lno_active_a = np.array([i for i in range(mol.nao) if i not in lno_frozen[0]])
-#         lno_active_b = np.array([i for i in range(mol.nao) if i not in lno_frozen[1]])
-#         lno_active = [lno_active_a, lno_active_b]
-#         lno_tot = [len(lno_active_a), len(lno_active_b)]
-#         print(f'LAS occupied orbitals:  {nactocc}')
-#         print(f'LAS virtual orbitals:   {nactvir}')
-#         print(f'LAS total size:         {lno_tot}')
-#     else:
-#         lno_elec_type = 'restricted'
-#         if loc_ctr is None:
-#             loc_ctr = prep.ao_comp(mf, orbloc)
-#             print(f"LNO Center {loc_ctr}")
-
-#         lno_frozen, maskact = lnoccsd.get_maskact(lno_frozen, mo_occ.size)
-#         lno_active = np.array([i for i in range(mol.nao) if i not in lno_frozen])
-#         nactocc, nactvir = prep.las_size(mf, lno_frozen)
-#         lno_tot = len(lno_active)
-#         print(f'LNO-Frgament Spin Type: {lno_elec_type}')
-#         print(f'LAS occupied orbitals:  {nactocc}')
-#         print(f'LAS virtual orbitals:   {nactvir}')
-#         print(f'LAS total size:         {lno_tot}')
-    
-#     return  maskact, lno_active, nactocc, nactvir, lno_tot
 
 def lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=3):
     mf = mlno._scf
@@ -278,18 +225,19 @@ def run_afqmc(mf,
 
         lno_split, nfrzocc, nactocc, nactvir, nfrzvir = tools.split_lno(mlno, lno_coeff, lno_frozen)
                 
-        # if plot_las:
-        #     tools.plot_density(mf, orbloc, lno_split, idx=frag_idx+1)
+        if plot_las is not False:
+
+            tools.plot_density(mf, orbloc, lno_split, frag_idx+1)
 
         
         time0 = time.perf_counter()
         if run_mp:
-            efrag_mp = lnomp2_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=3)
+            efrag_mp = lnomp2_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=0)
         else: efrag_mp = 0.0
 
         if run_cc:
             efrag_cc, t1, t2 = \
-                lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=4)
+                lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=0)
         else: efrag_cc = 0.0
         frag_cc_time = time.perf_counter() - time0
 

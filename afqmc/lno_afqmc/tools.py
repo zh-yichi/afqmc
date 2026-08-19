@@ -1,4 +1,4 @@
-import re
+import re, os, h5py
 import numpy as np
 from collections import defaultdict
 
@@ -38,12 +38,37 @@ def free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8, x2c=None):
     # uncontracted working basis, per element
     unc = {sym: gto.uncontract(mol._basis[sym]) for sym in elems}
 
+    # An ECP basis has no core functions, so the free atom must carry the same
+    # pseudopotential as the molecule: without it the atomic SCF would put all
+    # Z electrons into a valence-only basis and the reference basis would come
+    # back with spurious core-like radial functions.
+    ecp = getattr(mol, '_ecp', None) or {}
+    first_ia = {}
+    for ia, sym in enumerate(mol.elements):
+        first_ia.setdefault(sym, ia)
+
     ref_basis = {}
     for sym in elems:
+        atom_ecp = {sym: ecp[sym]} if sym in ecp else {}
+        # electrons left on the free atom once the ECP core is removed. Only
+        # its parity is used: AtomSphAverageRHF takes its (fractional, sphe-
+        # rically averaged) occupations from elements.NRSRHF_CONFIGURATION and
+        # never looks at mol.spin -- this just keeps gto.M from complaining
+        # about an odd electron count, exactly as pyscf's own get_atm_nrhf does
+        nelec = gto.charge(sym) - mol.atom_nelec_core(first_ia[sym])
+
         # single-atom mol: carries both the (l, exponent) shell layout and the
         # atomic SCF, so no whole-molecule copy goes through atom_hf
-        a1 = gto.M(atom=f'{sym} 0 0 0', basis={sym: unc[sym]},
-                   spin=gto.charge(sym) % 2, verbose=0)
+        a1 = gto.M(atom=f'{sym} 0 0 0',
+                   basis={sym: unc[sym]},
+                   ecp=atom_ecp,
+                   spin=nelec % 2,
+                   verbose=0)
+        if a1.nelectron != nelec:
+            raise RuntimeError(
+                f'free-atom {sym} has {a1.nelectron} electrons but the molecule '
+                f'leaves it {nelec}: the ECP did not carry over. Check that '
+                f'mol._ecp is keyed by element symbol (found {list(ecp)}).')
         ao_loc = a1.ao_loc_nr()
         shells_by_l = defaultdict(list)           # l -> [(exp, ao_start), ...]
         for ib in range(a1.nbas):
@@ -57,7 +82,7 @@ def free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8, x2c=None):
                else atom_hf.AtomSphAverageRHF(a1))
         if x2c:
             amf = amf.sfx2c1e()
-        amf.verbose = 0
+        # amf.verbose = mol.verbose
         amf.run()
 
         c, occ = amf.mo_coeff, amf.mo_occ
@@ -218,9 +243,188 @@ def uiao_fragment(mf, nfrozen, frag_type='atom', more_loc=None, minao='minao'):
 
     return lo_coeff, frag_list, frag_name
 
+IAO_FILE_VERSION = 1
+
+def _iao_spin_kind(lo_coeff):
+    """'restricted' for a single (nao, nlo) array, 'unrestricted' for a pair."""
+    if isinstance(lo_coeff, np.ndarray) and lo_coeff.ndim == 2:
+        return 'restricted'
+    if (isinstance(lo_coeff, (list, tuple)) and len(lo_coeff) == 2
+            and all(isinstance(c, np.ndarray) and c.ndim == 2 for c in lo_coeff)):
+        return 'unrestricted'
+    raise TypeError('lo_coeff must be a 2D array (restricted) or a pair of '
+                    f'2D arrays (unrestricted), got {type(lo_coeff)}')
+
+def save_iao_fragment(filename, lo_coeff, frag_list, frag_name, mol=None, meta=None):
+    """Dump the output of `iao_fragment` to an HDF5 file.
+
+    The molecular fingerprint (nuclear charges, geometry, nao) is stored along
+    with the orbitals so that `load_iao_fragment` can refuse to hand the IAOs
+    to a different molecule.
+    """
+    kind = _iao_spin_kind(lo_coeff)
+
+    if len(frag_list) != len(frag_name):
+        raise ValueError(f'frag_list ({len(frag_list)}) and frag_name '
+                         f'({len(frag_name)}) have different lengths')
+
+    # remember whether the caller had plain lists or ndarrays so a
+    # save/load round trip returns exactly what iao_fragment would have
+    frag0 = frag_list[0] if kind == 'restricted' else frag_list[0][0]
+    idx_kind = 'array' if isinstance(frag0, np.ndarray) else 'list'
+
+    with h5py.File(filename, 'w') as fh5:
+        fh5.attrs['version'] = IAO_FILE_VERSION
+        fh5.attrs['spin'] = kind
+
+        if kind == 'restricted':
+            fh5['lo_coeff'] = np.asarray(lo_coeff)
+        else:
+            fh5['lo_coeff_a'] = np.asarray(lo_coeff[0])
+            fh5['lo_coeff_b'] = np.asarray(lo_coeff[1])
+
+        fh5['frag_name'] = np.array(list(frag_name), dtype=h5py.string_dtype())
+
+        grp = fh5.create_group('frag_list')
+        grp.attrs['nfrag'] = len(frag_list)
+        grp.attrs['idx_kind'] = idx_kind
+        for i, frag in enumerate(frag_list):
+            if kind == 'restricted':
+                grp[f'{i}'] = np.asarray(frag, dtype=np.int64)
+            else:
+                grp[f'{i}_a'] = np.asarray(frag[0], dtype=np.int64)
+                grp[f'{i}_b'] = np.asarray(frag[1], dtype=np.int64)
+
+        if mol is not None:
+            mgrp = fh5.create_group('mol')
+            mgrp['atom_charges'] = np.asarray(mol.atom_charges())
+            mgrp['atom_coords'] = np.asarray(mol.atom_coords())   # bohr
+            mgrp.attrs['natm'] = mol.natm
+            mgrp.attrs['nao'] = mol.nao
+            mgrp.attrs['basis'] = str(mol.basis)[:1024]           # provenance only
+            mgrp.attrs['charge'] = mol.charge
+            mgrp.attrs['spin'] = mol.spin
+
+        mtgrp = fh5.create_group('meta')
+        for key, val in (meta or {}).items():
+            mtgrp.attrs[key] = str(val)[:1024]
+
+    return filename
+
+def load_iao_fragment(filename, mol=None, s1e=None, coord_tol=1e-6, ortho_tol=1e-8):
+    """Read back what `save_iao_fragment` wrote.
+
+    mol : if given, the stored molecular fingerprint must match it.
+    s1e : if given, the loaded IAOs must be orthonormal w.r.t. it.
+    """
+    with h5py.File(filename, 'r') as fh5:
+        version = int(fh5.attrs.get('version', -1))
+        if version != IAO_FILE_VERSION:
+            raise ValueError(f'{filename}: IAO file version {version} is not '
+                             f'readable by this code (expected {IAO_FILE_VERSION})')
+        kind = fh5.attrs['spin']
+
+        if kind == 'restricted':
+            lo_coeff = np.asarray(fh5['lo_coeff'][()])
+            nao = lo_coeff.shape[0]
+        else:
+            lo_coeff = [np.asarray(fh5['lo_coeff_a'][()]),
+                        np.asarray(fh5['lo_coeff_b'][()])]
+            nao = lo_coeff[0].shape[0]
+
+        frag_name = [n.decode() if isinstance(n, bytes) else str(n)
+                     for n in fh5['frag_name'][()]]
+
+        grp = fh5['frag_list']
+        nfrag = int(grp.attrs['nfrag'])
+        as_list = grp.attrs.get('idx_kind', 'array') == 'list'
+
+        def _idx(dset):
+            idx = np.asarray(dset[()], dtype=np.int64)
+            return idx.tolist() if as_list else idx
+
+        if kind == 'restricted':
+            frag_list = [_idx(grp[f'{i}']) for i in range(nfrag)]
+        else:
+            frag_list = [[_idx(grp[f'{i}_a']), _idx(grp[f'{i}_b'])]
+                         for i in range(nfrag)]
+
+        stored_mol = dict(fh5['mol'].attrs) if 'mol' in fh5 else None
+        if stored_mol is not None:
+            stored_mol['atom_charges'] = np.asarray(fh5['mol/atom_charges'][()])
+            stored_mol['atom_coords'] = np.asarray(fh5['mol/atom_coords'][()])
+
+        meta = dict(fh5['meta'].attrs) if 'meta' in fh5 else {}
+
+    if len(frag_name) != nfrag:
+        raise ValueError(f'{filename}: {nfrag} fragments but {len(frag_name)} names')
+
+    if mol is not None:
+        if mol.nao != nao:
+            raise ValueError(f'{filename}: IAOs were built in a basis with {nao} '
+                             f'AOs but the current mol has {mol.nao}')
+        if stored_mol is None:
+            print(f'Warning: {filename} carries no molecular fingerprint; '
+                  'cannot verify that it belongs to this molecule.')
+        else:
+            if not np.array_equal(stored_mol['atom_charges'], mol.atom_charges()):
+                raise ValueError(f'{filename}: nuclear charges differ from the '
+                                 'current molecule')
+            dev = np.abs(stored_mol['atom_coords'] - mol.atom_coords()).max()
+            if dev > coord_tol:
+                raise ValueError(f'{filename}: geometry differs from the current '
+                                 f'molecule (max deviation {dev:.2e} bohr > '
+                                 f'{coord_tol:.1e})')
+
+    if s1e is not None:
+        for c in ([lo_coeff] if kind == 'restricted' else lo_coeff):
+            ortho = c.conj().T @ s1e @ c
+            dev = np.abs(ortho - np.eye(ortho.shape[1])).max()
+            if dev > ortho_tol:
+                raise ValueError(f'{filename}: loaded IAOs are not orthonormal '
+                                 f'w.r.t. the current overlap (max dev {dev:.2e}). '
+                                 'They most likely belong to another molecule '
+                                 'or another basis set.')
+
+    return lo_coeff, frag_list, frag_name, meta
+
 def iao_fragment(mf, nfrozen=None, frag_type='h2heavy', more_loc=None,
-                 minao='minao', x2c=None):
+                 minao='minao', x2c=None, save2=None, read_from=None):
+    """Build (or reuse) the IAO fragment input for an LNO calculation.
+
+    save2     : path of an HDF5 file to write (lo_coeff, frag_list, frag_name) to.
+    read_from : path of such a file to read instead of rebuilding the IAOs.
+                The stored molecule must match `mf.mol`.
+    """
     mol = mf.mol
+
+    want = 'unrestricted' if isinstance(mf, scf.uhf.UHF) else 'restricted'
+
+    if read_from is not None:
+        if not os.path.isfile(read_from):
+            raise FileNotFoundError(
+                f'IAO fragment file {read_from} not found. Run the calculation '
+                'once with save2=<file> to create it.')
+        print(f'Reading IAO fragments from {read_from}')
+        lo_coeff, frag_list, frag_name, meta = load_iao_fragment(
+            read_from, mol=mol, s1e=mf.get_ovlp())
+
+        kind = _iao_spin_kind(lo_coeff)
+        if kind != want:
+            raise ValueError(f'{read_from} holds {kind} IAOs but {type(mf).__name__} '
+                             f'needs {want} ones')
+        for key, val in (('frag_type', frag_type), ('more_loc', more_loc)):
+            if key in meta and meta[key] != str(val):
+                print(f'Warning: {read_from} was built with {key}={meta[key]}, '
+                      f'but {key}={val} was requested. Using the stored fragments.')
+
+        print(f'Loaded {len(frag_name)} IAO fragments: {frag_name}')
+
+        if save2 is not None and os.path.abspath(save2) != os.path.abspath(read_from):
+            save_iao_fragment(save2, lo_coeff, frag_list, frag_name, mol=mol, meta=meta)
+            print(f'IAO fragments copied to {save2}')
+
+        return lo_coeff, frag_list, frag_name
 
     if nfrozen is None:
         nfrozen = elements.chemcore(mol)
@@ -236,30 +440,55 @@ def iao_fragment(mf, nfrozen=None, frag_type='h2heavy', more_loc=None,
         minao = free_atom_minao(mol, occ_tol=1e-6, sv_tol=1e-8, x2c=x2c)
 
     if isinstance(mf, scf.rhf.RHF):
-        return riao_fragment(mf, nfrozen, frag_type, more_loc, minao)
+        lo_coeff, frag_list, frag_name = \
+            riao_fragment(mf, nfrozen, frag_type, more_loc, minao)
     elif isinstance(mf, scf.uhf.UHF):
-        return uiao_fragment(mf, nfrozen, frag_type, more_loc, minao)
+        lo_coeff, frag_list, frag_name = \
+            uiao_fragment(mf, nfrozen, frag_type, more_loc, minao)
     else:
         raise TypeError(f'Unsupported mf type {type(mf)}')
 
-# def plot_density(mf, orbloc, lno_split, idx):
-#     from pyscf.tools import cubegen
-#     # plot density as rho(r) = sum_p |psi_p(r)|^2
-#     mol = mf.mol
-#     if spin_type == "restricted":
-#         dm_ctr = orbloc @ orbloc.T
-#         _ = cubegen.density(mol, f'ctr_density_{idx+1}.cube', dm_ctr)
-#         dm_las = lno_coeff[:,lno_active] @ lno_coeff[:,lno_active].T
-#         _ = cubegen.density(mol, f'las_density_{idx+1}.cube', dm_las)
+    if save2 is not None:
+        meta = {'frag_type': frag_type,
+                'more_loc': more_loc,
+                'nfrozen': nfrozen,
+                'minao': minao if isinstance(minao, str) else 'free_atom_minao'}
+        save_iao_fragment(save2, lo_coeff, frag_list, frag_name, mol=mol, meta=meta)
+        print(f'IAO fragments saved to {save2}')
 
-#     elif spin_type == "unrestricted":
-#         dm_ctr = orbloc[0] @ orbloc[0].T + orbloc[1] @ orbloc[1].T
-#         _ = cubegen.density(mol, f'ctr_density_{idx+1}.cube', dm_ctr)
-#         dm_las = (lno_coeff[0][:,lno_active[0]] @ lno_coeff[0][:,lno_active[0]].T
-#                   +lno_coeff[1][:,lno_active[1]] @ lno_coeff[1][:,lno_active[1]].T)
-#         _ = cubegen.density(mol, f'las_density_{idx+1}.cube', dm_las)
+    return lo_coeff, frag_list, frag_name
+
+def plot_density(mf, orbloc, lno_split, ifrag):
+    '''
+    mf: mean-field object
+    orbloc: orbital of the local fragment
+    lno_split: local natural orbitals of the local fragment
+               splitted into frzocc, actocc, actvir, frzvir
+    '''
+    from pyscf.tools import cubegen
+    # plot density as rho(r) = sum_p |psi_p(r)|^2
+    cubedir = './cubefiles'
+    os.makedirs(cubedir, exist_ok=True)
+
+    mol = mf.mol
+    if isinstance(mf, scf.rhf.RHF):
+        dm_frg = orbloc @ orbloc.T
+        las_coeff = np.hstack(lno_split[1:3])
+        dm_las = las_coeff @ las_coeff.T
+        _ = cubegen.density(mol, f'{cubedir}/Fragment_Density_{ifrag}.cube', dm_frg)
+        _ = cubegen.density(mol, f'{cubedir}/LocalAS_Density_{ifrag}.cube', dm_las)
+
+    elif isinstance(mf, scf.uhf.UHF):
+        dm_frg = orbloc[0] @ orbloc[0].T + orbloc[1] @ orbloc[1].T
+        las_coeff_a = np.hstack(lno_split[0][1:3])
+        las_coeff_b = np.hstack(lno_split[1][1:3])
+        dm_las = (las_coeff_a @ las_coeff_a.T + las_coeff_b @ las_coeff_b.T)
+        _ = cubegen.density(mol, f'{cubedir}/Fragment_Density_{ifrag}.cube', dm_frg)
+        _ = cubegen.density(mol, f'{cubedir}/LocalAS_Density_{ifrag}.cube', dm_las)
+    else:
+        raise TypeError(f'Unsupported mf type {type(mf)}')
         
-#     return None
+    return None
 
 
 def mo_span(mo1, s1e, mo2):
@@ -606,9 +835,9 @@ def split_lno(mlno, lno_coeff, lno_frozen):
         lno_split_b = [lno_frzocc_b, lno_actocc_b, lno_actvir_b, lno_frzvir_b]
         lno_split = [lno_split_a, lno_split_b]
 
-    print(f'nfrozen occupied orbitals:  {nfrzocc}')
-    print(f'nactive occupied orbitals:  {nactocc}')
-    print(f'nactive virtual orbitals:   {nactvir}')
-    print(f'nfrozen virtual orbitals:   {nfrzvir}')
+    # print(f'nfrozen occupied orbitals:  {nfrzocc}')
+    # print(f'nactive occupied orbitals:  {nactocc}')
+    # print(f'nactive virtual orbitals:   {nactvir}')
+    # print(f'nfrozen virtual orbitals:   {nfrzvir}')
 
     return lno_split, nfrzocc, nactocc, nactvir, nfrzvir
