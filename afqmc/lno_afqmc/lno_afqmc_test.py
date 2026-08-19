@@ -368,7 +368,25 @@ def run_afqmc(mf,
     nfrag_tot = len(frag_list)
     if run_frag is None:
         run_frag = range(nfrag_tot)
+    else:
+        # run_frag is indexed positionally below (run_frag[i]) and each entry
+        # picks one fragment, so a repeated index would run that fragment
+        # several times and double count its energy in the total.
+        run_frag = list(run_frag)
+        dup = sorted({i for i in run_frag if run_frag.count(i) > 1})
+        if dup:
+            raise ValueError(f"run_frag contains duplicate fragment indices: "
+                             f"{dup} (run_frag = {run_frag})")
 
+        # each entry is a 0-based fragment index, also used to index the seeds
+        # array and to name the fragment output files, so negatives are out too
+        bad = sorted({i for i in run_frag if not 0 <= i < nfrag_tot})
+        if bad:
+            raise ValueError(f"run_frag contains out-of-range fragment "
+                             f"indices: {bad} (valid range 0 ... "
+                             f"{nfrag_tot-1} for {nfrag_tot} fragments)")
+
+    print(f"Run Fragment {run_frag}")
     frag_list = [frag_list[i] for i in run_frag]
     frag_name = [frag_name[i] for i in run_frag]
     nfrag_run = len(frag_list)
@@ -418,10 +436,13 @@ def run_afqmc(mf,
         for ifrag, frag_idx in enumerate(run_frag):
             print("\n")
             width = 80
-            msg = f" LNO-FRAGMENT [{frag_name[ifrag]}] {frag_idx+1}/({nfrag_run},{nfrag_tot}) "
+            msg = f" LNO-FRAGMENT [{frag_name[ifrag]}] {ifrag+1}/({nfrag_run},{nfrag_tot}) "
             print(msg.center(width, '='))
-            print(f"LNO THRESHOLD - {mlno.lno_thresh}")
-            print(f"PySCF NumPy Threads - {lib.num_threads()}")
+            print(f"Fragment Num.  {ifrag+1}")
+            print(f"Fragment Idx.  {frag_idx+1}")
+            print(f"Fragment Name  {frag_name[ifrag]}")
+            print(f"LNO THRESHOLD  {mlno.lno_thresh}")
+            print(f"PySCF Threads  {lib.num_threads()}")
 
             # ---------------- CPU stage (possibly already finished) ----------
             time0 = time.perf_counter()

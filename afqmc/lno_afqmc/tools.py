@@ -841,3 +841,69 @@ def split_lno(mlno, lno_coeff, lno_frozen):
     # print(f'nfrozen virtual orbitals:   {nfrzvir}')
 
     return lno_split, nfrzocc, nactocc, nactvir, nfrzvir
+
+# regex for one fragment row of the LNO-AFQMC result table:
+#   Num  Fragment  LAS SIZE  E(MP2) ...
+# where LAS SIZE is either a bare int (restricted) or the numpy repr of the
+# (alpha, beta) pair, e.g. "[62 61]" (unrestricted).
+_LNO_ROW = re.compile(r'^\s*(\d+)\s+(\S+)\s+(\[[^\]]*\]|\d+)\s+(-?\d+\.\d+)')
+
+def read_lno_size(filename='lno_result.out'):
+    """Parse the LAS sizes out of an LNO-AFQMC result file.
+
+    Returns (frag_idx, frag_name, las_size) where `frag_idx` is the 0-based
+    fragment index (the printed "Num" minus one), and `las_size` has shape
+    (nfrag, nspin) -- nspin = 1 for restricted, 2 for unrestricted.
+    """
+    frag_idx, frag_name, las_size = [], [], []
+    with open(filename, 'r') as f:
+        for line in f:
+            m = _LNO_ROW.match(line)
+            if m is None:
+                continue
+            frag_idx.append(int(m.group(1)) - 1)
+            frag_name.append(m.group(2))
+            las_size.append([int(x) for x in m.group(3).strip('[]').split()])
+
+    if not frag_idx:
+        raise ValueError(f'no fragment rows found in {filename}')
+
+    nspin = set(map(len, las_size))
+    if len(nspin) != 1:
+        raise ValueError(f'inconsistent LAS SIZE columns in {filename}')
+
+    return (np.asarray(frag_idx, dtype=np.int32), frag_name,
+            np.asarray(las_size, dtype=np.int32))
+
+def sort_frag_by_size(filename='lno_result.out', key='max', reverse=False,
+                      return_size=False):
+    """Fragment indices ordered from the smallest to the largest LAS.
+
+    key : how to collapse the spin channels of an unrestricted calculation
+          into one number -- 'max' (default, matches the cost-determining
+          dimension), 'sum', 'alpha' or 'beta'. Ignored if restricted.
+    reverse : largest to smallest instead.
+    return_size : also return the collapsed sizes in the same order.
+    """
+    frag_idx, frag_name, las_size = read_lno_size(filename)
+
+    if las_size.shape[1] == 1:
+        size = las_size[:, 0]
+    elif key == 'max':
+        size = las_size.max(axis=1)
+    elif key == 'sum':
+        size = las_size.sum(axis=1)
+    elif key == 'alpha':
+        size = las_size[:, 0]
+    elif key == 'beta':
+        size = las_size[:, 1]
+    else:
+        raise ValueError(f'unknown key {key}')
+
+    # stable sort so equally sized fragments keep their printed order
+    order = np.argsort(size, kind='stable')
+    if reverse:
+        order = order[::-1]
+
+    idx = frag_idx[order].tolist()
+    return (idx, size[order].tolist()) if return_size else idx
