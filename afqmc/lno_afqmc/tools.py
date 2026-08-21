@@ -909,6 +909,7 @@ def sort_frag_by_size(filename='lno_result.out', key='max', reverse=False,
     return (idx, size[order].tolist()) if return_size else idx
 
 
+
 # ---------------------------------------------------------------------------
 # Collecting per-fragment output files into a single LNO-AFQMC result table
 # ---------------------------------------------------------------------------
@@ -924,7 +925,8 @@ def sort_frag_by_size(filename='lno_result.out', key='max', reverse=False,
 #
 # to `fragment.out<N>` (N = 1-based fragment index) as soon as a fragment is
 # done, so a job that dies -- or a run split over several jobs -- still leaves
-# every finished fragment on disk.
+# every finished fragment on disk. Nothing below insists on a complete block:
+# whatever fields are present are collected and the rest are reported missing.
 _FRAG_HEAD = re.compile(r'^=+\s*Fragment(\d+)\s+Results\s*=+\s*$')
 _FRAG_TAIL = re.compile(r'^=+\s*$')
 _FRAG_SIZE = r'(\[[^\]]*\]|\d+)'
@@ -942,19 +944,35 @@ _FRAG_FIELD = (
     ('t_qmc',  re.compile(r'LNO-AFQMC Fragment Time:\s*' + _FRAG_NUM)),
 )
 
-def read_fragment_out(filename):
+# every column of the result table, in report order
+_FRAG_KEYS = ('name', 'norb', 'e_mp', 'e_cc', 'e_qmc', 'e_qmc_err',
+              't_cc', 't_wait', 't_qmc')
+
+# salvage patterns: the AFQMC driver's own stdout, still in the file when the
+# job died between the end of the sampling and the summary block
+_FRAG_QMC_E = re.compile(r'Final AFQMC/\S*\s*Orbital Energy:\s*' + _FRAG_NUM +
+                         r'\s*\+/-\s*' + _FRAG_NUM)
+_FRAG_QMC_T = re.compile(r'Total run time:\s*' + _FRAG_NUM)
+_FRAG_FNUM = re.compile(r'(\d+)\s*$')
+
+def read_fragment_out(filename, salvage=True):
     """Parse the "Fragment<N> Results" blocks of one `fragment.out<N>` file.
 
-    Returns a list of dicts, one per complete block, in file order. A file
-    that is still being written (or whose fragment crashed) simply yields
-    fewer blocks -- no exception. `fragment.out<N>` is opened in append mode,
-    so re-running a fragment leaves several blocks behind; the caller is
-    expected to keep the last one.
+    Returns a list of dicts, one per block, in file order; each carries a
+    'missing' entry listing the fields that were not found. A block is kept as
+    soon as it has one recognised field, so a run interrupted halfway through
+    still contributes what it managed to write. `fragment.out<N>` is opened in
+    append mode, so re-running a fragment leaves several blocks behind; the
+    caller is expected to keep the last one.
+
+    salvage : if the file holds no result block at all, fall back to the AFQMC
+              driver's own output ("Final AFQMC/... Orbital Energy") and take
+              the fragment number from the file name.
     """
-    blocks = []
     with open(filename, 'r') as f:
         lines = f.readlines()
 
+    blocks = []
     i, nline = 0, len(lines)
     while i < nline:
         m = _FRAG_HEAD.match(lines[i])
@@ -962,14 +980,13 @@ def read_fragment_out(filename):
             i += 1
             continue
 
-        blk = {'num': int(m.group(1)), 'file': filename}
+        blk = {'num': int(m.group(1)), 'file': filename, 'salvaged': False}
         i += 1
         while i < nline and not _FRAG_TAIL.match(lines[i]):
             if _FRAG_HEAD.match(lines[i]):     # truncated block, restart here
                 break
-            line = lines[i]
             for key, pat in _FRAG_FIELD:
-                mm = pat.search(line)
+                mm = pat.search(lines[i])
                 if mm is None:
                     continue
                 if key == 'name':
@@ -985,22 +1002,50 @@ def read_fragment_out(filename):
                 break
             i += 1
 
-        # only keep blocks that carry the full record
-        need = ('name', 'norb', 'e_mp', 'e_cc', 'e_qmc', 'e_qmc_err',
-                't_cc', 't_wait', 't_qmc')
-        if all(k in blk for k in need):
+        blk['missing'] = [k for k in _FRAG_KEYS if k not in blk]
+        if len(blk['missing']) < len(_FRAG_KEYS):
             blocks.append(blk)
+
+    if blocks or not salvage:
+        return blocks
+
+    # ---- no result block: scrape whatever the AFQMC output left behind ----
+    m = _FRAG_FNUM.search(os.path.basename(filename))
+    if m is None:                              # nowhere to put it in the table
+        return blocks
+
+    blk = {'num': int(m.group(1)), 'file': filename, 'salvaged': True}
+    for line in lines:
+        mm = _FRAG_QMC_E.search(line)
+        if mm is not None:                     # last one wins (re-run appends)
+            blk['e_qmc'] = float(mm.group(1))
+            blk['e_qmc_err'] = float(mm.group(2))
+            continue
+        mm = _FRAG_QMC_T.search(line)
+        if mm is not None:
+            blk['t_qmc'] = float(mm.group(1))
+
+    blk['missing'] = [k for k in _FRAG_KEYS if k not in blk]
+    if len(blk['missing']) < len(_FRAG_KEYS):
+        blocks.append(blk)
 
     return blocks
 
 def collect_lno_result(pattern='fragment.out*', outfile='lno_result.out',
-                       lno_thresh=None, nfrag_tot=None, verbose=True):
+                       lno_thresh=None, nfrag_tot=None, salvage=True,
+                       verbose=True):
     """Rebuild an `lno_result.out` table from the per-fragment output files.
 
     Same layout as the file `run_afqmc` writes at the end of a complete run,
     so `read_lno_size` / `sort_frag_by_size` work on it unchanged. Use it when
     the fragments were spread over several jobs, or when a job died before
     reaching the final summary.
+
+    A fragment file is never dropped for being incomplete: every field it does
+    contain is used, anything absent counts as 0.0 (and an unknown LAS size as
+    a zero row), so the summed energies are simply missing that contribution.
+    Such rows are flagged with a trailing '*' and listed under "Incomplete
+    fragments" -- always check that line before trusting the total.
 
     pattern   : glob for the fragment files (or an explicit list of paths).
     outfile   : where to write the table; None only returns the numbers.
@@ -1010,7 +1055,9 @@ def collect_lno_result(pattern='fragment.out*', outfile='lno_result.out',
     nfrag_tot : total number of fragments expected, used only to report which
                 ones are still missing. Defaults to the largest fragment
                 number found.
-    verbose   : print the collected/skipped/missing files.
+    salvage   : also mine files that never got a result block for the AFQMC
+                energy printed by the sampler itself.
+    verbose   : print what was collected, salvaged, incomplete and missing.
 
     Returns (e_mp, e_cc, e_qmc, e_qmc_err, lno_max), like `run_afqmc`.
     """
@@ -1027,7 +1074,7 @@ def collect_lno_result(pattern='fragment.out*', outfile='lno_result.out',
 
     frags, empty = {}, []
     for fname in files:
-        blocks = read_fragment_out(fname)
+        blocks = read_fragment_out(fname, salvage=salvage)
         if not blocks:
             empty.append(fname)
             continue
@@ -1040,21 +1087,40 @@ def collect_lno_result(pattern='fragment.out*', outfile='lno_result.out',
         frags[blk['num']] = blk
 
     if not frags:
-        raise ValueError(f'no complete fragment results found in {len(files)} '
+        raise ValueError(f'no fragment results found in {len(files)} '
                          f'file(s) matching {pattern}')
 
     nums = sorted(frags)
     rows = [frags[n] for n in nums]
 
+    # LAS size of the incomplete rows: a zero row of the same width as the
+    # ones we do know, so `read_lno_size` still sees a consistent table
+    nspin = {len(r['norb'].strip('[]').split()) for r in rows if 'norb' in r}
+    nspin = max(nspin) if nspin else 1
+    unknown_norb = '[' + ' '.join(['0'] * nspin) + ']' if nspin > 1 else '0'
+
+    for r in rows:
+        r.setdefault('name', f"frag{r['num']}")
+        r.setdefault('norb', unknown_norb)
+        for key in ('e_mp', 'e_cc', 'e_qmc', 'e_qmc_err',
+                    't_cc', 't_wait', 't_qmc'):
+            r.setdefault(key, 0.0)
+
     if nfrag_tot is None:
         nfrag_tot = nums[-1]
     missing = [n for n in range(1, nfrag_tot + 1) if n not in frags]
+    partial = [r['num'] for r in rows if r['missing']]
 
     if verbose:
         print(f'collected {len(rows)} fragment(s) from {len(files)} file(s): '
               f'{nums}')
+        for r in rows:
+            if r['missing']:
+                print(f"fragment {r['num']} ({r['file']}) incomplete"
+                      f"{' -- salvaged from the AFQMC output' if r['salvaged'] else ''}"
+                      f", zeroed: {', '.join(r['missing'])}")
         if empty:
-            print(f'no complete result block in: {", ".join(empty)}')
+            print(f'nothing to collect in: {", ".join(empty)}')
         if missing:
             print(f'missing fragment(s): {missing}')
 
@@ -1095,7 +1161,8 @@ def collect_lno_result(pattern='fragment.out*', outfile='lno_result.out',
                         f"{r['e_mp']:10.8f}  {r['e_cc']:10.8f}  "
                         f"{r['e_qmc']:10.5f}  {r['e_qmc_err']:8.5f}  "
                         f"{r['t_cc']:8.2f}  {r['t_wait']:8.2f}  "
-                        f"{r['t_qmc']:8.2f}\n")
+                        f"{r['t_qmc']:8.2f}"
+                        f"{'  *' if r['missing'] else ''}\n")
 
             f.write('-' * width + '\n')
 
@@ -1119,6 +1186,9 @@ def collect_lno_result(pattern='fragment.out*', outfile='lno_result.out',
                     f'of {nfrag_tot}\n')
             f.write(f'{"Missing fragments":<28} '
                     f'{(str(missing) if missing else "none"):>10s}\n')
+            f.write(f'{"Incomplete fragments (*)":<28} '
+                    f'{(str(partial) if partial else "none"):>10s}'
+                    f'{"   missing entries counted as 0" if partial else ""}\n')
             f.write(f'{"Serial equivalent (CPU+GPU)":<28} '
                     f'{serial_time:>10.2f} s\n')
             f.write(f'{"CPU time hidden behind GPU":<28} '
