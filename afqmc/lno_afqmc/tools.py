@@ -1,4 +1,4 @@
-import re, os, h5py
+import re, os, glob, h5py
 import numpy as np
 from collections import defaultdict
 
@@ -907,3 +907,227 @@ def sort_frag_by_size(filename='lno_result.out', key='max', reverse=False,
 
     idx = frag_idx[order].tolist()
     return (idx, size[order].tolist()) if return_size else idx
+
+
+# ---------------------------------------------------------------------------
+# Collecting per-fragment output files into a single LNO-AFQMC result table
+# ---------------------------------------------------------------------------
+# `run_afqmc` appends a block like
+#
+#   ========================= Fragment1 Results ==========================
+#   \t LNO Fragment Fe0
+#   ----------------------------------------------------------------------
+#   \t LNO-Active Space electrons: [13 13] | orbitals: [63 61]
+#   \t LNO-MP2 Fragment Energy:    -0.52620714
+#   ...
+#   ======================================================================
+#
+# to `fragment.out<N>` (N = 1-based fragment index) as soon as a fragment is
+# done, so a job that dies -- or a run split over several jobs -- still leaves
+# every finished fragment on disk.
+_FRAG_HEAD = re.compile(r'^=+\s*Fragment(\d+)\s+Results\s*=+\s*$')
+_FRAG_TAIL = re.compile(r'^=+\s*$')
+_FRAG_SIZE = r'(\[[^\]]*\]|\d+)'
+_FRAG_NUM = r'(-?(?:\d+\.\d*|\.?\d+)(?:[eE][-+]?\d+)?|[-+]?nan|[-+]?inf)'
+_FRAG_FIELD = (
+    ('name',   re.compile(r'LNO Fragment\s+(.*?)\s*$')),
+    ('las',    re.compile(r'LNO-Active Space electrons:\s*' + _FRAG_SIZE +
+                          r'\s*\|\s*orbitals:\s*' + _FRAG_SIZE)),
+    ('e_mp',   re.compile(r'LNO-MP2 Fragment Energy:\s*' + _FRAG_NUM)),
+    ('e_cc',   re.compile(r'LNO-CCSD Fragment Energy:\s*' + _FRAG_NUM)),
+    ('e_qmc',  re.compile(r'LNO-AFQMC Fragment Energy:\s*' + _FRAG_NUM +
+                          r'\s*\+/-\s*' + _FRAG_NUM)),
+    ('t_cc',   re.compile(r'LNO-CCSD Fragment Time:\s*' + _FRAG_NUM)),
+    ('t_wait', re.compile(r'LNO-CCSD Fragment Wait:\s*' + _FRAG_NUM)),
+    ('t_qmc',  re.compile(r'LNO-AFQMC Fragment Time:\s*' + _FRAG_NUM)),
+)
+
+def read_fragment_out(filename):
+    """Parse the "Fragment<N> Results" blocks of one `fragment.out<N>` file.
+
+    Returns a list of dicts, one per complete block, in file order. A file
+    that is still being written (or whose fragment crashed) simply yields
+    fewer blocks -- no exception. `fragment.out<N>` is opened in append mode,
+    so re-running a fragment leaves several blocks behind; the caller is
+    expected to keep the last one.
+    """
+    blocks = []
+    with open(filename, 'r') as f:
+        lines = f.readlines()
+
+    i, nline = 0, len(lines)
+    while i < nline:
+        m = _FRAG_HEAD.match(lines[i])
+        if m is None:
+            i += 1
+            continue
+
+        blk = {'num': int(m.group(1)), 'file': filename}
+        i += 1
+        while i < nline and not _FRAG_TAIL.match(lines[i]):
+            if _FRAG_HEAD.match(lines[i]):     # truncated block, restart here
+                break
+            line = lines[i]
+            for key, pat in _FRAG_FIELD:
+                mm = pat.search(line)
+                if mm is None:
+                    continue
+                if key == 'name':
+                    blk['name'] = mm.group(1)
+                elif key == 'las':
+                    blk['nelec'] = mm.group(1)
+                    blk['norb'] = mm.group(2)
+                elif key == 'e_qmc':
+                    blk['e_qmc'] = float(mm.group(1))
+                    blk['e_qmc_err'] = float(mm.group(2))
+                else:
+                    blk[key] = float(mm.group(1))
+                break
+            i += 1
+
+        # only keep blocks that carry the full record
+        need = ('name', 'norb', 'e_mp', 'e_cc', 'e_qmc', 'e_qmc_err',
+                't_cc', 't_wait', 't_qmc')
+        if all(k in blk for k in need):
+            blocks.append(blk)
+
+    return blocks
+
+def collect_lno_result(pattern='fragment.out*', outfile='lno_result.out',
+                       lno_thresh=None, nfrag_tot=None, verbose=True):
+    """Rebuild an `lno_result.out` table from the per-fragment output files.
+
+    Same layout as the file `run_afqmc` writes at the end of a complete run,
+    so `read_lno_size` / `sort_frag_by_size` work on it unchanged. Use it when
+    the fragments were spread over several jobs, or when a job died before
+    reaching the final summary.
+
+    pattern   : glob for the fragment files (or an explicit list of paths).
+    outfile   : where to write the table; None only returns the numbers.
+    lno_thresh: the LNO threshold(s) of the run -- a float or a pair. The
+                fragment files do not record it, so it is printed as "n/a"
+                when not given.
+    nfrag_tot : total number of fragments expected, used only to report which
+                ones are still missing. Defaults to the largest fragment
+                number found.
+    verbose   : print the collected/skipped/missing files.
+
+    Returns (e_mp, e_cc, e_qmc, e_qmc_err, lno_max), like `run_afqmc`.
+    """
+    if isinstance(pattern, str):
+        files = glob.glob(pattern)
+    else:
+        files = list(pattern)
+
+    if not files:
+        raise ValueError(f'no fragment files match {pattern}')
+
+    # oldest first, so a re-run of a fragment overrides the earlier attempt
+    files.sort(key=lambda p: (os.path.getmtime(p), p))
+
+    frags, empty = {}, []
+    for fname in files:
+        blocks = read_fragment_out(fname)
+        if not blocks:
+            empty.append(fname)
+            continue
+        if len(blocks) > 1 and verbose:
+            print(f'{fname}: {len(blocks)} result blocks, keeping the last')
+        blk = blocks[-1]
+        if blk['num'] in frags and verbose:
+            print(f"fragment {blk['num']}: {fname} overrides "
+                  f"{frags[blk['num']]['file']}")
+        frags[blk['num']] = blk
+
+    if not frags:
+        raise ValueError(f'no complete fragment results found in {len(files)} '
+                         f'file(s) matching {pattern}')
+
+    nums = sorted(frags)
+    rows = [frags[n] for n in nums]
+
+    if nfrag_tot is None:
+        nfrag_tot = nums[-1]
+    missing = [n for n in range(1, nfrag_tot + 1) if n not in frags]
+
+    if verbose:
+        print(f'collected {len(rows)} fragment(s) from {len(files)} file(s): '
+              f'{nums}')
+        if empty:
+            print(f'no complete result block in: {", ".join(empty)}')
+        if missing:
+            print(f'missing fragment(s): {missing}')
+
+    e_mp = float(np.sum([r['e_mp'] for r in rows]))
+    e_cc = float(np.sum([r['e_cc'] for r in rows]))
+    e_qmc = float(np.sum([r['e_qmc'] for r in rows]))
+    e_qmc_err = float(np.sqrt(np.sum([r['e_qmc_err']**2 for r in rows])))
+    tot_cc_time = float(np.sum([r['t_cc'] for r in rows]))
+    tot_qmc_time = float(np.sum([r['t_qmc'] for r in rows]))
+    tot_wait_time = float(np.sum([r['t_wait'] for r in rows]))
+    serial_time = tot_cc_time + tot_qmc_time
+
+    lno_max = max(max(int(x) for x in r['norb'].strip('[]').split())
+                  for r in rows)
+
+    if lno_thresh is None:
+        lno_thresh_str = 'n/a'
+    elif np.ndim(lno_thresh) == 0:
+        lno_thresh_str = f'{float(lno_thresh):.2e}'
+    else:
+        lno_thresh_str = '[' + ', '.join(f'{x:.2e}' for x in lno_thresh) + ']'
+
+    if outfile is not None:
+        with open(outfile, 'w') as f:
+            width = 120
+            f.write('=' * width + '\n')
+            f.write(f'{"LNO-AFQMC Results":^{width}}\n')
+            f.write('=' * width + '\n')
+
+            f.write(f'{"Num":>4s}  {"Fragment":>16s}  {"LAS SIZE":>10s}  '
+                    f'{"E(MP2)":>10s}  {"E(CCSD)":>10s}  '
+                    f'{"E(AFQMC)":>10s}  {"Error":>8s}  '
+                    f'{"t(CCSD)":>8s}  {"t(wait)":>8s}  {"t(AFQMC)":>8s}\n')
+            f.write('-' * width + '\n')
+
+            for r in rows:
+                f.write(f"{r['num']:4d}  {r['name']:>16s}  {r['norb']:10s}  "
+                        f"{r['e_mp']:10.8f}  {r['e_cc']:10.8f}  "
+                        f"{r['e_qmc']:10.5f}  {r['e_qmc_err']:8.5f}  "
+                        f"{r['t_cc']:8.2f}  {r['t_wait']:8.2f}  "
+                        f"{r['t_qmc']:8.2f}\n")
+
+            f.write('-' * width + '\n')
+
+            f.write(f'{"Summarize Fragments":^{width}}\n')
+            f.write('-' * width + '\n')
+
+            f.write(f'{"LNO-Thresh":<20} {"Max LAS":>8} '
+                    f'{"E[MP2]":>12} {"E[CCSD]":>12} '
+                    f'{"E[AFQMC]":>10} {"Err[AFQMC]":>10} '
+                    f'{"CCSD-Time":>10} {"AFQMC-Time":>10}\n')
+
+            f.write(f'{lno_thresh_str:<20} {lno_max:>8} '
+                    f'{e_mp:>12.8f} {e_cc:>12.8f} '
+                    f'{e_qmc:>10.5f} {e_qmc_err:>10.5f} '
+                    f'{tot_cc_time:>10.2f} {tot_qmc_time:>10.2f}\n')
+
+            f.write('-' * width + '\n')
+            f.write(f'{"Collected Fragments":^{width}}\n')
+            f.write('-' * width + '\n')
+            f.write(f'{"Fragments collected":<28} {len(rows):>10d} '
+                    f'of {nfrag_tot}\n')
+            f.write(f'{"Missing fragments":<28} '
+                    f'{(str(missing) if missing else "none"):>10s}\n')
+            f.write(f'{"Serial equivalent (CPU+GPU)":<28} '
+                    f'{serial_time:>10.2f} s\n')
+            f.write(f'{"CPU time hidden behind GPU":<28} '
+                    f'{tot_cc_time - tot_wait_time:>10.2f} s '
+                    f'({100.0*(tot_cc_time - tot_wait_time)/tot_cc_time if tot_cc_time > 0 else 0.0:.1f}%)\n')
+
+            f.write('=' * width + '\n\n')
+
+        if verbose:
+            print(f'wrote {outfile}')
+
+    return e_mp, e_cc, e_qmc, e_qmc_err, lno_max
