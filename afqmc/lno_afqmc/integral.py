@@ -167,10 +167,13 @@ def get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut):
             cderi_las[p0:p1] = np.array(cderi)
         print(f"Build CDERI in cLAS time: {time.time() - time0:.6f} s")
         print(f"Raw CDERI in LAS shape: {cderi_las.shape}")
-        print(f"Compress CDERI into LAS by SVD with cutoff: {chol_cut}")
         time0 = time.time()
-        cderi_las = cholesky.compress_cderi_gpu(jnp.array(cderi_las), thresh=chol_cut)
-        cderi_las = cholesky.unpack_symmetric(cderi_las, ncas)
+        # print(f"Compress CDERI into LAS by SVD with cutoff: {chol_cut}")
+        # cderi_las = cholesky.compress_cderi_gpu(jnp.array(cderi_las), thresh=chol_cut) # svd
+        # cderi_las = cholesky.unpack_symmetric(cderi_las, ncas)
+        print(f"DF2CHOL cutoff: {chol_cut}")
+        chol_full, final_nchol = cholesky.df2chol_gpu(jnp.array(cderi_las), thresh=chol_cut) # actual cholesky
+        cderi_las = chol_full[:final_nchol]
         print(f"Compress CDERI time: {time.time() - time0:.6f} s")
         print("Finished calculating Integrals")
         print(f'LAS Cholesky shape: {cderi_las.shape}')

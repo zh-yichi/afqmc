@@ -2,10 +2,69 @@ import re, os, glob, h5py
 import numpy as np
 from collections import defaultdict
 
-from pyscf import gto, lo, scf
+from pyscf import gto, lo, scf, lib
 from pyscf.scf import atom_hf
 from pyscf.data import elements
 from pyscf.lno import tools
+
+def mo_olp(mf, mo1, mo2):
+    # return <mo1|mo2>
+    s1e = mf.get_ovlp()
+    if isinstance(mf, scf.rhf.RHF):
+        olp12 = mo1.conj().T @ s1e @ mo2
+    elif isinstance(mf, scf.uhf.UHF):
+        olp12a = mo1[0].conj().T @ s1e @ mo2[0]
+        olp12b = mo1[1].conj().T @ s1e @ mo2[1]
+        olp12 = [olp12a, olp12b]
+    return olp12
+
+def rot_amplitude(mf, t1, t2, mo1occ, mo2occ, mo1vir, mo2vir):
+    u12occ = mo_olp(mf, mo1occ, mo2occ)
+    u12vir = mo_olp(mf, mo1vir, mo2vir)
+
+    if isinstance(mf, scf.rhf.RHF):
+        t1rot = lib.einsum('ij,ab,jb->ia', u12occ.T, u12vir.conj().T, t1, optimize='optimal')
+        t2rot = lib.einsum('ik,jl,ac,bd,klcd->ijab', 
+                            u12occ.T, u12occ.T,
+                            u12vir.conj().T, u12vir.conj().T, 
+                            t2, optimize='optimal')
+
+    elif isinstance(mf, scf.uhf.UHF):
+        t1rot_a = lib.einsum('ij,ab,jb->ia', u12occ[0].T, u12vir[0].conj().T, t1[0], optimize='optimal')
+        t1rot_b = lib.einsum('ij,ab,jb->ia', u12occ[1].T, u12vir[1].conj().T, t1[1], optimize='optimal')
+        t2rot_aa = lib.einsum('ik,jl,ac,bd,klcd->ijab', 
+                               u12occ[0].T, u12occ[0].T,
+                               u12vir[0].conj().T, u12vir[0].conj().T, 
+                               t2[0], optimize='optimal')
+        t2rot_ab = lib.einsum('ik,jl,ac,bd,klcd->ijab', 
+                               u12occ[0].T, u12occ[1].T,
+                               u12vir[0].conj().T, u12vir[1].conj().T, 
+                               t2[1], optimize='optimal')
+        t2rot_bb = lib.einsum('ik,jl,ac,bd,klcd->ijab', 
+                               u12occ[1].T, u12occ[1].T,
+                               u12vir[1].conj().T, u12vir[1].conj().T, 
+                               t2[2], optimize='optimal')
+        t1rot = [t1rot_a, t1rot_b]
+        t2rot = [t2rot_aa, t2rot_ab, t2rot_bb]
+
+    return t1rot, t2rot
+
+def can2lno_amplitude(mf, t1, t2, can_split, lno_split):
+
+    if isinstance(mf, scf.rhf.RHF):
+        mo1occ, mo1vir = can_split[1:3]
+        mo2occ, mo2vir = lno_split[1:3]
+    elif isinstance(mf, scf.uhf.UHF):
+        mo1occ_a, mo1vir_a = can_split[0][1:3]
+        mo1occ_b, mo1vir_b = can_split[1][1:3]
+        mo1occ = [mo1occ_a, mo1occ_b]
+        mo1vir = [mo1vir_a, mo1vir_b]
+        mo2occ_a, mo2vir_a = lno_split[0][1:3]
+        mo2occ_b, mo2vir_b = lno_split[1][1:3]
+        mo2occ = [mo2occ_a, mo2occ_b]
+        mo2vir = [mo2vir_a, mo2vir_b]
+
+    return rot_amplitude(mf, t1, t2, mo1occ, mo2occ, mo1vir, mo2vir)
 
 
 def _fix_ecpbas(mol):
@@ -678,15 +737,9 @@ def make_ulas(mlno, eris, orbloc, lno_type, lno_param):
         #####################################
         # Projection of LO onto occ and vir #
         #####################################
-        ovlp = reduce(np.dot, (orbloc[s].T.conj(), s1e, orbocc[s]))
+        ovlp = orbloc[s].T.conj() @ s1e @ orbocc[s]
         uocc_loc[s], uocc_std[s], uocc_orth[s] = \
             lno.projection_construction(ovlp, mlno.lo_proj_thresh, mlno.lo_proj_thresh_active)
-        # NOTE we allow empty fragments
-        # if uocc_loc[s].shape[1] == 0:
-        #    log.error('LOs do not overlap with occupied space. This could be caused '
-        #              'by either a bad fragment choice or too high of `lo_proj_thresh_active` '
-        #              '(current value: %s).', mlno.lo_proj_thresh_active)
-        #    raise RuntimeError
         log.info('LO occ proj: %d active | %d standby | %d orthogonal',
                  *[u.shape[1] for u in [uocc_loc[s], uocc_std[s], uocc_orth[s]]])
 
@@ -701,12 +754,8 @@ def make_ulas(mlno, eris, orbloc, lno_type, lno_param):
             dmoo, dmvv = ulno.make_lo_rdm1_1h(eris, moeocc, moevir, uocc_loc)
     else:
         raise NotImplementedError('Unsupported LNO type')
-        
-    # if mlno._match_oldulno:
-    #     dmoo[0],dmoo[1]=dmoo[0]/2.0,dmoo[1]/2.0
-    #     dmvv[0],dmvv[1]=dmvv[0]/2.0,dmvv[1]/2.0
 
-    orbfrag = [None,] * 2
+    lno_orbfrag = [None,] * 2
     frzfrag = [None,] * 2
     uoccact_loc = [None,] * 2
     can_orbfrag = [None,] * 2
@@ -714,7 +763,7 @@ def make_ulas(mlno, eris, orbloc, lno_type, lno_param):
     frag_msg = ""
 
     for s in range(2):
-        dmoo[s] = reduce(np.dot, (uocc_orth[s].T.conj(), dmoo[s], uocc_orth[s]))
+        dmoo[s] = uocc_orth[s].T.conj() @ dmoo[s] @ uocc_orth[s]
 
         _param = lno_param[s][0]
         if _param['norb'] is not None:
@@ -734,7 +783,7 @@ def make_ulas(mlno, eris, orbloc, lno_type, lno_param):
 
         orbviract, orbvirfrz = lno.natorb_select(dmvv[s], orbvir[s], **(lno_param[s][1]))
         orbvirfrz = np.hstack((orbvirfrz, orbvirfrz_core[s])) # vir in eigenvalue decreasing order
-        uviract = reduce(np.dot, (orbvir[s].T.conj(), s1e, orbviract))
+        uviract = orbvir[s].T.conj() @ s1e @ orbviract
         uviract = uviract
         orbviract = np.dot(orbvir[s], uviract)
         # canonized
@@ -746,23 +795,25 @@ def make_ulas(mlno, eris, orbloc, lno_type, lno_param):
         ####################
         orbfragall = [orboccfrz, orboccact, orbviract, orbvirfrz]
         can_orbfragall = [orboccfrz, can_orboccact, can_orbviract, orbvirfrz]
-        orbfrag[s] = np.hstack(orbfragall)
+        lno_orbfrag[s] = np.hstack(orbfragall)
         can_orbfrag[s] = np.hstack(can_orbfragall)
         norbfragall = np.asarray([x.shape[1] for x in orbfragall])
         locfragall = np.cumsum([0] + norbfragall.tolist()).astype(int)
         frzfrag[s] = np.concatenate((
             np.arange(locfragall[0], locfragall[1]),
             np.arange(locfragall[3], locfragall[4]))).astype(int)
-        frag_msg += '\nSpin channel %d: %d/%d Occ | %d/%d Vir | %d/%d MOs\n' % (
+        
+        frag_msg += '\nSpin channel %d: %d/%d Occ | %d/%d Vir | %d/%d MOs' % (
                         s,
                         norbfragall[1], sum(norbfragall[:2]),
                         norbfragall[2], sum(norbfragall[2:4]),
                         sum(norbfragall[1:3]), sum(norbfragall)
                     )
+
         if len(frzfrag[s]) == 0:
             frzfrag[s] = 0
 
-    return orbfrag, can_orbfrag, frzfrag, uoccact_loc, can_uoccact_loc, frag_msg
+    return lno_orbfrag, can_orbfrag, frzfrag, uoccact_loc, can_uoccact_loc, frag_msg
 
 def make_las(mlno, eris, orbloc, lno_type, lno_param):
     if isinstance(mlno._scf, scf.rhf.RHF):

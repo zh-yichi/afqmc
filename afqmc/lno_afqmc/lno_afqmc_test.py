@@ -140,13 +140,16 @@ def lnomp2_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=3):
         raise NotImplementedError('LNO Only Support Restricted and Unrestricted Orbitals!')
     return emp_frag
 
-def run_lnoafqmc(options, option_file='options.bin'):
+def run_lnoafqmc(options, option_file='options.bin', script=None):
 
     with open(option_file, 'wb') as f:
         pickle.dump(options, f)
 
     if 'pt2' in options['trial']:
-        script='script/run_lno_afqmc_pt2ccsd.py'
+        if script is None:
+            script='script/run_lno_afqmc_pt2ccsd.py'
+        else:
+            script=f'script/{script}'
 
     path = os.path.abspath(__file__)
     dir_path = os.path.dirname(path)
@@ -156,7 +159,7 @@ def run_lnoafqmc(options, option_file='options.bin'):
     os.system(f" python {script} |tee afqmc.out")
 
 def lnoafqmc_kernel(mlno, lno_coeff, uocc_loc, lno_frozen, t1, t2,
-                    chol_cut, frag_idx, seeds, qmc_options):
+                    chol_cut, frag_idx, seeds, qmc_options, qmc_script=None):
     '''GPU stage of one fragment.
 
     Returns the fragment energy plus a (t_integral, t_sampling) timing pair so
@@ -172,7 +175,7 @@ def lnoafqmc_kernel(mlno, lno_coeff, uocc_loc, lno_frozen, t1, t2,
     qmc_options["seed"] = seeds[frag_idx]
 
     time0 = time.perf_counter()
-    run_lnoafqmc(qmc_options)
+    run_lnoafqmc(qmc_options, script=qmc_script)
     t_qmc = time.perf_counter() - time0
 
     outfile = f'fragment.out{frag_idx+1}'
@@ -226,39 +229,45 @@ def cpu_stage(mlno, mf, lo_coeff, loidx, lno_thresh, lno_pct_occ, lno_norb,
         mf, lo_coeff, lno_thresh, lno_pct_occ, lno_norb, loidx, ifrag)
 
     with _capture_pyscf_log(mlno) as pyscf_log:
-        lno_coeff, lno_frozen, uocc_loc, frag_msg = \
-            mlno.make_las(eris, orbloc, lno_type, lno_param)
+        lno_coeff, can_coeff, frozen_idx, lno_loc, can_loc, frag_msg \
+             = tools.make_las(mlno, eris, orbloc, lno_type, lno_param)
+        # lno_coeff, frozen_idx, lno_loc, frag_msg = \
+        #     mlno.make_las(eris, orbloc, lno_type, lno_param)
     if pyscf_log.getvalue():
         log.write(pyscf_log.getvalue())
     _log(f'LNO-LAS: {frag_msg}')
 
     if isinstance(mf, scf.rhf.RHF):
-        lno_frozen, maskact = lnoccsd.get_maskact(lno_frozen, mlno.mo_occ.size)
+        frozen_idx, maskact = lnoccsd.get_maskact(frozen_idx, mlno.mo_occ.size)
     elif isinstance(mf, scf.uhf.UHF):
-        lno_frozen, maskact = ulnoccsd.get_maskact(
-            lno_frozen, [mlno.mo_occ[0].size, mlno.mo_occ[1].size])
+        frozen_idx, maskact = ulnoccsd.get_maskact(
+            frozen_idx, [mlno.mo_occ[0].size, mlno.mo_occ[1].size])
     else:
         raise TypeError(f'unsupported mean-field type: {type(mf)}')
 
-    lno_split, nfrzocc, nactocc, nactvir, nfrzvir = \
-        tools.split_lno(mlno, lno_coeff, lno_frozen)
+    lno_split, nfrzocc, nactocc, nactvir, nfrzvir = tools.split_lno(mlno, lno_coeff, frozen_idx)
+    can_split, _, _, _, _ = tools.split_lno(mlno, can_coeff, frozen_idx)
+
+    if plot_las:
+        tools.plot_density(mf, orbloc, lno_split, frag_idx+1)
 
     t_las = time.perf_counter() - t_start
 
-    if plot_las is not False:
-        tools.plot_density(mf, orbloc, lno_split, frag_idx+1)
-
     time0 = time.perf_counter()
     if run_mp:
-        efrag_mp = lnomp2_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=0)
+        # fragment mp2 only support canonical orbital currently
+        efrag_mp = lnomp2_kernel(mlno, can_coeff, frozen_idx, can_loc, maskact, verbose=0)
     else:
         efrag_mp = 0.0
     t_mp = time.perf_counter() - time0
 
     time0 = time.perf_counter()
     if run_cc:
+        # fragment cc converges faster in canonical orbitals currently
         efrag_cc, t1, t2 = \
-            lnoccsd_kernel(mlno, lno_coeff, lno_frozen, uocc_loc, maskact, verbose=0)
+            lnoccsd_kernel(mlno, can_coeff, frozen_idx, can_loc, maskact, verbose=0)
+        # rot amplitudes from can 2 lno
+        t1, t2 = tools.can2lno_amplitude(mf, t1, t2, can_split, lno_split)
     else:
         efrag_cc, t1, t2 = 0.0, None, None
     t_cc = time.perf_counter() - time0
@@ -267,8 +276,8 @@ def cpu_stage(mlno, mf, lo_coeff, loidx, lno_thresh, lno_pct_occ, lno_norb,
         'ifrag': ifrag,
         'frag_idx': frag_idx,
         'lno_coeff': lno_coeff,
-        'lno_frozen': lno_frozen,
-        'uocc_loc': uocc_loc,
+        'lno_frozen': frozen_idx,
+        'uocc_loc': lno_loc,
         't1': t1,
         't2': t2,
         'nactocc': nactocc,
@@ -341,6 +350,7 @@ def run_afqmc(mf,
               run_mp = True,
               run_cc = True,
               run_qmc = True,
+              qmc_script=None, 
               plot_las = False,
               pipeline = True,
               prefetch = 1,
@@ -474,9 +484,11 @@ def run_afqmc(mf,
             if run_qmc:
                 efrag_qmc, efrag_qmc_err, t_int, t_smp \
                     = lnoafqmc_kernel(
-                        mlno, data['lno_coeff'], data['uocc_loc'], data['lno_frozen'],
+                        mlno, data['lno_coeff'], 
+                        data['uocc_loc'], data['lno_frozen'],
                         data['t1'], data['t2'],
-                        chol_cut, frag_idx, seeds, qmc_options)
+                        chol_cut, frag_idx, seeds, 
+                        qmc_options, qmc_script)
                 print(f"LNO-Integral time (s):    {t_int:.2f}")
                 print(f"LNO-AFQMC time (s):       {t_smp:.2f}")
             else:

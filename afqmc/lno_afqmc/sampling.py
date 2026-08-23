@@ -295,6 +295,138 @@ def ept2frg_blocking(
         print(f"Fallback max error: {plateau_err:.5f}")
     return weighp, energy, plateau_err
 
+
+def _ept2frg_from_aggregates(wp, t2frg, e0frg, e1frg, e0bar):
+    """E = E0frg/WP + E1frg/WP - T2frg*E0bar/WP**2 from weighted aggregates.
+
+    Every argument is already a weighted aggregate, i.e. sum(wp*x) over the
+    samples (or over each block, when they carry a block axis).
+    """
+    return (e0frg / wp + e1frg / wp - t2frg * e0bar / wp**2)
+
+
+def _plateau_error(block_sizes, block_vars, block_var_errs):
+    """Fit var(block_size) = a - b*exp(-x/tau) and return sqrt(plateau)."""
+    def model(x, a, b, tau):
+        return a - b * np.exp(-x / tau)
+    p0 = [block_vars.max(), block_vars.max() - block_vars[0], 5.0]
+    try:
+        popt, pcov = curve_fit(model, block_sizes, block_vars,
+                               sigma=block_var_errs, absolute_sigma=True,
+                               p0=p0, maxfev=10000)
+        plateau_var = popt[0]
+        plateau_var_unc = np.sqrt(pcov[0, 0])
+        plateau_err = np.sqrt(plateau_var)
+        plateau_uncertainty = plateau_var_unc / (2.0 * plateau_err)
+        tau = popt[2]
+        print(f"Fit (variance): plateau_var = {plateau_var:.5e} ± {plateau_var_unc:.5e}")
+        print(f"Fit (error):    plateau = {plateau_err:.5f} ± {plateau_uncertainty:.5f}")
+        print(f"     autocorrelation length ~ {tau:.1f} blocks")
+        if tau > block_sizes[-1] or tau < 0:
+            print(f"     !!!Failed to reach plateau in blocking")
+            print(f"     Return max block error")
+            plateau_err = np.sqrt(block_vars.max())
+    except (RuntimeError, TypeError, ValueError) as e:
+        print(f"\nFit failed: {e}")
+        plateau_err = np.sqrt(block_vars.max())
+        print(f"Fallback max error: {plateau_err:.5f}")
+    return plateau_err
+
+
+def ept2frg_delta_blocking(
+        wp_sp,
+        t2frg0_sp, e0frg0_sp, e1frg0_sp, e0bar0_sp,
+        t2frg1_sp, e0frg1_sp, e1frg1_sp, e0bar1_sp,
+        min_nblocks=20,
+        final=False,
+        ):
+    """Blocking analysis for the correlated frozen-virtual difference
+
+        <delta> = <ept2_frg>_full - <ept2_frg>_frozen
+
+    Branch 0 is the frozen-virtual estimator, branch 1 the full one. Both are
+    measured on the *same* walkers of the *same* block, and t1 (hence the
+    absorbed weight wp = wt*t1) does not depend on frozen_vir, so a single
+    wp_sp normalizes both branches. The difference is therefore formed
+    block by block and only its fluctuation - much smaller than that of
+    either branch - enters the error bar.
+
+    Returns
+    -------
+    delta : float
+        The estimator value <E_full> - <E_frozen>.
+    error : float
+        Naive (final=False) or plateau (final=True) stochastic error.
+    """
+    nsample = len(wp_sp)
+
+    WP    = np.sum(wp_sp)
+    aggr0 = [np.sum(wp_sp * x) for x in (t2frg0_sp, e0frg0_sp, e1frg0_sp, e0bar0_sp)]
+    aggr1 = [np.sum(wp_sp * x) for x in (t2frg1_sp, e0frg1_sp, e1frg1_sp, e0bar1_sp)]
+    energy0 = _ept2frg_from_aggregates(WP, *aggr0).real
+    energy1 = _ept2frg_from_aggregates(WP, *aggr1).real
+    delta = energy1 - energy0
+
+    if not final:
+        # Delta-method error of the *difference*: build the per-sample
+        # influence on E for each branch (as in ept2frg_blocking) and
+        # subtract them before accumulating the variance, so that the part
+        # of the noise common to both branches cancels sample by sample.
+        w = wp_sp
+
+        def influence(t2frg_sp, e0frg_sp, e1frg_sp, e0bar_sp):
+            T2frg, E0frg, E1frg, E0bar = [np.sum(w * x) for x in
+                                          (t2frg_sp, e0frg_sp, e1frg_sp, e0bar_sp)]
+            dfdWP = (-E0frg / WP**2 - E1frg / WP**2
+                     + 2.0 * T2frg * E0bar / WP**3)
+            return ((w * e0frg_sp) / WP
+                    + (w * e1frg_sp) / WP
+                    - (E0bar / WP**2) * (w * t2frg_sp)
+                    - (T2frg / WP**2) * (w * e0bar_sp)
+                    + dfdWP * w)
+
+        infl = (influence(t2frg1_sp, e0frg1_sp, e1frg1_sp, e0bar1_sp)
+                - influence(t2frg0_sp, e0frg0_sp, e1frg0_sp, e0bar0_sp)).real
+        var_mean = np.sum(infl**2) * nsample / (nsample - 1)
+        return delta, np.sqrt(var_mean)
+
+    # ---------------- full blocking analysis (final=True) ----------------
+    max_size = nsample // min_nblocks
+    if max_size < 10:
+        min_nblocks = max(nsample // 10, 3)
+        max_size = nsample // min_nblocks
+        print(f"Warning: small dataset, relaxed min_nblocks to {min_nblocks}")
+    if max_size < 3:
+        print("Warning: too few samples to block the correction, naive error returned")
+        return ept2frg_delta_blocking(
+            wp_sp, t2frg0_sp, e0frg0_sp, e1frg0_sp, e0bar0_sp,
+            t2frg1_sp, e0frg1_sp, e1frg1_sp, e0bar1_sp, final=False)
+    block_sizes = np.arange(1, max_size + 1)
+    block_vars = np.zeros(max_size)
+    block_var_errs = np.zeros(max_size)
+    print(f"nsample = {nsample}, max_block_size = {max_size}, min_nblocks = {min_nblocks}")
+    print(f"{'Blk_SZ':>6s}  {'NBlk':>5s}  {'NSmp':>5s}  {'Delta':>10s}  {'Error':>8s}  {'dError':>8s}")
+    for i, block_size in enumerate(block_sizes):
+        n_blocks = nsample // block_size
+        sl = slice(0, n_blocks * block_size)
+        blk = lambda x: np.sum((wp_sp[sl] * x[sl]).reshape(n_blocks, block_size), axis=1)
+        block_wp = np.sum(wp_sp[sl].reshape(n_blocks, block_size), axis=1)
+        block_e0 = _ept2frg_from_aggregates(
+            block_wp, blk(t2frg0_sp), blk(e0frg0_sp), blk(e1frg0_sp), blk(e0bar0_sp))
+        block_e1 = _ept2frg_from_aggregates(
+            block_wp, blk(t2frg1_sp), blk(e0frg1_sp), blk(e1frg1_sp), blk(e0bar1_sp))
+        block_delta = (block_e1 - block_e0).real
+        block_var = np.var(block_delta, ddof=1) / n_blocks  # variance of the mean
+        block_error = np.sqrt(block_var)
+        err_of_err = block_error / np.sqrt(2.0 * (n_blocks - 1))
+        block_vars[i] = block_var
+        block_var_errs[i] = block_var * np.sqrt(2.0 / (n_blocks - 1))
+        print(f'{block_size:6d}  {n_blocks:5d}  {block_size*n_blocks:5d}  '
+              f'{np.mean(block_delta):10.5f}  {block_error:8.5f}  {err_of_err:8.5f}')
+
+    return delta, _plateau_error(block_sizes, block_vars, block_var_errs)
+
+
 @dataclass
 class sampler:
     n_prop_steps: int = 50
@@ -429,6 +561,7 @@ class sampler_pt(sampler):
 
 @dataclass
 class sampler_pt2(sampler):
+    frozen_vir: int = 0  # freeze the last frozen_vir virtuals in the T2 terms
 
     @partial(jit, static_argnums=(0,3,4))
     def block_sample(
@@ -455,8 +588,16 @@ class sampler_pt2(sampler):
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
         prop_data = prop.orthonormalize_walkers(prop_data)
 
-        eg_sp, t1_sp, t2frg_sp, e0frg_sp, e1frg_sp, e0_sp \
-            = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data)
+        # self is a static argument, so this branch is resolved at trace time;
+        # keeping the plain call for frozen_vir = 0 leaves restricted trials
+        # (whose calc_ept2_frag takes no frozen_vir) working unchanged.
+        if self.frozen_vir:
+            eg_sp, t1_sp, t2frg_sp, e0frg_sp, e1frg_sp, e0_sp \
+                = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data,
+                                       frozen_vir=self.frozen_vir)
+        else:
+            eg_sp, t1_sp, t2frg_sp, e0frg_sp, e1frg_sp, e0_sp \
+                = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data)
         
         eg_sp = jnp.real(eg_sp)
         
@@ -482,6 +623,77 @@ class sampler_pt2(sampler):
         prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
 
         return prop_data, (wt, eg, wp, t2frg, e0frg, e1frg, e0)
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class sampler_pt2_frozen_vir(sampler):
+    frozen_vir: int = 0
+
+    @partial(jit, static_argnums=(0,3,4))
+    def block_sample(
+        self,
+        prop_data,
+        ham_data,
+        prop,
+        trial,
+        wave_data,
+        ):
+        """Block scan function. Propagation and energy calculation."""
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(
+                self.n_prop_steps,
+                prop.n_walkers,
+                self.n_chol,
+            ),
+        )
+        _step_scan_wrapper = lambda x, y: self._step_scan(
+            x, y, ham_data, prop, trial, wave_data
+        )
+        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        prop_data = prop.orthonormalize_walkers(prop_data)
+
+        eg_sp0, t1_sp0, t2frg_sp0, e0frg_sp0, e1frg_sp0, e0_sp0 \
+            = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data,frozen_vir=self.frozen_vir)
+
+        eg_sp1, t1_sp1, t2frg_sp1, e0frg_sp1, e1frg_sp1, e0_sp1 \
+            = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data,frozen_vir=None)
+        
+        eg_sp0 = jnp.real(eg_sp0)
+        outlier = jnp.abs(eg_sp0 - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
+        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        
+        wts = prop_data["weights"]
+        wt    = jnp.sum(wts)
+
+        wps0 = wts * t1_sp0
+        eg0    = jnp.sum(wts * eg_sp0) / wt
+        wp0    = jnp.sum(wps0)
+        t2frg0 = jnp.sum(wps0 * t2frg_sp0) / wp0
+        e0frg0 = jnp.sum(wps0 * e0frg_sp0) / wp0
+        e1frg0 = jnp.sum(wps0 * e1frg_sp0) / wp0
+        e00    = jnp.sum(wps0 * e0_sp0) / wp0
+
+        wps1 = wts * t1_sp1
+        eg1    = jnp.sum(wts * eg_sp1) / wt
+        wp1    = jnp.sum(wps1)
+        t2frg1 = jnp.sum(wps1 * t2frg_sp1) / wp1
+        e0frg1 = jnp.sum(wps1 * e0frg_sp1) / wp1
+        e1frg1 = jnp.sum(wps1 * e1frg_sp1) / wp1
+        e01    = jnp.sum(wps1 * e0_sp1) / wp1
+    
+        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * eg0.real
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+
+        return prop_data, (wt, eg0, wp0, t2frg0, e0frg0, e1frg0, e00,
+                               eg1, wp1, t2frg1, e0frg1, e1frg1, e01)
 
     def __hash__(self) -> int:
         return hash(tuple(self.__dict__.values()))
