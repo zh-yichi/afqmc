@@ -20,39 +20,39 @@ def prjmo(prj, s1e, mo):
     mo_rec = prj @ prj.T @ s1e @ mo
     return mo_rec
 
-def common_las2(mf, lno_coeff, ncas, ncore, torr=1e-8):
-    print("Constructing cLAS that spans both Alpha and Beta active space")
-    s1e = mf.get_ovlp()
-    lno_acta = lno_coeff[0][:, ncore[0]:ncore[0] + ncas[0]]
-    lno_actb = lno_coeff[1][:, ncore[1]:ncore[1] + ncas[1]]
+# def common_las2(mf, lno_coeff, ncas, ncore, torr=1e-8):
+#     print("Constructing cLAS that spans both Alpha and Beta active space")
+#     s1e = mf.get_ovlp()
+#     lno_acta = lno_coeff[0][:, ncore[0]:ncore[0] + ncas[0]]
+#     lno_actb = lno_coeff[1][:, ncore[1]:ncore[1] + ncas[1]]
 
-    # Express both active spaces in the complete, orthonormal alpha MO basis
-    lno_actaa = lno_coeff[0].T @ s1e @ lno_acta
-    lno_actba = lno_coeff[0].T @ s1e @ lno_actb
-    clno_act = np.hstack([lno_actaa, lno_actba])   # redundant spanning set for the union
-    print('Naive cLAS Shape: ', clno_act.shape)
+#     # Express both active spaces in the complete, orthonormal alpha MO basis
+#     lno_actaa = lno_coeff[0].T @ s1e @ lno_acta
+#     lno_actba = lno_coeff[0].T @ s1e @ lno_actb
+#     clno_act = np.hstack([lno_actaa, lno_actba])   # redundant spanning set for the union
+#     print('Naive cLAS Shape: ', clno_act.shape)
 
-    # Left singular vectors span the column space; singular values below torr
-    # are the linear dependence between the alpha and beta active spaces.
-    u, s, _ = np.linalg.svd(clno_act, full_matrices=False)
-    rank = int(np.count_nonzero(s > torr))
-    u = u[:, :rank]
+#     # Left singular vectors span the column space; singular values below torr
+#     # are the linear dependence between the alpha and beta active spaces.
+#     u, s, _ = np.linalg.svd(clno_act, full_matrices=False)
+#     rank = int(np.count_nonzero(s > torr))
+#     u = u[:, :rank]
 
-    print(f'Orthonormalized cLAS shape: {u.shape}')
-    print(f'cLAS singular value threshold: {torr}')
-    print(f'Smallest retained singular value: {s[rank - 1]:.2e}')
-    if rank < s.size:
-        print(f'Largest discarded singular value: {s[rank]:.2e}')
-    else:
-        print('No singular values discarded (alpha and beta spaces disjoint)')
-    print(f"Minimum size of cLAS to span both Alpha and Beta LAS: {rank}")
+#     print(f'Orthonormalized cLAS shape: {u.shape}')
+#     print(f'cLAS singular value threshold: {torr}')
+#     print(f'Smallest retained singular value: {s[rank - 1]:.2e}')
+#     if rank < s.size:
+#         print(f'Largest discarded singular value: {s[rank]:.2e}')
+#     else:
+#         print('No singular values discarded (alpha and beta spaces disjoint)')
+#     print(f"Minimum size of cLAS to span both Alpha and Beta LAS: {rank}")
 
-    # span{|C>} = span{|A>} U span{|B>}
-    clas_coeff = lno_coeff[0] @ u   # in AO basis
-    print('True Common LAS Shape: ', clas_coeff.shape)
-    a2c = clas_coeff.T @ s1e @ lno_acta   # <C|A>
-    b2c = clas_coeff.T @ s1e @ lno_actb   # <C|B>
-    return clas_coeff, a2c, b2c
+#     # span{|C>} = span{|A>} U span{|B>}
+#     clas_coeff = lno_coeff[0] @ u   # in AO basis
+#     print('True Common LAS Shape: ', clas_coeff.shape)
+#     a2c = clas_coeff.T @ s1e @ lno_acta   # <C|A>
+#     b2c = clas_coeff.T @ s1e @ lno_actb   # <C|B>
+#     return clas_coeff, a2c, b2c
 
 def common_las(mf, lno_coeff, ncas, ncore, torr=1e-8):
     print("Constructing cLAS that spans both Alpha and Beta active space")
@@ -171,13 +171,12 @@ def get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut):
         # print(f"Compress CDERI into LAS by SVD with cutoff: {chol_cut}")
         # cderi_las = cholesky.compress_cderi_gpu(jnp.array(cderi_las), thresh=chol_cut) # svd
         # cderi_las = cholesky.unpack_symmetric(cderi_las, ncas)
-        print(f"DF2CHOL cutoff: {chol_cut}")
-        chol_full, final_nchol = cholesky.df2chol_gpu(jnp.array(cderi_las), thresh=chol_cut) # actual cholesky
+        print(f"Compress CDERI 2 Chol: {chol_cut}")
+        chol_full, final_nchol = cholesky.df2chol_gpu(jnp.array(cderi_las), max_error=chol_cut)
         cderi_las = chol_full[:final_nchol]
         print(f"Compress CDERI time: {time.time() - time0:.6f} s")
         print("Finished calculating Integrals")
         print(f'LAS Cholesky shape: {cderi_las.shape}')
-        # cderi_las = cderi_a.reshape(cderi_las.shape[0], -1)
 
     elif isinstance(mf, scf.uhf.UHF):
         time0 = time.time()
@@ -200,24 +199,20 @@ def get_lno_integral(mf, lno_coeff, lno_frozen, chol_cut):
             cderi_clas[p0:p1] = np.array(cderi)
         print(f"Build CDERI in cLAS time: {time.time() - time0:.6f} s")
         print(f"Raw CDERI in cLAS shape: {cderi_clas.shape}")
-        print(f"Compress CDERI in cLAS by SVD with cutoff: {chol_cut}")
+        print(f"Compress CDERI 2 Chol in cLAS cutoff: {chol_cut}")
         time0 = time.time()
-        cderi_clas = jnp.array(cderi_clas)
-        cderi_clas = cholesky.compress_cderi_gpu(cderi_clas, thresh=chol_cut)
-        cderi_clas = cholesky.unpack_symmetric(cderi_clas, nclas)
+        # cderi_clas = cholesky.compress_cderi_gpu(cderi_clas, thresh=chol_cut) # SVD
+        # cderi_clas = cholesky.unpack_symmetric(cderi_clas, nclas)
+        chol_full, final_nchol = cholesky.df2chol_gpu(jnp.array(cderi_clas), max_error=chol_cut) # CD
+        cderi_clas = chol_full[:final_nchol]
         cderi_a = cholesky.cderi2mo_gpu(cderi_clas, a2c)
         cderi_b = cholesky.cderi2mo_gpu(cderi_clas, b2c)
         cderi_a = cholesky.unpack_symmetric(cderi_a, ncas[0])
         cderi_b = cholesky.unpack_symmetric(cderi_b, ncas[1])
         print(f"Compress CDERI time: {time.time() - time0:.6f} s")
         print("Finished calculating Integrals")
-        # print('Size of the correlation space: ')
-        # print(f'Number of electrons: {nocc}')
-        # print(f'Number of basis functions: {ncas}')
         print(f'LAS Alpha Cholesky shape: {cderi_a.shape}')
         print(f'LAS Beta  Cholesky shape: {cderi_b.shape}')
-        # cderi_a = cderi_a.reshape(cderi_a.shape[0], -1)
-        # cderi_b = cderi_b.reshape(cderi_b.shape[0], -1)
         cderi_las = (cderi_a, cderi_b)
 
     return enuc, h1e, cderi_las, nocc, ncas
