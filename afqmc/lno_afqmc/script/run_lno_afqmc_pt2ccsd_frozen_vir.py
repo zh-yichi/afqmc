@@ -33,13 +33,15 @@ prop_data = prep.init_hf_prop_data(trial, wave_data, ham_data, options)
 # The correction is measured on the same walkers as the frozen energy, so the
 # noise common to both branches cancels and it converges in far fewer blocks
 # than either branch on its own.
-frozen_vir = int(options.get("frozen_vir", 0))
-n_corr_blocks = int(options.get("n_corr_blocks", max(50, sampler.n_blocks // 10)))
-delta_error = float(options.get("delta_error", 0.25 * options["max_error"]))
-
 norb_sp = trial.norb if isinstance(trial.norb, (tuple, list)) else (trial.norb,) * 2
 nocc_sp = trial.nelec if isinstance(trial.nelec, (tuple, list)) else (trial.nelec,) * 2
 nvir_sp = tuple(no - ne for no, ne in zip(norb_sp, nocc_sp))
+
+# a third of the virtuals is frozen by default; alpha and beta spaces differ for
+# an unrestricted trial, so the count is taken from their average
+frozen_vir = int(options.get("frozen_vir", sum(nvir_sp) / len(nvir_sp) / 3))
+n_corr_blocks = int(options.get("n_corr_blocks", min(200, sampler.n_blocks // 5)))
+delta_error = float(options.get("delta_error", 0.25 * options["max_error"]))
 
 if "u" not in options["trial"]:
     raise ValueError("frozen virtual sampling needs an unrestricted trial "
