@@ -39,7 +39,8 @@ nvir_sp = tuple(no - ne for no, ne in zip(norb_sp, nocc_sp))
 
 # a third of the virtuals is frozen by default; alpha and beta spaces differ for
 # an unrestricted trial, so the count is taken from their average
-frozen_vir = int(options.get("frozen_vir", sum(nvir_sp) / len(nvir_sp) / 3))
+frozen_rate = options.get("frozen_vir_rate",  3)
+frozen_vir = int(options.get("frozen_vir", sum(nvir_sp) / len(nvir_sp) / frozen_rate))
 n_corr_blocks = int(options.get("n_corr_blocks", min(200, sampler.n_blocks // 5)))
 delta_error = float(options.get("delta_error", 0.25 * options["max_error"]))
 

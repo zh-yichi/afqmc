@@ -1218,8 +1218,9 @@ class upt2ccsd(uhf):
             h1a, h1b = h1a[:na_keep, :na_keep], h1b[:nb_keep, :nb_keep]
 
             # cholesky: slice the two ORBITAL axes, NEVER axis 0 (the chol index)
-            chol_a = chol_a[:, :na_keep, :na_keep]
-            chol_b = chol_b[:, :nb_keep, :nb_keep]
+            nchol_keep = int(chol_a.shape[0] * na_keep / chol_a.shape[1])
+            chol_a = chol_a[:nchol_keep, :na_keep, :na_keep]
+            chol_b = chol_b[:nchol_keep, :nb_keep, :nb_keep]
 
             # amplitudes: slice the two VIRTUAL axes only
             t2aa = t2aa[:, :nva_keep, :, :nva_keep]
