@@ -10,6 +10,8 @@ from jax import jit, jvp, lax, vmap, random
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 import opt_einsum as oe
 
+from .wavefunctions_restricted import _chol_chunking
+
 class uwfn(ABC):
     """Base class for wave functions. Contains methods for wave function measurements.
 
@@ -1552,6 +1554,248 @@ class upt2ccsd_bar(upt2ccsd):
         ham_data["chol_bar"] = [chol_bar_a, chol_bar_b]
 
         return ham_data
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class upt2ccsd_sto_chol(upt2ccsd_bar):
+    """upt2CCSD with a semistochastic Cholesky sum in the T2-contracted energy.
+
+    Unrestricted counterpart of pt2ccsd_sto_chol.  Same split: e2_0 -- and hence
+    e2_2_1 = e2_0 * gt2g -- is always exact, because the per-Cholesky two-body
+    energies are needed to build the sampling proposal anyway and cost only the
+    gl = green.chol contraction.  The three accumulators that contract with T2
+    (whose "gia,iajb->gjb" contractions scale as nocc^2 nvir^2 per vector and
+    dominate) are split into an exactly summed head and an importance sampled
+    tail.  Both spin channels use the same head/tail split and the same draws,
+    scored by the combined alpha+beta two-body energy.
+
+    Knobs (dataclass fields, static under jit):
+      n_chol_head    : head size; takes precedence over head_chol_ratio.  0
+                       defers to the ratio; a positive int sets it explicitly;
+                       "full" puts every vector in the head, disabling sampling
+                       and reproducing upt2ccsd_bar exactly
+      head_chol_ratio: head as a fraction of nchol when n_chol_head == 0
+                       (default 0.125 = nchol/8)
+      n_chol_samples : tail draws per walker per block
+      chol_score_floor / chol_uniform_mix : proposal guards
+
+    Randomness arrives via wave_data["sto_chol_key"], refreshed each block by
+    sampler_pt2_sto_chol.  The estimator is unbiased.
+    """
+
+    n_chol_head: Union[int, str] = 0
+    head_chol_ratio: float = 0.125
+    n_chol_samples: int = 128
+    chol_score_floor: float = 1.0e-6
+    chol_uniform_mix: float = 0.01
+
+    @partial(jit, static_argnums=0)
+    def _prop_chol_in_place(self, e2_g_estimate):
+        """pi_g = (1-u) |e2_g| / sum|e2_g| + u/nchol, with a relative floor.
+
+        The uniform component keeps pi_g > 0 for every vector, which bounds the
+        importance weights 1/pi_g and is what makes the estimator unbiased.
+        """
+        e2_g = jnp.abs(e2_g_estimate)
+        e2_g = jnp.where(e2_g >= self.chol_score_floor * jnp.max(e2_g), e2_g, 0.0)
+        nchol = e2_g.shape[0]
+        uniform = jnp.full((nchol,), 1.0 / nchol)
+        total = jnp.sum(e2_g)
+        guided = jnp.where(total > 0.0, e2_g / jnp.where(total > 0.0, total, 1.0), uniform)
+        return (1.0 - self.chol_uniform_mix) * guided + self.chol_uniform_mix * uniform
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy_pt(self, walker_up, walker_dn, ham_data, wave_data, key):
+        if self.mix_precision:
+            rtype, ctype = jnp.float32, jnp.complex64
+        else:
+            rtype, ctype = jnp.float64, jnp.complex128
+
+        norb_a, nocc_a = walker_up.shape
+        norb_b, nocc_b = walker_dn.shape
+        nchol_chunk = self.nchol_chunk
+
+        t2aa, t2ab, t2bb = wave_data["t2aa"], wave_data["t2ab"], wave_data["t2bb"]
+        chol_a, chol_b = ham_data["chol_bar"][0], ham_data["chol_bar"][1]
+        h1_a, h1_b = ham_data["h1_bar"][0], ham_data["h1_bar"][1]
+        nchol = chol_a.shape[0]
+
+        walker_up = wave_data['exp_t1a'] @ walker_up
+        walker_dn = wave_data['exp_t1b'] @ walker_dn
+        green_a = (walker_up.dot(jnp.linalg.inv(walker_up[:nocc_a, :]))).T
+        green_b = (walker_dn.dot(jnp.linalg.inv(walker_dn[:nocc_b, :]))).T
+        greenov_a = green_a[:nocc_a, nocc_a:]
+        greenov_b = green_b[:nocc_b, nocc_b:]
+        greenp_a = jnp.vstack((greenov_a, -jnp.eye(norb_a - nocc_a)))
+        greenp_b = jnp.vstack((greenov_b, -jnp.eye(norb_b - nocc_b)))
+
+        # ---- Cholesky-independent pieces (identical to upt2ccsd_bar) ----
+        hg_a = oe.contract("pq,pq->", h1_a[:nocc_a, :], green_a, backend="jax")
+        hg_b = oe.contract("pq,pq->", h1_b[:nocc_b, :], green_b, backend="jax")
+        e1_0 = hg_a + hg_b
+
+        t2g_a = oe.contract("iajb,ia->jb", t2aa, greenov_a, backend="jax") / 4
+        t2g_b = oe.contract("iajb,ia->jb", t2bb, greenov_b, backend="jax") / 4
+        t2g_ab_a = oe.contract("iajb,jb->ia", t2ab, greenov_b, backend="jax")
+        t2g_ab_b = oe.contract("iajb,ia->jb", t2ab, greenov_a, backend="jax")
+        gt2g_a = oe.contract("jb,jb->", t2g_a, greenov_a, backend="jax")
+        gt2g_b = oe.contract("jb,jb->", t2g_b, greenov_b, backend="jax")
+        gt2g_ab = oe.contract("ia,ia->", t2g_ab_a, greenov_a, backend="jax")
+        gt2g = 2 * (gt2g_a + gt2g_b) + gt2g_ab
+        e1_2_1 = e1_0 * gt2g
+
+        t2_green_aaa = (greenp_a @ t2g_a.T) @ green_a[:nocc_a, :]
+        t2_green_aba = (greenp_a @ t2g_ab_a.T) @ green_a[:nocc_a, :]
+        t2_green_bbb = (greenp_b @ t2g_b.T) @ green_b[:nocc_b, :]
+        t2_green_abb = (greenp_b @ t2g_ab_b.T) @ green_b[:nocc_b, :]
+        t2_green_a_a = 4 * t2_green_aaa + t2_green_aba
+        t2_green_b_b = 4 * t2_green_bbb + t2_green_abb
+
+        e1_2_2_a = -oe.contract("pq,pq->", h1_a, t2_green_a_a, backend="jax")
+        e1_2_2_b = -oe.contract("pq,pq->", h1_b, t2_green_b_b, backend="jax")
+        e1_2 = e1_2_1 + e1_2_2_a + e1_2_2_b
+
+        # ============ pass 1: e2_0, exact, every gamma, no T2 ============
+        def scan_chol_chunk_e2_0(carry, x):
+            idx_c, keep_c = x
+            gl_a = oe.contract("ir,gpr->gip", green_a.astype(jnp.complex128),
+                               chol_a[idx_c].astype(jnp.float64), backend="jax")
+            gl_b = oe.contract("ir,gpr->gip", green_b.astype(jnp.complex128),
+                               chol_b[idx_c].astype(jnp.float64), backend="jax")
+            tr_a = oe.contract("gii->g", gl_a[:, :nocc_a, :nocc_a], backend="jax")
+            tr_b = oe.contract("gii->g", gl_b[:, :nocc_b, :nocc_b], backend="jax")
+            ex_a = oe.contract("gij,gji->g", gl_a[:, :nocc_a, :nocc_a],
+                               gl_a[:, :nocc_a, :nocc_a], backend="jax")
+            ex_b = oe.contract("gij,gji->g", gl_b[:, :nocc_b, :nocc_b],
+                               gl_b[:, :nocc_b, :nocc_b], backend="jax")
+            e2_0_g = ((tr_a + tr_b) ** 2 - (ex_a + ex_b)) / 2.0
+            e2_0_g = e2_0_g.astype(ctype) * keep_c.astype(ctype)
+            return carry + jnp.sum(e2_0_g), e2_0_g
+
+        nchunk, chunk1, npad = _chol_chunking(nchol, nchol_chunk)
+        idx_all = jnp.concatenate([jnp.arange(nchol, dtype=jnp.int32),
+                                   jnp.zeros(npad, dtype=jnp.int32)]).reshape(nchunk, chunk1)
+        keep = jnp.concatenate([jnp.ones(nchol), jnp.zeros(npad)]).reshape(nchunk, chunk1)
+        e2_0, e2_0_chunks = lax.scan(scan_chol_chunk_e2_0,
+                                     jnp.zeros((), dtype=ctype), (idx_all, keep))
+        e2_0_g = e2_0_chunks.reshape(-1)[:nchol]
+
+        # ---- proposal, head/tail split ----
+        if isinstance(self.n_chol_head, str):
+            if self.n_chol_head.lower() != "full":
+                raise ValueError(
+                    f"n_chol_head must be an int or 'full', got {self.n_chol_head!r}.")
+            n_head = nchol
+        elif self.n_chol_head > 0:
+            n_head = self.n_chol_head
+        else:
+            if not 0.0 <= self.head_chol_ratio <= 1.0:
+                raise ValueError(
+                    f"head_chol_ratio must lie in [0, 1], got {self.head_chol_ratio}.")
+            n_head = min(max(int(round(self.head_chol_ratio * nchol)), 0), nchol)
+        n_samples = self.n_chol_samples
+
+        if n_head >= nchol:
+            head = jnp.arange(nchol, dtype=jnp.int32)
+            tail = jnp.zeros((0,), dtype=jnp.int32)
+            tail_prob = jnp.zeros((0,))
+        else:
+            pi_g = self._prop_chol_in_place(e2_0_g)
+            order = jnp.argsort(-pi_g)
+            head = jnp.sort(order[:n_head])
+            tail = jnp.sort(order[n_head:])
+            tail_prob = pi_g[tail]
+            tail_prob = tail_prob / jnp.sum(tail_prob)
+
+        # ======== pass 2: only the e2_2 terms that contract with T2 ========
+        def scan_chol_chunk_e2_2(carry, x):
+            idx_c, w_c = x
+            chol_a_c, chol_b_c = chol_a[idx_c], chol_b[idx_c]
+            w_c = w_c.astype(ctype)
+
+            gl_a = oe.contract("ir,gpr->gip", green_a.astype(jnp.complex128),
+                               chol_a_c.astype(jnp.float64), backend="jax")
+            gl_b = oe.contract("ir,gpr->gip", green_b.astype(jnp.complex128),
+                               chol_b_c.astype(jnp.float64), backend="jax")
+            tr_a = oe.contract("gii->g", gl_a[:, :nocc_a, :nocc_a], backend="jax")
+            tr_b = oe.contract("gii->g", gl_b[:, :nocc_b, :nocc_b], backend="jax")
+
+            lt2g_a = oe.contract("gpr,qr->gpq", chol_a_c.astype(jnp.float64),
+                                 (2 * t2_green_a_a).astype(jnp.complex128), backend="jax")
+            lt2g_b = oe.contract("gpr,qr->gpq", chol_b_c.astype(jnp.float64),
+                                 (2 * t2_green_b_b).astype(jnp.complex128), backend="jax")
+            tr_lt2g_a = oe.contract("gqq->g", lt2g_a, backend="jax")
+            tr_lt2g_b = oe.contract("gqq->g", lt2g_b, backend="jax")
+
+            carry[0] += jnp.sum(w_c * (-((tr_lt2g_a.astype(ctype) + tr_lt2g_b.astype(ctype))
+                                         * (tr_a.astype(ctype) + tr_b.astype(ctype))) / 2))
+
+            carry[1] += jnp.sum(w_c * ((oe.contract("giq,giq->g", gl_a.astype(ctype),
+                                                    lt2g_a[:, :nocc_a, :].astype(ctype),
+                                                    backend="jax")
+                                        + oe.contract("giq,giq->g", gl_b.astype(ctype),
+                                                      lt2g_b[:, :nocc_b, :].astype(ctype),
+                                                      backend="jax")) / 2))
+
+            glgp_a = oe.contract("giq,qa->gia", gl_a, greenp_a.astype(jnp.complex128),
+                                 backend="jax")
+            glgp_b = oe.contract("giq,qa->gia", gl_b, greenp_b.astype(jnp.complex128),
+                                 backend="jax")
+            lt2_aa = oe.contract("gia,iajb->gjb", glgp_a.astype(ctype),
+                                 t2aa.astype(rtype), backend="jax")
+            lt2_bb = oe.contract("gia,iajb->gjb", glgp_b.astype(ctype),
+                                 t2bb.astype(rtype), backend="jax")
+            lt2_ab = oe.contract("gia,iajb->gjb", glgp_a.astype(ctype),
+                                 t2ab.astype(rtype), backend="jax")
+            l2t2_aa = 0.5 * oe.contract("gjb,gjb->g", lt2_aa.astype(ctype),
+                                        glgp_a.astype(ctype), backend="jax")
+            l2t2_bb = 0.5 * oe.contract("gjb,gjb->g", lt2_bb.astype(ctype),
+                                        glgp_b.astype(ctype), backend="jax")
+            l2t2_ab = oe.contract("gjb,gjb->g", lt2_ab.astype(ctype),
+                                  glgp_b.astype(ctype), backend="jax")
+            carry[2] += jnp.sum(w_c * (l2t2_aa + l2t2_bb + l2t2_ab).astype(ctype))
+            return carry, 0.0
+
+        def accumulate_e2_2(indices, weights):
+            n = indices.shape[0]
+            z = jnp.zeros((), dtype=ctype)
+            if n == 0:
+                return z, z, z
+            nch2, chunk2, npad2 = _chol_chunking(n, nchol_chunk)
+            idx = jnp.concatenate([indices, jnp.zeros(npad2, dtype=indices.dtype)])
+            wts = jnp.concatenate([weights, jnp.zeros(npad2, dtype=weights.dtype)])
+            out, _ = lax.scan(scan_chol_chunk_e2_2, [z, z, z],
+                              (idx.reshape(nch2, chunk2), wts.reshape(nch2, chunk2)))
+            return out[0], out[1], out[2]
+
+        b_h, c_h, d_h = accumulate_e2_2(head, jnp.ones(head.shape[0], dtype=ctype))
+        if tail.shape[0] == 0:
+            b_t = c_t = d_t = jnp.zeros((), dtype=ctype)
+        else:
+            sel = random.choice(key, tail.shape[0], shape=(n_samples,),
+                                replace=True, p=tail_prob)
+            samp_w = (1.0 / (n_samples * tail_prob[sel])).astype(ctype)
+            b_t, c_t, d_t = accumulate_e2_2(tail[sel], samp_w)
+
+        # e2_2_1 = e2_0 * gt2g is exact, since e2_0 is exact
+        e2_2 = e2_0 * gt2g + (b_h + b_t) + (c_h + c_t) + (d_h + d_t)
+
+        ot1 = jnp.linalg.det(walker_up[:nocc_a, :]) * jnp.linalg.det(walker_dn[:nocc_b, :])
+        return ot1, gt2g, e1_0 + e2_0, e1_2 + e2_2
+
+    @partial(jit, static_argnums=0)
+    def calc_energy_pt(self, walkers: list, ham_data: dict, wave_data: dict) -> jax.Array:
+        """Map over walkers, giving each its own key split from the block key."""
+        n_walkers = walkers[0].shape[0]
+        key = wave_data.get("sto_chol_key", random.PRNGKey(0))
+        keys = random.split(key, n_walkers)
+        ot1, t2, e0, e1 = vmap(
+            self._calc_energy_pt, in_axes=(0, 0, None, None, 0))(
+            walkers[0], walkers[1], ham_data, wave_data, keys)
+        return ot1, t2, e0, e1
 
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))

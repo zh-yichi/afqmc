@@ -1266,9 +1266,260 @@ class pt2ccsd_bar(pt2ccsd):
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
 
+def _chol_chunking(n, max_chunk):
+    """Split n Cholesky vectors into equal chunks of at most `max_chunk`.
+
+    Identical rule to cholesky.chunk_chol (cholesky.py lines 437-439): fewest
+    chunks the memory cap allows, then equal chunks, so the zero padding is the
+    minimum compatible with the fixed chunk shape lax.scan requires.
+
+    The reason this helper exists is that the other trials always pad the *whole*
+    Cholesky set, where `(-nchol) % nchol_chunk` already reproduces this rule
+    exactly.  Here we pad *subsets* -- the head and the sampled tail -- and that
+    shortcut breaks down: with nchol_chunk sized for the full set (say 169), a
+    21-vector head would pad to 169 and run the T2 contractions on 148 zeros.
+
+    Returns (n_chunks, chunk, n_pad).
+    """
+    n_chunks = max(1, -(-n // max_chunk))   # ceil(n / max_chunk)
+    chunk = -(-n // n_chunks)               # ceil(n / n_chunks), equal chunks
+    return n_chunks, chunk, n_chunks * chunk - n
+
+
+@dataclass
+class pt2ccsd_sto_chol(pt2ccsd_bar):
+    """pt2CCSD with a semistochastic Cholesky sum in the T2-contracted energy.
+
+    e2_0 (and therefore e2_2_1 = e2_0 * gt2g) is always evaluated exactly: it is
+    needed to build the sampling proposal anyway and costs only the gl = green.chol
+    contraction.  The three accumulators that contract with T2 -- e2_2_2_1,
+    e2_2_2_2 and e2_2_3, whose "iajb" contractions scale as nocc^2 nvir^2 per
+    Cholesky vector -- are split into an exactly summed head and an importance
+    sampled tail.
+
+    Knobs (dataclass fields, so they are static under jit):
+      n_chol_head    : head size, and it takes precedence over head_chol_ratio.
+                       0 (default) defers to head_chol_ratio; a positive int sets
+                       the head explicitly; "full" puts every Cholesky vector in
+                       the head, which disables sampling and reproduces
+                       pt2ccsd_bar exactly (useful as an in-place reference run)
+      head_chol_ratio: head as a fraction of nchol, used when n_chol_head == 0.
+                       Default 0.125 keeps nchol/8 exact.  1.0 is equivalent to
+                       "full"; 0.0 means no exact head at all (everything
+                       sampled), which is legal but usually much noisier
+      n_chol_samples : tail draws per walker per block
+      chol_score_floor / chol_uniform_mix : proposal guards
+
+    The estimator is unbiased.  Randomness enters through wave_data["sto_chol_key"],
+    which sampler_pt2_sto_chol refreshes from prop_data["key"] every block; if the
+    key is absent a fixed fallback is used (fine for one-off diagnostic calls, but
+    a run must go through that sampler or the draws never change).
+    """
+
+    n_chol_head: Union[int, str] = 0
+    head_chol_ratio: float = 0.125
+    n_chol_samples: int = 128
+    chol_score_floor: float = 1.0e-6
+    chol_uniform_mix: float = 0.01
+
+    @partial(jit, static_argnums=0)
+    def _prop_chol_in_place(self, e2_g_estimate):
+        """Sampling probability for each Cholesky vector from its two-body energy.
+
+            pi_g = (1 - u) * |e2_g| / sum_g |e2_g|  +  u / nchol
+
+        The floor drops guided weight that is negligible against the largest score;
+        the uniform component then keeps pi_g >= u / nchol > 0 for every vector,
+        which bounds the importance weights 1/pi_g and keeps the estimator
+        unbiased.  A vector with pi_g = 0 would never be sampled yet still
+        contributes to the energy -- that would be a bias, not extra variance.
+        """
+        e2_g = jnp.abs(e2_g_estimate)
+        e2_g = jnp.where(e2_g >= self.chol_score_floor * jnp.max(e2_g), e2_g, 0.0)
+        nchol = e2_g.shape[0]
+        uniform = jnp.full((nchol,), 1.0 / nchol)
+        total = jnp.sum(e2_g)
+        guided = jnp.where(total > 0.0, e2_g / jnp.where(total > 0.0, total, 1.0), uniform)
+        return (1.0 - self.chol_uniform_mix) * guided + self.chol_uniform_mix * uniform
+
+    # single walker energy evaluation below this line
+
+    @partial(jit, static_argnums=0)
+    def _calc_energy_pt(self, walker, ham_data, wave_data, key):
+        if self.mix_precision:
+            rtype, ctype = jnp.float32, jnp.complex64
+        else:
+            rtype, ctype = jnp.float64, jnp.complex128
+
+        nocc, norb = self.nelec[0], self.norb
+        nchol_chunk = self.nchol_chunk
+
+        t2 = wave_data["t2"]
+        h1 = ham_data["h1_bar"]
+        chol = ham_data["chol_bar"]
+        nchol = chol.shape[0]
+        walker_bar = wave_data["exp_t1"] @ walker
+
+        obar = jnp.linalg.det(walker_bar[: walker_bar.shape[1], :]) ** 2
+        green = (walker_bar.dot(jnp.linalg.inv(walker_bar[: walker_bar.shape[1], :]))).T
+        green_occ = green[:, nocc:]
+        greenp = jnp.vstack((green_occ, -jnp.eye(norb - nocc)))
+        rot_chol = chol[:, :nocc, :]
+
+        hg = oe.contract("pi,pi->", h1[:nocc, :], green, backend="jax")
+        e1_0 = 2 * hg
+        t2g_c = oe.contract("iajb,ia->jb", t2, green[:nocc, nocc:], backend="jax")
+        t2g_e = oe.contract("iajb,ib->ja", t2, green[:nocc, nocc:], backend="jax")
+        t2_green_c = oe.contract("pb,jb,jq->pq", greenp, t2g_c, green, backend="jax")
+        t2_green_e = oe.contract("pa,ja,jq->pq", greenp, t2g_e, green, backend="jax")
+        t2_green = 2 * t2_green_c - t2_green_e
+        t2g = 2 * t2g_c - t2g_e
+        gt2g = oe.contract("ia,ia->", t2g, green[:nocc, nocc:], backend="jax")
+        e1_2 = 2 * hg * gt2g - 2 * oe.contract("ij,ij->", h1, t2_green, backend="jax")
+
+        # ================= pass 1: e2_0, exact, every gamma, no T2 =================
+        def scan_chol_chunk_e2_0(carry, x):
+            """e2_0_g for one chunk.  Only needs gl = green.chol -- no T2 anywhere."""
+            idx_c, keep_c = x
+            gl = oe.contract("ir,gqr->giq", green, chol[idx_c], backend="jax")
+            gl_occ = gl[:, :, :nocc]
+            gl_c = oe.contract("gii->g", gl_occ, backend="jax")
+            e2_0_g = (2 * oe.contract("g,g->g", gl_c, gl_c, backend="jax")
+                      - oe.contract("gij,gji->g", gl_occ, gl_occ, backend="jax"))
+            e2_0_g = e2_0_g.astype(ctype) * keep_c.astype(ctype)
+            return carry + jnp.sum(e2_0_g), e2_0_g
+
+        nchunk, chunk1, npad = _chol_chunking(nchol, nchol_chunk)
+        idx_all = jnp.concatenate([jnp.arange(nchol, dtype=jnp.int32),
+                                   jnp.zeros(npad, dtype=jnp.int32)]).reshape(nchunk, chunk1)
+        keep = jnp.concatenate([jnp.ones(nchol), jnp.zeros(npad)]).reshape(nchunk, chunk1)
+        e2_0, e2_0_chunks = lax.scan(scan_chol_chunk_e2_0,
+                                     jnp.zeros((), dtype=ctype), (idx_all, keep))
+        e2_0_g = e2_0_chunks.reshape(-1)[:nchol]
+
+        # ---- proposal from e2_0_g, head/tail split ----
+        # n_chol_head: "full" -> whole set in the head, no sampling at all
+        #              > 0    -> that many vectors
+        #              0      -> auto, round(nchol / 8)
+        if isinstance(self.n_chol_head, str):
+            if self.n_chol_head.lower() != "full":
+                raise ValueError(
+                    f"n_chol_head must be an int or 'full', got {self.n_chol_head!r}.")
+            n_head = nchol
+        elif self.n_chol_head > 0:
+            n_head = self.n_chol_head
+        else:
+            if not 0.0 <= self.head_chol_ratio <= 1.0:
+                raise ValueError(
+                    f"head_chol_ratio must lie in [0, 1], got {self.head_chol_ratio}.")
+            n_head = int(round(self.head_chol_ratio * nchol))
+            n_head = min(max(n_head, 0), nchol)
+        n_samples = self.n_chol_samples
+
+        if n_head >= nchol:
+            # Deterministic limit: every Cholesky vector is summed exactly, the tail
+            # is empty and no draw is made.  Reproduces pt2ccsd_bar bit for bit, and
+            # skips the proposal and the sort entirely.
+            head = jnp.arange(nchol, dtype=jnp.int32)
+            tail = jnp.zeros((0,), dtype=jnp.int32)
+            tail_prob = jnp.zeros((0,))
+        else:
+            pi_g = self._prop_chol_in_place(e2_0_g)
+            order = jnp.argsort(-pi_g)
+            head = jnp.sort(order[:n_head])
+            tail = jnp.sort(order[n_head:])
+            tail_prob = pi_g[tail]
+            tail_prob = tail_prob / jnp.sum(tail_prob)
+
+        # =========== pass 2: only the e2_2 terms that contract with T2 ===========
+        def scan_chol_chunk_e2_2(carry, x):
+            """The three T2-contracted accumulators for one chunk, weighted.
+
+            No e2_0 work here: the 'gij,gji->g' exchange trace is never formed, and
+            gl_c is built only because e2_2_2_1 needs it.
+            """
+            idx_c, w_c = x
+            chol_c, rot_chol_c = chol[idx_c], rot_chol[idx_c]
+            w_c = w_c.astype(ctype)
+
+            gl = oe.contract("ir,gqr->giq", green, chol_c, backend="jax")
+            gl_c = oe.contract("gii->g", gl[:, :, :nocc], backend="jax")
+
+            # e2_2_2_1
+            lt2g = oe.contract("gpr,pr->g", chol_c.astype(rtype),
+                               t2_green.astype(ctype), backend="jax")
+            carry[0] += jnp.sum(w_c * (-lt2g.astype(ctype) * gl_c.astype(ctype)))
+
+            # e2_2_2_2
+            lt2_green = oe.contract("gir,qr->giq", rot_chol_c.astype(rtype),
+                                    t2_green.astype(ctype), backend="jax")
+            carry[1] += jnp.sum(w_c * 0.5 * oe.contract("giq,giq->g", gl.astype(ctype),
+                                lt2_green.astype(ctype), backend="jax"))
+
+            # e2_2_3
+            glgp = oe.contract("gir,rb->gib", gl.astype(ctype),
+                               greenp.astype(ctype), backend="jax")
+            lt2_c = oe.contract("gia,iajb->gjb", glgp.astype(ctype), t2.astype(rtype), backend="jax")
+            lt2_e = oe.contract("gib,iajb->gja", glgp.astype(ctype), t2.astype(rtype), backend="jax")
+            l2t2_c = oe.contract("gjb,gjb->g", lt2_c.astype(ctype), glgp.astype(ctype), backend="jax")
+            l2t2_e = oe.contract("gja,gja->g", lt2_e.astype(ctype), glgp.astype(ctype), backend="jax")
+            carry[2] += jnp.sum(w_c * (2 * l2t2_c - l2t2_e).astype(ctype))
+            return carry, 0.0
+
+        def accumulate_e2_2(indices, weights):
+            n = indices.shape[0]
+            z = jnp.zeros((), dtype=ctype)
+            if n == 0:
+                return z, z, z
+            # Same chunking rule as everywhere else: minimum padding for uniform
+            # chunks, capped by memory.  Padding up to a full nchol_chunk instead
+            # would run the expensive T2 contractions on zero-weight entries -- a
+            # 21-vector head would cost a full nchol-wide chunk.
+            nch2, chunk2, npad2 = _chol_chunking(n, nchol_chunk)
+            idx = jnp.concatenate([indices, jnp.zeros(npad2, dtype=indices.dtype)])
+            wts = jnp.concatenate([weights, jnp.zeros(npad2, dtype=weights.dtype)])
+            out, _ = lax.scan(scan_chol_chunk_e2_2, [z, z, z],
+                              (idx.reshape(nch2, chunk2), wts.reshape(nch2, chunk2)))
+            return out[0], out[1], out[2]
+
+        # head: exact
+        b_h, c_h, d_h = accumulate_e2_2(head, jnp.ones(head.shape[0], dtype=ctype))
+        # tail: sampled
+        if tail.shape[0] == 0:
+            b_t = c_t = d_t = jnp.zeros((), dtype=ctype)
+        else:
+            sel = random.choice(key, tail.shape[0], shape=(n_samples,), replace=True, p=tail_prob)
+            samp_w = (1.0 / (n_samples * tail_prob[sel])).astype(ctype)
+            b_t, c_t, d_t = accumulate_e2_2(tail[sel], samp_w)
+
+        # e2_2_1 = e2_0 * gt2g is exact, since e2_0 is exact
+        e2_2_h = e2_0 * gt2g + 4 * (b_h + c_h) + d_h
+        e2_2_t = 4 * (b_t + c_t) + d_t
+
+        e0 = e1_0 + e2_0          # fully exact
+        e1_h = e1_2 + e2_2_h
+        e1_t = e2_2_t
+        e1 = e1_h + e1_t
+        return obar, gt2g, e0, e1
+
+    @partial(jit, static_argnums=0)
+    def calc_energy_pt(self, walkers, ham_data, wave_data):
+        """Map over walkers, giving each its own key split from the block key."""
+        n_walkers = walkers.shape[0]
+        key = wave_data.get("sto_chol_key", random.PRNGKey(0))
+        keys = random.split(key, n_walkers)
+        t1, t2, e0, e1 = vmap(
+            self._calc_energy_pt, in_axes=(0, None, None, 0))(
+            walkers, ham_data, wave_data, keys)
+        return t1, t2, e0, e1
+
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
+
 
 @dataclass
 class pt2ccsd_red(pt2ccsd_bar):
+    # t2 rank reduction
 
     @partial(jit, static_argnums=0)
     def _calc_energy_pt(self, walker, ham_data, wave_data):

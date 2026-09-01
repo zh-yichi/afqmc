@@ -359,6 +359,22 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
                 wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
 
+            if "sto_chol" in options["trial"]:
+                trial = wavefunctions_restricted.pt2ccsd_sto_chol(
+                    norb, nelec_sp,
+                    n_batch=options["n_batch"],
+                    nchol_chunk=nchol_chunk,
+                    mix_precision=options["mix_precision"],
+                    n_chol_head=options.get("n_chol_head", 0),
+                    head_chol_ratio=options.get("head_chol_ratio", 0.125),
+                    n_chol_samples=options.get("n_chol_samples", 128),
+                    )
+                nocc = nelec_sp[0]
+                t1_full = np.zeros((norb, norb))
+                t1_full[:nocc, nocc:] = wave_data["t1"]
+                wave_data['exp_t1']  = jsp.linalg.expm(jnp.array(t1_full))
+                wave_data['exp_mt1'] = jsp.linalg.expm(jnp.array(-t1_full))
+
             if "red" in options["trial"]:
                 trial = wavefunctions_restricted.pt2ccsd_red(norb, nelec_sp, 
                                                                 n_batch=options["n_batch"],
@@ -496,6 +512,28 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                 wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
                 wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
 
+            if "sto_chol" in options["trial"]:
+                trial = wavefunctions_unrestricted.upt2ccsd_sto_chol(
+                    norb, nelec_sp,
+                    n_batch=options["n_batch"],
+                    nchol_chunk=nchol_chunk,
+                    mix_precision=options["mix_precision"],
+                    n_chol_head=options.get("n_chol_head", 0),
+                    head_chol_ratio=options.get("head_chol_ratio", 0.125),
+                    n_chol_samples=options.get("n_chol_samples", 128),
+                    )
+                wave_data['mo_ta'] = None
+                wave_data['mo_tb'] = None
+                t1a, t1b = wave_data["t1a"], wave_data["t1b"]
+                t1a_full = np.zeros((norb, norb), dtype=np.float64)
+                t1b_full = np.zeros((norb, norb), dtype=np.float64)
+                t1a_full[:nocc_a, nocc_a:] = t1a
+                t1b_full[:nocc_b, nocc_b:] = t1b
+                wave_data['exp_t1a'] = jsp.linalg.expm(t1a_full)
+                wave_data['exp_mt1a'] = jsp.linalg.expm(-t1a_full)
+                wave_data['exp_t1b'] = jsp.linalg.expm(t1b_full)
+                wave_data['exp_mt1b'] = jsp.linalg.expm(-t1b_full)
+
             if "red" in options["trial"]:
                 trial = wavefunctions_unrestricted.upt2ccsd_red(
                     norb, nelec_sp, 
@@ -602,7 +640,12 @@ def get_propagator(options):
 def get_sampler(options, nchol):
 
     if  'pt' in options['trial'] and 'cc' in options['trial']:
-        if 'pt2' in options['trial']:
+        if 'sto_chol' in options['trial']:
+            sampler = sampling.sampler_pt2_sto_chol(
+                options["n_prop_steps"],
+                options["n_blocks"],
+                nchol,)
+        elif 'pt2' in options['trial']:
             sampler = sampling.sampler_pt2(
                 options["n_prop_steps"],
                 options["n_blocks"],
