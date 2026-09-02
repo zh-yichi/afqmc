@@ -366,8 +366,10 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                     nchol_chunk=nchol_chunk,
                     mix_precision=options["mix_precision"],
                     n_chol_head=options.get("n_chol_head", 0),
-                    head_chol_ratio=options.get("head_chol_ratio", 0.125),
-                    n_chol_samples=options.get("n_chol_samples", 128),
+                    head_chol_ratio=options.get("head_chol_ratio", None),
+                    n_chol_samples=options.get("n_chol_samples", None),
+                    chol_cost_ratio=options.get("chol_cost_ratio", None),
+                    head_sample_ratio=options.get("head_sample_ratio", 3.0),
                     )
                 nocc = nelec_sp[0]
                 t1_full = np.zeros((norb, norb))
@@ -519,8 +521,10 @@ def get_wavefunction(spin_type, norb, nelec_sp, nchol_chunk, options, amp_file):
                     nchol_chunk=nchol_chunk,
                     mix_precision=options["mix_precision"],
                     n_chol_head=options.get("n_chol_head", 0),
-                    head_chol_ratio=options.get("head_chol_ratio", 0.125),
-                    n_chol_samples=options.get("n_chol_samples", 128),
+                    head_chol_ratio=options.get("head_chol_ratio", None),
+                    n_chol_samples=options.get("n_chol_samples", None),
+                    chol_cost_ratio=options.get("chol_cost_ratio", None),
+                    head_sample_ratio=options.get("head_sample_ratio", 3.0),
                     )
                 wave_data['mo_ta'] = None
                 wave_data['mo_tb'] = None

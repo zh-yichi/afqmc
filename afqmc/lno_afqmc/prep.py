@@ -205,8 +205,10 @@ def get_wavefunction(options, nocc, norb, prjlo, amp_file):
                     nchol_chunk=options["nchol_chunk"],
                     mix_precision=options["mix_precision"],
                     n_chol_head=options.get("n_chol_head", 0),
-                    head_chol_ratio=options.get("head_chol_ratio", 0.125),
-                    n_chol_samples=options.get("n_chol_samples", 128),
+                    head_chol_ratio=options.get("head_chol_ratio", None),
+                    n_chol_samples=options.get("n_chol_samples", None),
+                    chol_cost_ratio=options.get("chol_cost_ratio", None),
+                    head_sample_ratio=options.get("head_sample_ratio", 3.0),
                 )
             elif options["trial"] == "upt2ccsd":
                 trial = ulno_wavefunctions.upt2ccsd(

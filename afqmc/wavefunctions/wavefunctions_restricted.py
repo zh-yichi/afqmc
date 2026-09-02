@@ -1286,6 +1286,67 @@ def _chol_chunking(n, max_chunk):
     return n_chunks, chunk, n_chunks * chunk - n
 
 
+def _resolve_chol_budget(nchol, n_chol_head, head_chol_ratio, n_chol_samples,
+                         chol_cost_ratio, head_sample_ratio=3.0):
+    """Resolve (n_head, n_samples) for the semistochastic Cholesky sum.
+
+    `chol_cost_ratio` fixes the per-walker budget C = chol_cost_ratio * nchol and
+    splits it head : samples = head_sample_ratio : 1, i.e. n_head = 3 * n_samples
+    by default.  That split is near the measured optimum: at fixed cost the
+    variance is minimised where the head reaches the point at which a tail vector
+    would be drawn about once (n_samples * pi ~ 1), and the minimum is shallow
+    between roughly 50% and 87% of the budget in the head.
+
+    Precedence, each half independently:
+      n_chol_head      int > 0 or "full"  -- sets the head outright
+      head_chol_ratio  not None           -- head = round(ratio * nchol)
+      chol_cost_ratio  not None           -- head = 0.75 * C
+      otherwise                           -- head = 0.125 * nchol
+    and for the tail:
+      n_chol_samples   not None           -- used as given
+      chol_cost_ratio  not None           -- n_samples = 0.25 * C
+      otherwise                           -- n_samples = 128
+
+    So specifying head_chol_ratio and/or n_chol_samples overrides the
+    chol_cost_ratio split for that half only.
+    """
+    if chol_cost_ratio is not None:
+        if not 0.0 < chol_cost_ratio <= 1.0:
+            raise ValueError(
+                f"chol_cost_ratio must lie in (0, 1], got {chol_cost_ratio}.")
+        if head_sample_ratio < 0.0:
+            raise ValueError("head_sample_ratio must be nonnegative.")
+        budget = chol_cost_ratio * nchol
+        default_head = budget * head_sample_ratio / (head_sample_ratio + 1.0)
+        default_samples = budget / (head_sample_ratio + 1.0)
+    else:
+        default_head = 0.125 * nchol
+        default_samples = 128
+
+    if isinstance(n_chol_head, str):
+        if n_chol_head.lower() != "full":
+            raise ValueError(
+                f"n_chol_head must be an int or 'full', got {n_chol_head!r}.")
+        n_head = nchol
+    elif n_chol_head > 0:
+        n_head = int(n_chol_head)
+    elif head_chol_ratio is not None:
+        if not 0.0 <= head_chol_ratio <= 1.0:
+            raise ValueError(
+                f"head_chol_ratio must lie in [0, 1], got {head_chol_ratio}.")
+        n_head = int(round(head_chol_ratio * nchol))
+    else:
+        n_head = int(round(default_head))
+    n_head = min(max(n_head, 0), nchol)
+
+    if n_chol_samples is not None:
+        n_samples = int(n_chol_samples)
+    else:
+        n_samples = int(round(default_samples))
+    n_samples = max(1, n_samples)
+    return n_head, n_samples
+
+
 @dataclass
 class pt2ccsd_sto_chol(pt2ccsd_bar):
     """pt2CCSD with a semistochastic Cholesky sum in the T2-contracted energy.
@@ -1317,8 +1378,10 @@ class pt2ccsd_sto_chol(pt2ccsd_bar):
     """
 
     n_chol_head: Union[int, str] = 0
-    head_chol_ratio: float = 0.125
-    n_chol_samples: int = 128
+    head_chol_ratio: Union[float, None] = None
+    n_chol_samples: Union[int, None] = None
+    chol_cost_ratio: Union[float, None] = None
+    head_sample_ratio: float = 3.0
     chol_score_floor: float = 1.0e-6
     chol_uniform_mix: float = 0.01
     head_from_guide: bool = False
@@ -1408,20 +1471,9 @@ class pt2ccsd_sto_chol(pt2ccsd_bar):
         # n_chol_head: "full" -> whole set in the head, no sampling at all
         #              > 0    -> that many vectors
         #              0      -> auto, round(nchol / 8)
-        if isinstance(self.n_chol_head, str):
-            if self.n_chol_head.lower() != "full":
-                raise ValueError(
-                    f"n_chol_head must be an int or 'full', got {self.n_chol_head!r}.")
-            n_head = nchol
-        elif self.n_chol_head > 0:
-            n_head = self.n_chol_head
-        else:
-            if not 0.0 <= self.head_chol_ratio <= 1.0:
-                raise ValueError(
-                    f"head_chol_ratio must lie in [0, 1], got {self.head_chol_ratio}.")
-            n_head = int(round(self.head_chol_ratio * nchol))
-            n_head = min(max(n_head, 0), nchol)
-        n_samples = self.n_chol_samples
+        n_head, n_samples = _resolve_chol_budget(
+            nchol, self.n_chol_head, self.head_chol_ratio, self.n_chol_samples,
+            self.chol_cost_ratio, self.head_sample_ratio)
 
         head_prefix = None
         if n_head >= nchol:

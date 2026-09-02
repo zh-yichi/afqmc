@@ -10,6 +10,7 @@ from jax import jit, jvp, lax, random, vmap
 import opt_einsum as oe
 
 from afqmc import slater_tools, integral
+from afqmc.wavefunctions.wavefunctions_restricted import _resolve_chol_budget
 
 
 class uwfn(ABC):
@@ -1550,8 +1551,10 @@ class upt2ccsd_sto_chol(upt2ccsd):
     """
 
     n_chol_head: Union[int, str] = 0
-    head_chol_ratio: float = 0.125
-    n_chol_samples: int = 128
+    head_chol_ratio: Union[float, None] = None
+    n_chol_samples: Union[int, None] = None
+    chol_cost_ratio: Union[float, None] = None
+    head_sample_ratio: float = 3.0
     chol_score_floor: float = 1.0e-6
     chol_uniform_mix: float = 0.01
     head_from_guide: bool = False
@@ -1744,19 +1747,9 @@ class upt2ccsd_sto_chol(upt2ccsd):
              rot_b_all.reshape(nchunks, chunk1, *rot_b_all.shape[-2:])))
 
         # ---- head / tail split from the supplied proposal ----
-        if isinstance(self.n_chol_head, str):
-            if self.n_chol_head.lower() != "full":
-                raise ValueError(
-                    f"n_chol_head must be an int or 'full', got {self.n_chol_head!r}.")
-            n_head = nchol
-        elif self.n_chol_head > 0:
-            n_head = self.n_chol_head
-        else:
-            if not 0.0 <= self.head_chol_ratio <= 1.0:
-                raise ValueError(
-                    f"head_chol_ratio must lie in [0, 1], got {self.head_chol_ratio}.")
-            n_head = min(max(int(round(self.head_chol_ratio * nchol)), 0), nchol)
-        n_samples = self.n_chol_samples
+        n_head, n_samples = _resolve_chol_budget(
+            nchol, self.n_chol_head, self.head_chol_ratio, self.n_chol_samples,
+            self.chol_cost_ratio, self.head_sample_ratio)
 
         # Contiguous prefix head by default, NOT ranked per walker: under vmap a
         # walker-dependent index array makes chol_a[idx] a *batched* gather, costing

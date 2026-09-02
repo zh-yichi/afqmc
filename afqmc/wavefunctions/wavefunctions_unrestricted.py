@@ -10,7 +10,7 @@ from jax import jit, jvp, lax, vmap, random
 from jax.sharding import Mesh, PartitionSpec as P, NamedSharding
 import opt_einsum as oe
 
-from .wavefunctions_restricted import _chol_chunking
+from .wavefunctions_restricted import _chol_chunking, _resolve_chol_budget
 
 class uwfn(ABC):
     """Base class for wave functions. Contains methods for wave function measurements.
@@ -1587,8 +1587,10 @@ class upt2ccsd_sto_chol(upt2ccsd_bar):
     """
 
     n_chol_head: Union[int, str] = 0
-    head_chol_ratio: float = 0.125
-    n_chol_samples: int = 128
+    head_chol_ratio: Union[float, None] = None
+    n_chol_samples: Union[int, None] = None
+    chol_cost_ratio: Union[float, None] = None
+    head_sample_ratio: float = 3.0
     chol_score_floor: float = 1.0e-6
     chol_uniform_mix: float = 0.01
     head_from_guide: bool = False
@@ -1699,19 +1701,9 @@ class upt2ccsd_sto_chol(upt2ccsd_bar):
         e2_0_g = e2_0_chunks.reshape(-1)[:nchol]
 
         # ---- proposal, head/tail split ----
-        if isinstance(self.n_chol_head, str):
-            if self.n_chol_head.lower() != "full":
-                raise ValueError(
-                    f"n_chol_head must be an int or 'full', got {self.n_chol_head!r}.")
-            n_head = nchol
-        elif self.n_chol_head > 0:
-            n_head = self.n_chol_head
-        else:
-            if not 0.0 <= self.head_chol_ratio <= 1.0:
-                raise ValueError(
-                    f"head_chol_ratio must lie in [0, 1], got {self.head_chol_ratio}.")
-            n_head = min(max(int(round(self.head_chol_ratio * nchol)), 0), nchol)
-        n_samples = self.n_chol_samples
+        n_head, n_samples = _resolve_chol_budget(
+            nchol, self.n_chol_head, self.head_chol_ratio, self.n_chol_samples,
+            self.chol_cost_ratio, self.head_sample_ratio)
 
         # The head is a contiguous prefix by default, NOT ranked per walker.  That
         # matters for memory, not just tidiness: under vmap a walker-dependent index
