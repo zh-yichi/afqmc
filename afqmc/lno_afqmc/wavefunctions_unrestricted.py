@@ -6,7 +6,7 @@ from typing import Sequence, Tuple, Union
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import jit, jvp, lax, vmap
+from jax import jit, jvp, lax, random, vmap
 import opt_einsum as oe
 
 from afqmc import slater_tools, integral
@@ -916,44 +916,44 @@ class upt2ccsd(uhf):
     mix_precision: bool = True
 
 
+    # @partial(jit, static_argnums=0)
+    # def _calc_e0bar_frag(self, walker_up, walker_dn, ham_data, wave_data):
+    #     '''
+    #     calculate the correlation energy of the Hamiltonian
+    #     transformed by exp(T1^dagger):
+    #     ecorr_bar = <psi_0|H_bar|walker_bar>/<psi_0|walker_bar>
+    #     |walker_bar> = exp(T1^dagger) |walker>
+    #     H_bar = exp(T1^dagger) H exp(-T1^dagger)
+    #     |psi_0> is the mean-field solution of H
+    #     '''
+    #     nocca, noccb = self.nelec
+    #     norba, norbb = self.norb
+    #     walker = (walker_up, walker_dn)
+    #     pfrag = wave_data['prjlo']
+    #     # e0 = ham_data['e0t1orb']  # <psi_0|H_bar|psi_0>
+    #     # rot_focka = ham_data['fock_bar'][0][:nocca, :]
+    #     # rot_fockb = ham_data['fock_bar'][1][:noccb, :]
+    #     chola = ham_data['chol_bar'][0].reshape(-1, norba, norba)
+    #     cholb = ham_data['chol_bar'][1].reshape(-1, norbb, norbb)
+
+    #     # two body energy — chunked over Cholesky auxiliary index
+    #     nchol_chunk = self.nchol_chunk
+    #     nchol = chola.shape[0]
+    #     nchunks = -(-nchol // nchol_chunk)
+    #     npad = nchunks * nchol_chunk - nchol
+    #     chola = jnp.concatenate([chola, jnp.zeros((npad, *chola.shape[-2:]))], axis=0)
+    #     cholb = jnp.concatenate([cholb, jnp.zeros((npad, *cholb.shape[-2:]))], axis=0)
+    #     chola = chola.reshape(nchunks, nchol_chunk, *chola.shape[-2:])
+    #     cholb = cholb.reshape(nchunks, nchol_chunk, *cholb.shape[-2:])
+    #     chol_bar = (chola, cholb)
+
+    #     ecorr = slater_tools.u_energy_corr_frag(
+    #         wave_data["mo_coeff"], walker, ham_data['fock_bar'], chol_bar, pfrag)
+
+    #     return ham_data['e0t1orb'] + ecorr
+
     @partial(jit, static_argnums=0)
     def _calc_e0bar_frag(self, walker_up, walker_dn, ham_data, wave_data):
-        '''
-        calculate the correlation energy of the Hamiltonian
-        transformed by exp(T1^dagger):
-        ecorr_bar = <psi_0|H_bar|walker_bar>/<psi_0|walker_bar>
-        |walker_bar> = exp(T1^dagger) |walker>
-        H_bar = exp(T1^dagger) H exp(-T1^dagger)
-        |psi_0> is the mean-field solution of H
-        '''
-        nocca, noccb = self.nelec
-        norba, norbb = self.norb
-        walker = (walker_up, walker_dn)
-        pfrag = wave_data['prjlo']
-        # e0 = ham_data['e0t1orb']  # <psi_0|H_bar|psi_0>
-        # rot_focka = ham_data['fock_bar'][0][:nocca, :]
-        # rot_fockb = ham_data['fock_bar'][1][:noccb, :]
-        chola = ham_data['chol_bar'][0].reshape(-1, norba, norba)
-        cholb = ham_data['chol_bar'][1].reshape(-1, norbb, norbb)
-
-        # two body energy — chunked over Cholesky auxiliary index
-        nchol_chunk = self.nchol_chunk
-        nchol = chola.shape[0]
-        nchunks = -(-nchol // nchol_chunk)
-        npad = nchunks * nchol_chunk - nchol
-        chola = jnp.concatenate([chola, jnp.zeros((npad, *chola.shape[-2:]))], axis=0)
-        cholb = jnp.concatenate([cholb, jnp.zeros((npad, *cholb.shape[-2:]))], axis=0)
-        chola = chola.reshape(nchunks, nchol_chunk, *chola.shape[-2:])
-        cholb = cholb.reshape(nchunks, nchol_chunk, *cholb.shape[-2:])
-        chol_bar = (chola, cholb)
-
-        ecorr = slater_tools.u_energy_corr_frag(
-            wave_data["mo_coeff"], walker, ham_data['fock_bar'], chol_bar, pfrag)
-
-        return ham_data['e0t1orb'] + ecorr
-
-    @partial(jit, static_argnums=0)
-    def _calc_eorb_bar(self, walker_up, walker_dn, ham_data, wave_data):
         '''
         calculate the correlation energy of the Hamiltonian
         transformed by exp(T1^dagger):
@@ -1218,9 +1218,8 @@ class upt2ccsd(uhf):
             h1a, h1b = h1a[:na_keep, :na_keep], h1b[:nb_keep, :nb_keep]
 
             # cholesky: slice the two ORBITAL axes, NEVER axis 0 (the chol index)
-            nchol_keep = int(chol_a.shape[0] * na_keep / chol_a.shape[1])
-            chol_a = chol_a[:nchol_keep, :na_keep, :na_keep]
-            chol_b = chol_b[:nchol_keep, :nb_keep, :nb_keep]
+            chol_a = chol_a[:, :na_keep, :na_keep]
+            chol_b = chol_b[:, :nb_keep, :nb_keep]
 
             # amplitudes: slice the two VIRTUAL axes only
             t2aa = t2aa[:, :nva_keep, :, :nva_keep]
@@ -1505,6 +1504,426 @@ class upt2ccsd(uhf):
         
         return ham_data
     
+    def __hash__(self):
+        return hash(tuple(self.__dict__.values()))
+
+
+def _chol_chunking(n, max_chunk):
+    """Split n Cholesky vectors into equal chunks of at most `max_chunk`.
+
+    Same rule as cholesky.chunk_chol (cholesky.py 437-439): fewest chunks the
+    memory cap allows, then equal chunks, so the zero padding is the minimum
+    compatible with the fixed chunk shape lax.scan needs.  Needed here because
+    the head and the sampled tail are *subsets*, for which the usual
+    `(-nchol) % nchol_chunk` would pad a 21-vector head out to a full chunk.
+
+    Returns (n_chunks, chunk, n_pad).
+    """
+    n_chunks = max(1, -(-n // max_chunk))
+    chunk = -(-n // n_chunks)
+    return n_chunks, chunk, n_chunks * chunk - n
+
+
+@dataclass
+class upt2ccsd_sto_chol(upt2ccsd):
+    """LNO upt2CCSD with a semistochastic Cholesky sum in the T2*h2 term.
+
+    Only the fragment T2*h2 contributions are sampled -- e2_2_2_1, e2_2_2_2 and
+    e2_2_3 of `_t2eorb_tc`'s scan.  e2_0 stays exact, and therefore so does
+    e2_2_1 = e2_0 * gt2g.  That split is deliberate: e2_0 needs only the cheap
+    gl = green.chol contraction, while the sampled terms carry the "gia,iajb->gjb"
+    contractions that scale as nocc^2 nvir^2 per Cholesky vector.
+
+    The proposal comes from `_calc_e0bar_frag`, which is evaluated on the same
+    walker anyway inside `_calc_ept2_frag`: its per-Cholesky fragment two-body
+    energies are returned alongside the scalar and turned into pi_g.  That makes
+    the score a *surrogate* -- it ranks vectors by the fragment two-body energy
+    rather than by the T2 terms actually being sampled -- which costs variance,
+    never bias.
+
+    Knobs (dataclass fields, static under jit):
+      n_chol_head    : head size; takes precedence over head_chol_ratio.  0
+                       defers to the ratio, a positive int sets it, "full"
+                       disables sampling and reproduces upt2ccsd exactly
+      head_chol_ratio: head as a fraction of nchol when n_chol_head == 0
+      n_chol_samples : tail draws per walker per block
+    """
+
+    n_chol_head: Union[int, str] = 0
+    head_chol_ratio: float = 0.125
+    n_chol_samples: int = 128
+    chol_score_floor: float = 1.0e-6
+    chol_uniform_mix: float = 0.01
+    head_from_guide: bool = False
+
+    @partial(jit, static_argnums=0)
+    def _prop_chol_in_place(self, e2_g_estimate):
+        """pi_g = (1-u)|e2_g|/sum|e2_g| + u/nchol, with a relative floor.
+
+        The uniform part keeps pi_g > 0 everywhere, bounding the importance
+        weights 1/pi_g; a vector with pi_g = 0 would never be drawn yet still
+        contributes, which would bias the estimate.
+        """
+        e2_g = jnp.abs(e2_g_estimate)
+        e2_g = jnp.where(e2_g >= self.chol_score_floor * jnp.max(e2_g), e2_g, 0.0)
+        nchol = e2_g.shape[0]
+        uniform = jnp.full((nchol,), 1.0 / nchol)
+        total = jnp.sum(e2_g)
+        guided = jnp.where(total > 0.0, e2_g / jnp.where(total > 0.0, total, 1.0), uniform)
+        return (1.0 - self.chol_uniform_mix) * guided + self.chol_uniform_mix * uniform
+
+    @partial(jit, static_argnums=0)
+    def _calc_e0bar_frag_scored(self, walker_up, walker_dn, ham_data, wave_data):
+        """`_calc_e0bar_frag`, additionally returning the per-Cholesky two-body
+        fragment energies used to build the sampling proposal.
+
+        Identical arithmetic to the parent; the chunk scan just also emits its
+        per-gamma contributions instead of only accumulating them.
+        """
+        nocca, noccb = self.nelec
+        norba, norbb = self.norb
+        prjloa, prjlob = wave_data['prjlo']
+        e0 = ham_data['e0t1orb']
+        rot_focka = ham_data['fock_bar'][0][:nocca, :]
+        rot_fockb = ham_data['fock_bar'][1][:noccb, :]
+        rot_chola = ham_data['chol_bar'][0].reshape(-1, norba, norba)[:, :nocca, :]
+        rot_cholb = ham_data['chol_bar'][1].reshape(-1, norbb, norbb)[:, :noccb, :]
+
+        gfa = (walker_up.dot(jnp.linalg.inv(walker_up[:nocca, :]))).T
+        gfb = (walker_dn.dot(jnp.linalg.inv(walker_dn[:noccb, :]))).T
+        e1a = oe.contract('ia,ik,ka->', gfa[:nocca, nocca:], prjloa,
+                          rot_focka[:nocca, nocca:], backend="jax")
+        e1b = oe.contract('ia,ik,ka->', gfb[:noccb, noccb:], prjlob,
+                          rot_fockb[:noccb, noccb:], backend="jax")
+        e1 = e1a + e1b
+
+        nchol = rot_chola.shape[0]
+        nchunks, chunk, npad = _chol_chunking(nchol, self.nchol_chunk)
+        rot_chola = jnp.concatenate([rot_chola, jnp.zeros((npad, nocca, norba))], axis=0)
+        rot_cholb = jnp.concatenate([rot_cholb, jnp.zeros((npad, noccb, norbb))], axis=0)
+        rot_chola = rot_chola.reshape(nchunks, chunk, nocca, norba)
+        rot_cholb = rot_cholb.reshape(nchunks, chunk, noccb, norbb)
+
+        def scan_chunk(carry, x):
+            rot_chola_c, rot_cholb_c = x
+            lga = oe.contract('gia,ka->gik', rot_chola_c[:, :nocca, nocca:],
+                              gfa[:nocca, nocca:], backend="jax")
+            lgb = oe.contract('gia,ka->gik', rot_cholb_c[:, :noccb, noccb:],
+                              gfb[:noccb, noccb:], backend="jax")
+            # per-gamma pieces of the parent's e2aa/e2ab/e2ba/e2bb
+            pa = oe.contract('gik,ik->g', lga, prjloa, backend="jax")
+            pb = oe.contract('gik,ik->g', lgb, prjlob, backend="jax")
+            ta = oe.contract('gjj->g', lga, backend="jax")
+            tb = oe.contract('gjj->g', lgb, backend="jax")
+            xa = oe.contract('gij,gjk,ik->g', lga, lga, prjloa, backend="jax")
+            xb = oe.contract('gij,gjk,ik->g', lgb, lgb, prjlob, backend="jax")
+            e2_g = 0.5 * ((pa + pb) * (ta + tb) - xa - xb)
+            return carry + jnp.sum(e2_g), e2_g
+
+        e2, e2_chunks = lax.scan(scan_chunk, 0.0 + 0.0j, (rot_chola, rot_cholb))
+        e2_g_all = e2_chunks.reshape(-1)[:nchol]
+        return e0 + e1 + e2, e2_g_all
+
+    def _t2eorb_tc_sto(self, walker_up, walker_dn, ham_data, wave_data,
+                       pi_g, key, frozen_vir=None):
+
+        """`_t2eorb_tc` with the T2*h2 Cholesky sum split head/tail.
+
+        e2_0 is summed exactly over every gamma (pass 1, no T2 work); the three
+        T2-contracted accumulators are evaluated exactly on the head and
+        importance sampled on the tail (pass 2).
+        """
+        if self.mix_precision:
+            rtype = jnp.float32
+            ctype = jnp.complex64
+        else:
+            rtype = jnp.float64
+            ctype = jnp.complex128
+
+        nchol_chunk = self.nchol_chunk
+        norb_a, norb_b = self.norb
+        nocc_a, nocc_b = self.nelec
+        h1a, h1b = ham_data["h1bar"]
+        t2aa, t2ab = wave_data["t2aa"], wave_data["t2ab"]
+        t2ba, t2bb = wave_data["t2ba"], wave_data["t2bb"]
+        chol_a, chol_b = ham_data["chol_bar"]
+        chol_a = chol_a.reshape(-1, norb_a, norb_a)
+        chol_b = chol_b.reshape(-1, norb_b, norb_b)
+
+        if frozen_vir is not None:
+            fv = frozen_vir
+            na_keep, nb_keep = norb_a - fv, norb_b - fv
+            nva_keep = (norb_a - nocc_a) - fv
+            nvb_keep = (norb_b - nocc_b) - fv
+            assert nva_keep > 0 and nvb_keep > 0, "frozen_vir exceeds number of virtuals"
+            norb_a, norb_b = na_keep, nb_keep
+            walker_up, walker_dn = walker_up[:na_keep, :], walker_dn[:nb_keep, :]
+            h1a, h1b = h1a[:na_keep, :na_keep], h1b[:nb_keep, :nb_keep]
+            # cholesky: slice the two ORBITAL axes only, never axis 0 (the chol
+            # index) -- so nchol is unchanged and pi_g still lines up with it
+            chol_a = chol_a[:, :na_keep, :na_keep]
+            chol_b = chol_b[:, :nb_keep, :nb_keep]
+            t2aa = t2aa[:, :nva_keep, :, :nva_keep]
+            t2ab = t2ab[:, :nva_keep, :, :nvb_keep]
+            t2ba = t2ba[:, :nvb_keep, :, :nva_keep]
+            t2bb = t2bb[:, :nvb_keep, :, :nvb_keep]
+
+        rot_chol_a = chol_a[:, :nocc_a, :]
+        rot_chol_b = chol_b[:, :nocc_b, :]
+        nchol = chol_a.shape[0]
+
+        green_a = (walker_up.dot(jnp.linalg.inv(walker_up[:nocc_a, :]))).T
+        green_b = (walker_dn.dot(jnp.linalg.inv(walker_dn[:nocc_b, :]))).T
+        green_occ_a = green_a[:, nocc_a:]
+        green_occ_b = green_b[:, nocc_b:]
+        greenp_a = jnp.vstack((green_occ_a, -jnp.eye(norb_a - nocc_a)))
+        greenp_b = jnp.vstack((green_occ_b, -jnp.eye(norb_b - nocc_b)))
+
+        hg_a = oe.contract("pj,pj->", h1a[:nocc_a, :], green_a, backend="jax")
+        hg_b = oe.contract("pj,pj->", h1b[:nocc_b, :], green_b, backend="jax")
+        e1_0 = hg_a + hg_b
+
+        t2g_aa_a_c = oe.contract("iajb,ia->jb", t2aa, green_occ_a, backend="jax") / 4
+        t2g_aa_a_e = oe.contract("iajb,ja->ib", t2aa, green_occ_a, backend="jax") / 4
+        t2g_bb_b_c = oe.contract("iajb,ia->jb", t2bb, green_occ_b, backend="jax") / 4
+        t2g_bb_b_e = oe.contract("iajb,ja->ib", t2bb, green_occ_b, backend="jax") / 4
+        t2g_ab_a = oe.contract("iajb,ia->jb", t2ab, green_occ_a, backend="jax") / 2
+        t2g_ab_b = oe.contract("iajb,jb->ia", t2ab, green_occ_b, backend="jax") / 2
+        t2g_ba_a = oe.contract("iajb,jb->ia", t2ba, green_occ_a, backend="jax") / 2
+        t2g_ba_b = oe.contract("iajb,ia->jb", t2ba, green_occ_b, backend="jax") / 2
+        gt2g_aa = oe.contract("jb,jb->", t2g_aa_a_c, green_occ_a, backend="jax")
+        gt2g_bb = oe.contract("jb,jb->", t2g_bb_b_c, green_occ_b, backend="jax")
+        gt2g_ab = oe.contract("jb,jb->", t2g_ab_a, green_occ_b, backend="jax")
+        gt2g_ba = oe.contract("jb,jb->", t2g_ba_b, green_occ_a, backend="jax")
+        gt2g = (gt2g_aa + gt2g_bb) * 2 + (gt2g_ab + gt2g_ba)
+        e1_2_1 = gt2g * e1_0
+
+        t2_green_aaa_c = oe.contract('pb,jb,jq->pq', greenp_a, t2g_aa_a_c, green_a, backend="jax")
+        t2_green_aaa_e = oe.contract('pb,ib,iq->pq', greenp_a, t2g_aa_a_e, green_a, backend="jax")
+        t2_green_bbb_c = oe.contract('pb,jb,jq->pq', greenp_b, t2g_bb_b_c, green_b, backend="jax")
+        t2_green_bbb_e = oe.contract('pb,ib,iq->pq', greenp_b, t2g_bb_b_e, green_b, backend="jax")
+        t2_green_aba = oe.contract('pa,ia,iq->pq', greenp_a, t2g_ab_b, green_a, backend="jax")
+        t2_green_baa = oe.contract('pb,jb,jq->pq', greenp_a, t2g_ba_b, green_a, backend="jax")
+        t2_green_bab = oe.contract('pa,ia,iq->pq', greenp_b, t2g_ba_a, green_b, backend="jax")
+        t2_green_abb = oe.contract('pb,jb,jq->pq', greenp_b, t2g_ab_a, green_b, backend="jax")
+        t2_green_aaa = 2 * (t2_green_aaa_c - t2_green_aaa_e)
+        t2_green_bbb = 2 * (t2_green_bbb_c - t2_green_bbb_e)
+        e1_2_2_a = -oe.contract("pq,pq->", t2_green_aaa + t2_green_aba + t2_green_baa,
+                                h1a, backend="jax")
+        e1_2_2_b = -oe.contract("pq,pq->", t2_green_bbb + t2_green_bab + t2_green_abb,
+                                h1b, backend="jax")
+        e1_2 = e1_2_1 + e1_2_2_a + e1_2_2_b
+
+        t2_green_a_tot = 2 * t2_green_aaa + 2 * (t2_green_aba + t2_green_baa)
+        t2_green_b_tot = 2 * t2_green_bbb + 2 * (t2_green_bab + t2_green_abb)
+
+        # ============ pass 1: e2_0, exact, every gamma, no T2 ============
+        def scan_chunk_e2_0(carry, x):
+            # half-rotated chol only: e2_0 touches just the occupied-occupied block,
+            # so gl is (chunk, nocc, nocc) rather than (chunk, nocc, norb)
+            rot_a_c, rot_b_c = x
+            gl_a = oe.contract("ir,gpr->gip", green_a, rot_a_c, backend="jax")
+            gl_b = oe.contract("ir,gpr->gip", green_b, rot_b_c, backend="jax")
+            tr_a = oe.contract("gii->g", gl_a, backend="jax")
+            tr_b = oe.contract("gii->g", gl_b, backend="jax")
+            ex_a = oe.contract("gij,gji->g", gl_a, gl_a, backend="jax")
+            ex_b = oe.contract("gij,gji->g", gl_b, gl_b, backend="jax")
+            e2_0_g = (((tr_a + tr_b) ** 2 - (ex_a + ex_b)) / 2.0).astype(ctype)
+            return carry + jnp.sum(e2_0_g), 0.0
+
+        nchunks, chunk1, npad = _chol_chunking(nchol, nchol_chunk)
+        rot_a_all, rot_b_all = rot_chol_a, rot_chol_b
+        if npad:
+            rot_a_all = jnp.concatenate(
+                [rot_a_all, jnp.zeros((npad, *rot_a_all.shape[-2:]), rot_a_all.dtype)], axis=0)
+            rot_b_all = jnp.concatenate(
+                [rot_b_all, jnp.zeros((npad, *rot_b_all.shape[-2:]), rot_b_all.dtype)], axis=0)
+        e2_0, _ = lax.scan(
+            scan_chunk_e2_0, jnp.zeros((), dtype=ctype),
+            (rot_a_all.reshape(nchunks, chunk1, *rot_a_all.shape[-2:]),
+             rot_b_all.reshape(nchunks, chunk1, *rot_b_all.shape[-2:])))
+
+        # ---- head / tail split from the supplied proposal ----
+        if isinstance(self.n_chol_head, str):
+            if self.n_chol_head.lower() != "full":
+                raise ValueError(
+                    f"n_chol_head must be an int or 'full', got {self.n_chol_head!r}.")
+            n_head = nchol
+        elif self.n_chol_head > 0:
+            n_head = self.n_chol_head
+        else:
+            if not 0.0 <= self.head_chol_ratio <= 1.0:
+                raise ValueError(
+                    f"head_chol_ratio must lie in [0, 1], got {self.head_chol_ratio}.")
+            n_head = min(max(int(round(self.head_chol_ratio * nchol)), 0), nchol)
+        n_samples = self.n_chol_samples
+
+        # Contiguous prefix head by default, NOT ranked per walker: under vmap a
+        # walker-dependent index array makes chol_a[idx] a *batched* gather, costing
+        # n_walkers * n_head * norb^2 instead of the shared n_head * norb^2.  A
+        # prefix is a plain slice, and the Cholesky ordering already runs from most
+        # to least important.  head_from_guide=True restores per-walker ranking.
+        head_prefix = None
+        if n_head >= nchol:
+            head_prefix = nchol
+            tail = jnp.zeros((0,), dtype=jnp.int32)
+            tail_prob = jnp.zeros((0,))
+        else:
+            if self.head_from_guide:
+                order = jnp.argsort(-pi_g)
+                head_idx = jnp.sort(order[:n_head])
+                tail = jnp.sort(order[n_head:])
+            else:
+                head_prefix = n_head
+                tail = jnp.arange(n_head, nchol, dtype=jnp.int32)
+            tail_prob = pi_g[tail]
+            tail_prob = tail_prob / jnp.sum(tail_prob)
+
+        # ======== pass 2: only the T2-contracted accumulators ========
+        def scan_chunk_e2_2(carry, x):
+            chol_a_c, chol_b_c, w_c = x
+            rot_chol_a_c = chol_a_c[:, :nocc_a, :]
+            rot_chol_b_c = chol_b_c[:, :nocc_b, :]
+            w_c = w_c.astype(ctype)
+
+            gl_a = oe.contract("ir,gpr->gip", green_a, chol_a_c, backend="jax")
+            gl_b = oe.contract("ir,gpr->gip", green_b, chol_b_c, backend="jax")
+            tr_a = oe.contract("gii->g", gl_a[:, :nocc_a, :nocc_a], backend="jax")
+            tr_b = oe.contract("gii->g", gl_b[:, :nocc_b, :nocc_b], backend="jax")
+            gl_c = tr_a + tr_b
+
+            lt2g_a = oe.contract("gpq,pq->g", chol_a_c.astype(rtype),
+                                 t2_green_a_tot.astype(ctype), backend="jax")
+            lt2g_b = oe.contract("gpq,pq->g", chol_b_c.astype(rtype),
+                                 t2_green_b_tot.astype(ctype), backend="jax")
+            carry[0] += jnp.sum(w_c * (-(lt2g_a + lt2g_b).astype(ctype)
+                                       * gl_c.astype(ctype) / 2.0))
+
+            lt2_green_a = oe.contract("gpi,ji->gpj", rot_chol_a_c.astype(rtype),
+                                      t2_green_a_tot.astype(ctype), backend="jax")
+            lt2_green_b = oe.contract("gpi,ji->gpj", rot_chol_b_c.astype(rtype),
+                                      t2_green_b_tot.astype(ctype), backend="jax")
+            carry[1] += jnp.sum(w_c * (
+                (oe.contract("gip,gip->g", gl_a.astype(ctype),
+                             lt2_green_a.astype(ctype), backend="jax")
+                 + oe.contract("gip,gip->g", gl_b.astype(ctype),
+                               lt2_green_b.astype(ctype), backend="jax")) / 2))
+
+            glgp_a = oe.contract("gip,pa->gia", gl_a.astype(ctype),
+                                 greenp_a.astype(ctype), backend="jax")
+            glgp_b = oe.contract("gip,pa->gia", gl_b.astype(ctype),
+                                 greenp_b.astype(ctype), backend="jax")
+            l2t2_aa_a = oe.contract("gia,iajb->gjb", glgp_a.astype(ctype),
+                                    t2aa.astype(rtype), backend="jax")
+            l2t2_ab_a = oe.contract("gia,iajb->gjb", glgp_a.astype(ctype),
+                                    t2ab.astype(rtype), backend="jax")
+            l2t2_ba_b = oe.contract("gia,iajb->gjb", glgp_b.astype(ctype),
+                                    t2ba.astype(rtype), backend="jax")
+            l2t2_bb_b = oe.contract("gia,iajb->gjb", glgp_b.astype(ctype),
+                                    t2bb.astype(rtype), backend="jax")
+            l2t2 = 0.5 * (
+                oe.contract("gjb,gjb->g", l2t2_aa_a.astype(ctype), glgp_a.astype(ctype), backend="jax")
+                + oe.contract("gjb,gjb->g", l2t2_ab_a.astype(ctype), glgp_b.astype(ctype), backend="jax")
+                + oe.contract("gjb,gjb->g", l2t2_ba_b.astype(ctype), glgp_a.astype(ctype), backend="jax")
+                + oe.contract("gjb,gjb->g", l2t2_bb_b.astype(ctype), glgp_b.astype(ctype), backend="jax"))
+            carry[2] += jnp.sum(w_c * l2t2.astype(ctype))
+            return carry, 0.0
+
+        def _run(chol_a_s, chol_b_s, weights):
+            n = weights.shape[0]
+            z = jnp.zeros((), dtype=ctype)
+            if n == 0:
+                return z, z, z
+            nch2, chunk2, npad2 = _chol_chunking(n, nchol_chunk)
+            if npad2:
+                chol_a_s = jnp.concatenate(
+                    [chol_a_s, jnp.zeros((npad2, *chol_a_s.shape[-2:]), chol_a_s.dtype)])
+                chol_b_s = jnp.concatenate(
+                    [chol_b_s, jnp.zeros((npad2, *chol_b_s.shape[-2:]), chol_b_s.dtype)])
+                weights = jnp.concatenate([weights, jnp.zeros(npad2, weights.dtype)])
+            out, _ = lax.scan(
+                scan_chunk_e2_2, [z, z, z],
+                (chol_a_s.reshape(nch2, chunk2, *chol_a_s.shape[-2:]),
+                 chol_b_s.reshape(nch2, chunk2, *chol_b_s.shape[-2:]),
+                 weights.reshape(nch2, chunk2)))
+            return out[0], out[1], out[2]
+
+        # prefix -> plain slice, shared across the vmap batch
+        if head_prefix is not None:
+            b_h, c_h, d_h = _run(chol_a[:head_prefix], chol_b[:head_prefix],
+                                 jnp.ones(head_prefix, dtype=ctype))
+        else:
+            b_h, c_h, d_h = _run(chol_a[head_idx], chol_b[head_idx],
+                                 jnp.ones(head_idx.shape[0], dtype=ctype))
+        # tail -> walker-dependent gather, but only n_chol_samples vectors wide
+        if tail.shape[0] == 0:
+            b_t = c_t = d_t = jnp.zeros((), dtype=ctype)
+        else:
+            sel = random.choice(key, tail.shape[0], shape=(n_samples,),
+                                replace=True, p=tail_prob)
+            samp_w = (1.0 / (n_samples * tail_prob[sel])).astype(ctype)
+            b_t, c_t, d_t = _run(chol_a[tail[sel]], chol_b[tail[sel]], samp_w)
+
+        # e2_2_1 = e2_0 * gt2g is exact, since e2_0 is
+        e2_2 = e2_0 * gt2g + (b_h + b_t) + (c_h + c_t) + (d_h + d_t)
+
+        t2frag = gt2g
+        e0 = e1_0 + e2_0
+        e1frag = e1_2 + e2_2
+        return t2frag, e1frag, e0
+
+    @partial(jit, static_argnums=(0, 6))
+    def _calc_ept2_frag(self, walker_up, walker_dn, ham_data, wave_data, key,
+                        frozen_vir=None):
+        walker_up_bar = wave_data['exp_t1a'] @ walker_up
+        walker_dn_bar = wave_data['exp_t1b'] @ walker_dn
+
+        o0 = jnp.linalg.det(walker_up[:walker_up.shape[1], :]) \
+            * jnp.linalg.det(walker_dn[:walker_dn.shape[1], :])
+        obar = jnp.linalg.det(walker_up_bar[:walker_up_bar.shape[1], :]) \
+            * jnp.linalg.det(walker_dn_bar[:walker_dn_bar.shape[1], :])
+        t1 = obar / o0
+
+        eg = self._calc_energy(walker_up, walker_dn, ham_data, wave_data)
+
+        # fragment reference energy, and the per-gamma scores it produces for free
+        e0frag, e2_g = self._calc_e0bar_frag_scored(
+            walker_up_bar, walker_dn_bar, ham_data, wave_data)
+        pi_g = self._prop_chol_in_place(e2_g)
+
+        t2frag, e1frag, e0 = self._t2eorb_tc_sto(
+            walker_up_bar, walker_dn_bar, ham_data, wave_data, pi_g, key, frozen_vir)
+
+        return eg, t1, t2frag, e0frag, e1frag, e0
+
+    @partial(jit, static_argnums=(0, 4))
+    def calc_ept2_frag(self, walkers: list, ham_data: dict, wave_data: dict,
+                       frozen_vir=None) -> jax.Array:
+        """Map over walkers, giving each its own key split from the block key."""
+        n_walkers = walkers[0].shape[0]
+        batch_size = n_walkers // self.n_batch
+        key = wave_data.get("sto_chol_key", random.PRNGKey(0))
+        keys = random.split(key, n_walkers)
+
+        def scan_batch(carry, walker_batch):
+            batch_walker_up, batch_walker_dn, batch_keys = walker_batch
+            eg, t1, t2frag, e0frag, e1frag, e0 \
+                = vmap(self._calc_ept2_frag, in_axes=(0, 0, None, None, 0, None))(
+                batch_walker_up, batch_walker_dn, ham_data, wave_data,
+                batch_keys, frozen_vir)
+            return carry, (eg, t1, t2frag, e0frag, e1frag, e0)
+
+        _, (eg, t1, t2frag, e0frag, e1frag, e0) = lax.scan(
+            scan_batch, None,
+            (
+                walkers[0].reshape(self.n_batch, batch_size, self.norb[0], self.nelec[0]),
+                walkers[1].reshape(self.n_batch, batch_size, self.norb[1], self.nelec[1]),
+                keys.reshape(self.n_batch, batch_size, -1),
+            ),
+        )
+        return (eg.reshape(n_walkers), t1.reshape(n_walkers), t2frag.reshape(n_walkers),
+                e0frag.reshape(n_walkers), e1frag.reshape(n_walkers), e0.reshape(n_walkers))
+
     def __hash__(self):
         return hash(tuple(self.__dict__.values()))
 

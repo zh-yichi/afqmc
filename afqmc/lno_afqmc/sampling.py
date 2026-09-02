@@ -588,6 +588,8 @@ class sampler_pt2(sampler):
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
         prop_data = prop.orthonormalize_walkers(prop_data)
 
+        prop_data["key"], subkey_chol = random.split(prop_data["key"]) # match with sto for test
+
         # self is a static argument, so this branch is resolved at trace time;
         # keeping the plain call for frozen_vir = 0 leaves restricted trials
         # (whose calc_ept2_frag takes no frozen_vir) working unchanged.
@@ -598,6 +600,86 @@ class sampler_pt2(sampler):
         else:
             eg_sp, t1_sp, t2frg_sp, e0frg_sp, e1frg_sp, e0_sp \
                 = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data)
+        
+        eg_sp = jnp.real(eg_sp)
+        
+        outlier = jnp.abs(eg_sp - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
+        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        
+        wts = prop_data["weights"]
+        wps = wts * t1_sp
+
+        wt    = jnp.sum(wts)
+        eg    = jnp.sum(wts * eg_sp) / wt
+
+        wp    = jnp.sum(wps)
+        t2frg = jnp.sum(wps * t2frg_sp) / wp
+        e0frg = jnp.sum(wps * e0frg_sp) / wp
+        e1frg = jnp.sum(wps * e1frg_sp) / wp
+        e0    = jnp.sum(wps * e0_sp) / wp
+    
+        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * eg.real
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+
+        return prop_data, (wt, eg, wp, t2frg, e0frg, e1frg, e0)
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class sampler_pt2_sto_chol(sampler_pt2):
+    frozen_vir: int = 0  # freeze the last frozen_vir virtuals in the T2 terms
+
+    @partial(jit, static_argnums=(0,3,4))
+    def block_sample(
+        self,
+        prop_data,
+        ham_data,
+        prop,
+        trial,
+        wave_data,
+        ):
+        """Block scan function, with a fresh Cholesky-sampling key each block.
+
+        Identical to sampler_pt2 otherwise.  It is a separate class so that
+        existing LNO trials keep their exact RNG stream -- this one splits
+        prop_data["key"] once more per block.
+        """
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(
+                self.n_prop_steps,
+                prop.n_walkers,
+                self.n_chol,
+            ),
+        )
+        _step_scan_wrapper = lambda x, y: self._step_scan(
+            x, y, ham_data, prop, trial, wave_data
+        )
+        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        prop_data = prop.orthonormalize_walkers(prop_data)
+
+        # self is a static argument, so this branch is resolved at trace time;
+        # keeping the plain call for frozen_vir = 0 leaves restricted trials
+        # (whose calc_ept2_frag takes no frozen_vir) working unchanged.
+        # fresh Cholesky-sampling key for this block, handed to the trial through
+        # wave_data; without it the trial would reuse one fixed key forever and
+        # its sampling noise would never average down over the run
+        prop_data["key"], subkey_chol = random.split(prop_data["key"])
+        wave_data_sto = {**wave_data, "sto_chol_key": subkey_chol}
+
+        if self.frozen_vir:
+            eg_sp, t1_sp, t2frg_sp, e0frg_sp, e1frg_sp, e0_sp \
+                = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data_sto,
+                                       frozen_vir=self.frozen_vir)
+        else:
+            eg_sp, t1_sp, t2frg_sp, e0frg_sp, e1frg_sp, e0_sp \
+                = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data_sto)
         
         eg_sp = jnp.real(eg_sp)
         
@@ -662,6 +744,93 @@ class sampler_pt2_frozen_vir(sampler):
 
         eg_sp1, t1_sp1, t2frg_sp1, e0frg_sp1, e1frg_sp1, e0_sp1 \
             = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data,frozen_vir=None)
+        
+        eg_sp0 = jnp.real(eg_sp0)
+        outlier = jnp.abs(eg_sp0 - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005
+        prop_data["weights"] = jnp.where(outlier, 0.0, prop_data["weights"])
+        
+        wts = prop_data["weights"]
+        wt    = jnp.sum(wts)
+
+        wps0 = wts * t1_sp0
+        eg0    = jnp.sum(wts * eg_sp0) / wt
+        wp0    = jnp.sum(wps0)
+        t2frg0 = jnp.sum(wps0 * t2frg_sp0) / wp0
+        e0frg0 = jnp.sum(wps0 * e0frg_sp0) / wp0
+        e1frg0 = jnp.sum(wps0 * e1frg_sp0) / wp0
+        e00    = jnp.sum(wps0 * e0_sp0) / wp0
+
+        wps1 = wts * t1_sp1
+        eg1    = jnp.sum(wts * eg_sp1) / wt
+        wp1    = jnp.sum(wps1)
+        t2frg1 = jnp.sum(wps1 * t2frg_sp1) / wp1
+        e0frg1 = jnp.sum(wps1 * e0frg_sp1) / wp1
+        e1frg1 = jnp.sum(wps1 * e1frg_sp1) / wp1
+        e01    = jnp.sum(wps1 * e0_sp1) / wp1
+    
+        prop_data = prop.stochastic_reconfiguration_local(prop_data)
+        prop_data["overlaps"] = trial.calc_overlap(prop_data["walkers"], wave_data)
+        prop_data["e_estimate"] = 0.9 * prop_data["e_estimate"] + 0.1 * eg0.real
+        prop_data["pop_control_ene_shift"] = prop_data["e_estimate"]
+        prop_data["n_killed_walkers"] += prop_data["weights"].size - jnp.count_nonzero(prop_data["weights"])
+
+        return prop_data, (wt, eg0, wp0, t2frg0, e0frg0, e1frg0, e00,
+                               eg1, wp1, t2frg1, e0frg1, e1frg1, e01)
+
+    def __hash__(self) -> int:
+        return hash(tuple(self.__dict__.values()))
+
+
+@dataclass
+class sampler_pt2_frozen_vir_sto_chol(sampler_pt2_frozen_vir):
+    frozen_vir: int = 0
+
+    @partial(jit, static_argnums=(0,3,4))
+    def block_sample(
+        self,
+        prop_data,
+        ham_data,
+        prop,
+        trial,
+        wave_data,
+        ):
+        """Correlated frozen/full blocks for a trial that samples its Cholesky sum.
+
+        Identical to sampler_pt2_frozen_vir except that a fresh Cholesky-sampling
+        key is split off prop_data["key"] each block and handed to the trial.
+
+        Both branches get the *same* wave_data_sto, so they draw the same tail
+        Cholesky vectors.  That is deliberate: the fragment energy is reported as
+        E_frozen + (E_full - E_frozen), and sharing the sample makes the Cholesky
+        sampling noise common to both branches cancel in that difference, leaving
+        only the frozen-virtual effect it is meant to measure.  The same key really
+        does select the same vectors: pi_g comes from _calc_e0bar_frag_scored,
+        which does not take frozen_vir, and frozen_vir no longer changes nchol.
+        """
+        prop_data["key"], subkey = random.split(prop_data["key"])
+        fields = random.normal(
+            subkey,
+            shape=(
+                self.n_prop_steps,
+                prop.n_walkers,
+                self.n_chol,
+            ),
+        )
+        _step_scan_wrapper = lambda x, y: self._step_scan(
+            x, y, ham_data, prop, trial, wave_data
+        )
+        prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
+        prop_data = prop.orthonormalize_walkers(prop_data)
+
+        # one key for the block, shared by both branches
+        prop_data["key"], subkey_chol = random.split(prop_data["key"])
+        wave_data_sto = {**wave_data, "sto_chol_key": subkey_chol}
+
+        eg_sp0, t1_sp0, t2frg_sp0, e0frg_sp0, e1frg_sp0, e0_sp0 \
+            = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data_sto,frozen_vir=self.frozen_vir)
+
+        eg_sp1, t1_sp1, t2frg_sp1, e0frg_sp1, e1frg_sp1, e0_sp1 \
+            = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data_sto,frozen_vir=None)
         
         eg_sp0 = jnp.real(eg_sp0)
         outlier = jnp.abs(eg_sp0 - prop_data["e_estimate"]) > jnp.sqrt(2.0 / prop.dt) # 20 Ha for dt = 0.005

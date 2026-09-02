@@ -108,8 +108,22 @@ def run_lnoafqmc(options, option_file='options.bin'):
         pickle.dump(options, f)
 
     if 'pt2' in options['trial']:
-        script='script/run_lno_afqmc_pt2ccsd.py'
-    
+        # Frozen-virtual correlated sampling is requested by putting `frozen_vir`
+        # (an explicit count) or `frozen_vir_rate` (a fraction, the script turns it
+        # into a count) in the options.  `frozen_vir = 0` means "do not freeze" and
+        # falls back to the ordinary script, since a zero-width frozen branch is
+        # just the full one.
+        want_frozen_vir = bool(options.get('frozen_vir', 0)) \
+            or 'frozen_vir_rate' in options
+        if want_frozen_vir:
+            script='script/run_lno_afqmc_pt2ccsd_frozen_vir.py'
+        else:
+            script='script/run_lno_afqmc_pt2ccsd.py'
+    else:
+        raise ValueError(
+            f"no LNO-AFQMC script for trial {options['trial']!r}; "
+            "expected a 'pt2' trial")
+
     path = os.path.abspath(__file__)
     dir_path = os.path.dirname(path)
     script = f"{dir_path}/{script}"

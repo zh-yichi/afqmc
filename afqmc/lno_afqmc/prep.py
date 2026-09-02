@@ -198,6 +198,16 @@ def get_wavefunction(options, nocc, norb, prjlo, amp_file):
                     nchol_chunk=options["nchol_chunk"],
                     mix_precision=options['mix_precision'],
                 )
+            elif "sto_chol" in options["trial"]:
+                trial = ulno_wavefunctions.upt2ccsd_sto_chol(
+                    norb, nelec_sp,
+                    n_batch=options["n_batch"],
+                    nchol_chunk=options["nchol_chunk"],
+                    mix_precision=options["mix_precision"],
+                    n_chol_head=options.get("n_chol_head", 0),
+                    head_chol_ratio=options.get("head_chol_ratio", 0.125),
+                    n_chol_samples=options.get("n_chol_samples", 128),
+                )
             elif options["trial"] == "upt2ccsd":
                 trial = ulno_wavefunctions.upt2ccsd(
                     norb, nelec_sp,
@@ -232,7 +242,12 @@ def get_propagator(options):
 
 def get_sampler(options, nchol):
     if  'pt' in options['trial']:
-        if '2' in options['trial']:
+        if 'sto_chol' in options['trial']:
+            sampler = sampling.sampler_pt2_sto_chol(
+                options["n_prop_steps"],
+                options["n_blocks"],
+                nchol,)
+        elif '2' in options['trial']:
             sampler = sampling.sampler_pt2(
                 options["n_prop_steps"],
                 options["n_blocks"],

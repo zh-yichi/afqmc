@@ -1321,6 +1321,7 @@ class pt2ccsd_sto_chol(pt2ccsd_bar):
     n_chol_samples: int = 128
     chol_score_floor: float = 1.0e-6
     chol_uniform_mix: float = 0.01
+    head_from_guide: bool = False
 
     @partial(jit, static_argnums=0)
     def _prop_chol_in_place(self, e2_g_estimate):
@@ -1379,22 +1380,28 @@ class pt2ccsd_sto_chol(pt2ccsd_bar):
 
         # ================= pass 1: e2_0, exact, every gamma, no T2 =================
         def scan_chol_chunk_e2_0(carry, x):
-            """e2_0_g for one chunk.  Only needs gl = green.chol -- no T2 anywhere."""
-            idx_c, keep_c = x
-            gl = oe.contract("ir,gqr->giq", green, chol[idx_c], backend="jax")
-            gl_occ = gl[:, :, :nocc]
+            """e2_0_g for one chunk.  Only needs gl = green.chol -- no T2 anywhere.
+
+            Fed the half-rotated chol[:, :nocc, :], not the full (norb, norb)
+            three-index tensor: e2_0 only ever touches the occupied-occupied block,
+            so gl comes out (chunk, nocc, nocc) instead of (chunk, nocc, norb).
+            Under vmap that factor is paid per walker.
+            """
+            rot_c = x
+            gl_occ = oe.contract("ir,gqr->giq", green, rot_c, backend="jax")
             gl_c = oe.contract("gii->g", gl_occ, backend="jax")
             e2_0_g = (2 * oe.contract("g,g->g", gl_c, gl_c, backend="jax")
                       - oe.contract("gij,gji->g", gl_occ, gl_occ, backend="jax"))
-            e2_0_g = e2_0_g.astype(ctype) * keep_c.astype(ctype)
-            return carry + jnp.sum(e2_0_g), e2_0_g
+            return carry + jnp.sum(e2_0_g.astype(ctype)), e2_0_g.astype(ctype)
 
         nchunk, chunk1, npad = _chol_chunking(nchol, nchol_chunk)
-        idx_all = jnp.concatenate([jnp.arange(nchol, dtype=jnp.int32),
-                                   jnp.zeros(npad, dtype=jnp.int32)]).reshape(nchunk, chunk1)
-        keep = jnp.concatenate([jnp.ones(nchol), jnp.zeros(npad)]).reshape(nchunk, chunk1)
-        e2_0, e2_0_chunks = lax.scan(scan_chol_chunk_e2_0,
-                                     jnp.zeros((), dtype=ctype), (idx_all, keep))
+        rot_all = chol[:, :nocc, :]
+        if npad:
+            rot_all = jnp.concatenate(
+                [rot_all, jnp.zeros((npad, *rot_all.shape[-2:]), rot_all.dtype)], axis=0)
+        e2_0, e2_0_chunks = lax.scan(
+            scan_chol_chunk_e2_0, jnp.zeros((), dtype=ctype),
+            rot_all.reshape(nchunk, chunk1, *rot_all.shape[-2:]))
         e2_0_g = e2_0_chunks.reshape(-1)[:nchol]
 
         # ---- proposal from e2_0_g, head/tail split ----
@@ -1416,18 +1423,31 @@ class pt2ccsd_sto_chol(pt2ccsd_bar):
             n_head = min(max(n_head, 0), nchol)
         n_samples = self.n_chol_samples
 
+        head_prefix = None
         if n_head >= nchol:
             # Deterministic limit: every Cholesky vector is summed exactly, the tail
             # is empty and no draw is made.  Reproduces pt2ccsd_bar bit for bit, and
             # skips the proposal and the sort entirely.
-            head = jnp.arange(nchol, dtype=jnp.int32)
+            head_prefix = nchol
             tail = jnp.zeros((0,), dtype=jnp.int32)
             tail_prob = jnp.zeros((0,))
         else:
+            # Contiguous prefix head by default, NOT ranked per walker.  Under vmap
+            # a walker-dependent index array turns chol[idx] into a *batched*
+            # gather, costing n_walkers * n_head * norb^2 instead of the shared
+            # n_head * norb^2 -- that is what makes the sampled path exhaust memory
+            # while head='full' (constant indices) is fine.  A prefix is a plain
+            # slice, and since Cholesky vectors come out of the decomposition in
+            # decreasing importance it is also a good head.  head_from_guide=True
+            # restores per-walker ranking at that memory cost.
             pi_g = self._prop_chol_in_place(e2_0_g)
-            order = jnp.argsort(-pi_g)
-            head = jnp.sort(order[:n_head])
-            tail = jnp.sort(order[n_head:])
+            if self.head_from_guide:
+                order = jnp.argsort(-pi_g)
+                head_idx = jnp.sort(order[:n_head])
+                tail = jnp.sort(order[n_head:])
+            else:
+                head_prefix = n_head
+                tail = jnp.arange(n_head, nchol, dtype=jnp.int32)
             tail_prob = pi_g[tail]
             tail_prob = tail_prob / jnp.sum(tail_prob)
 
@@ -1438,8 +1458,8 @@ class pt2ccsd_sto_chol(pt2ccsd_bar):
             No e2_0 work here: the 'gij,gji->g' exchange trace is never formed, and
             gl_c is built only because e2_2_2_1 needs it.
             """
-            idx_c, w_c = x
-            chol_c, rot_chol_c = chol[idx_c], rot_chol[idx_c]
+            chol_c, w_c = x
+            rot_chol_c = chol_c[:, :nocc, :]
             w_c = w_c.astype(ctype)
 
             gl = oe.contract("ir,gqr->giq", green, chol_c, backend="jax")
@@ -1466,31 +1486,36 @@ class pt2ccsd_sto_chol(pt2ccsd_bar):
             carry[2] += jnp.sum(w_c * (2 * l2t2_c - l2t2_e).astype(ctype))
             return carry, 0.0
 
-        def accumulate_e2_2(indices, weights):
-            n = indices.shape[0]
+        def _run(chol_s, weights):
+            n = weights.shape[0]
             z = jnp.zeros((), dtype=ctype)
             if n == 0:
                 return z, z, z
             # Same chunking rule as everywhere else: minimum padding for uniform
-            # chunks, capped by memory.  Padding up to a full nchol_chunk instead
-            # would run the expensive T2 contractions on zero-weight entries -- a
-            # 21-vector head would cost a full nchol-wide chunk.
+            # chunks, capped by memory.
             nch2, chunk2, npad2 = _chol_chunking(n, nchol_chunk)
-            idx = jnp.concatenate([indices, jnp.zeros(npad2, dtype=indices.dtype)])
-            wts = jnp.concatenate([weights, jnp.zeros(npad2, dtype=weights.dtype)])
+            if npad2:
+                chol_s = jnp.concatenate(
+                    [chol_s, jnp.zeros((npad2, *chol_s.shape[-2:]), chol_s.dtype)])
+                weights = jnp.concatenate([weights, jnp.zeros(npad2, weights.dtype)])
             out, _ = lax.scan(scan_chol_chunk_e2_2, [z, z, z],
-                              (idx.reshape(nch2, chunk2), wts.reshape(nch2, chunk2)))
+                              (chol_s.reshape(nch2, chunk2, *chol_s.shape[-2:]),
+                               weights.reshape(nch2, chunk2)))
             return out[0], out[1], out[2]
 
-        # head: exact
-        b_h, c_h, d_h = accumulate_e2_2(head, jnp.ones(head.shape[0], dtype=ctype))
-        # tail: sampled
+        # head: exact.  A prefix is a plain slice, shared across the vmap batch;
+        # only the guided variant needs a walker-dependent gather.
+        if head_prefix is not None:
+            b_h, c_h, d_h = _run(chol[:head_prefix], jnp.ones(head_prefix, dtype=ctype))
+        else:
+            b_h, c_h, d_h = _run(chol[head_idx], jnp.ones(head_idx.shape[0], dtype=ctype))
+        # tail: sampled -- small, so the per-walker gather here is cheap
         if tail.shape[0] == 0:
             b_t = c_t = d_t = jnp.zeros((), dtype=ctype)
         else:
             sel = random.choice(key, tail.shape[0], shape=(n_samples,), replace=True, p=tail_prob)
             samp_w = (1.0 / (n_samples * tail_prob[sel])).astype(ctype)
-            b_t, c_t, d_t = accumulate_e2_2(tail[sel], samp_w)
+            b_t, c_t, d_t = _run(chol[tail[sel]], samp_w)
 
         # e2_2_1 = e2_0 * gt2g is exact, since e2_0 is exact
         e2_2_h = e2_0 * gt2g + 4 * (b_h + c_h) + d_h

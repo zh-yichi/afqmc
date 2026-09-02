@@ -18,6 +18,9 @@ init_time = time.time()
 
 ham_data, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
+print(f"Trial:   {trial}")
+print(f"Sampler: {sampler}")
+
 wave_data["rdm1"] = trial.get_rdm1(wave_data)
 ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
 ham_data = prop._build_propagation_intermediates(ham_data, trial, wave_data)
@@ -141,12 +144,20 @@ nodes = 0
 delta, delta_err = 0.0, 0.0
 
 # ------------------------------------------------- 1) correlated sampling --
-sampler_pair = lsp.sampler_pt2_frozen_vir(
+# A trial that samples its Cholesky sum needs a fresh key each block, otherwise it
+# reuses one fixed key forever and its sampling noise never averages down.  The
+# sto_chol pair sampler also hands the *same* key to both branches, so they draw
+# the same tail vectors and that noise cancels in E_full - E_frozen.
+_sto_chol = "sto_chol" in options["trial"]
+_pair_cls = lsp.sampler_pt2_frozen_vir_sto_chol if _sto_chol else lsp.sampler_pt2_frozen_vir
+sampler_pair = _pair_cls(
     n_prop_steps = options["n_prop_steps"],
     n_blocks = n_corr_blocks,
     n_chol = sampler.n_chol,
     frozen_vir = frozen_vir,
     )
+
+print(f"pair sampler: {sampler_pair}")
 
 print("\nCorrelated Sampling Blocks (frozen + full)")
 print(f"{'N':>4s}  {'nodes':>5s}  {'weight':>10s}  {'E(Guide)':>12s}  {'Error':>8s}  "
@@ -216,7 +227,8 @@ if n_paired > 1:
 # ----------------------------------------------------- 2) frozen sampling --
 # The correction is fixed from here on: only the (cheaper, lower variance)
 # frozen branch is propagated for the remaining blocks.
-sampler_frz = lsp.sampler_pt2(
+_frz_cls = lsp.sampler_pt2_sto_chol if _sto_chol else lsp.sampler_pt2
+sampler_frz = _frz_cls(
     n_prop_steps = options["n_prop_steps"],
     n_blocks = sampler.n_blocks,
     n_chol = sampler.n_chol,

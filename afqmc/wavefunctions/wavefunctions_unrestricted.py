@@ -1591,6 +1591,7 @@ class upt2ccsd_sto_chol(upt2ccsd_bar):
     n_chol_samples: int = 128
     chol_score_floor: float = 1.0e-6
     chol_uniform_mix: float = 0.01
+    head_from_guide: bool = False
 
     @partial(jit, static_argnums=0)
     def _prop_chol_in_place(self, e2_g_estimate):
@@ -1659,28 +1660,42 @@ class upt2ccsd_sto_chol(upt2ccsd_bar):
         e1_2 = e1_2_1 + e1_2_2_a + e1_2_2_b
 
         # ============ pass 1: e2_0, exact, every gamma, no T2 ============
+        # Scan the padded array directly, exactly as upt2ccsd_bar does -- no index
+        # gather and no keep mask.  Padded Cholesky vectors are zero, so they
+        # contribute nothing on their own.  The padded copy is built once here and
+        # reused by pass 2 when the head is the whole set.
+        # e2_0 only ever touches the occupied-occupied block of gl, so feed this
+        # pass the half-rotated chol[:, :nocc, :] rather than the full
+        # (norb, norb) three-index tensor.  gl then comes out (chunk, nocc, nocc)
+        # instead of (chunk, nocc, norb) -- under vmap that factor of norb/nocc is
+        # paid per walker, so it is the dominant cost of this pass.
+        rot_a = chol_a[:, :nocc_a, :]
+        rot_b = chol_b[:, :nocc_b, :]
+        nchunk, chunk1, npad = _chol_chunking(nchol, nchol_chunk)
+        if npad:
+            rot_a = jnp.concatenate(
+                [rot_a, jnp.zeros((npad, *rot_a.shape[-2:]), rot_a.dtype)], axis=0)
+            rot_b = jnp.concatenate(
+                [rot_b, jnp.zeros((npad, *rot_b.shape[-2:]), rot_b.dtype)], axis=0)
+
         def scan_chol_chunk_e2_0(carry, x):
-            idx_c, keep_c = x
+            rot_a_c, rot_b_c = x
+            # (chunk, nocc_a, nocc_a) and (chunk, nocc_b, nocc_b)
             gl_a = oe.contract("ir,gpr->gip", green_a.astype(jnp.complex128),
-                               chol_a[idx_c].astype(jnp.float64), backend="jax")
+                               rot_a_c.astype(jnp.float64), backend="jax")
             gl_b = oe.contract("ir,gpr->gip", green_b.astype(jnp.complex128),
-                               chol_b[idx_c].astype(jnp.float64), backend="jax")
-            tr_a = oe.contract("gii->g", gl_a[:, :nocc_a, :nocc_a], backend="jax")
-            tr_b = oe.contract("gii->g", gl_b[:, :nocc_b, :nocc_b], backend="jax")
-            ex_a = oe.contract("gij,gji->g", gl_a[:, :nocc_a, :nocc_a],
-                               gl_a[:, :nocc_a, :nocc_a], backend="jax")
-            ex_b = oe.contract("gij,gji->g", gl_b[:, :nocc_b, :nocc_b],
-                               gl_b[:, :nocc_b, :nocc_b], backend="jax")
-            e2_0_g = ((tr_a + tr_b) ** 2 - (ex_a + ex_b)) / 2.0
-            e2_0_g = e2_0_g.astype(ctype) * keep_c.astype(ctype)
+                               rot_b_c.astype(jnp.float64), backend="jax")
+            tr_a = oe.contract("gii->g", gl_a, backend="jax")
+            tr_b = oe.contract("gii->g", gl_b, backend="jax")
+            ex_a = oe.contract("gij,gji->g", gl_a, gl_a, backend="jax")
+            ex_b = oe.contract("gij,gji->g", gl_b, gl_b, backend="jax")
+            e2_0_g = (((tr_a + tr_b) ** 2 - (ex_a + ex_b)) / 2.0).astype(ctype)
             return carry + jnp.sum(e2_0_g), e2_0_g
 
-        nchunk, chunk1, npad = _chol_chunking(nchol, nchol_chunk)
-        idx_all = jnp.concatenate([jnp.arange(nchol, dtype=jnp.int32),
-                                   jnp.zeros(npad, dtype=jnp.int32)]).reshape(nchunk, chunk1)
-        keep = jnp.concatenate([jnp.ones(nchol), jnp.zeros(npad)]).reshape(nchunk, chunk1)
-        e2_0, e2_0_chunks = lax.scan(scan_chol_chunk_e2_0,
-                                     jnp.zeros((), dtype=ctype), (idx_all, keep))
+        e2_0, e2_0_chunks = lax.scan(
+            scan_chol_chunk_e2_0, jnp.zeros((), dtype=ctype),
+            (rot_a.reshape(nchunk, chunk1, *rot_a.shape[-2:]),
+             rot_b.reshape(nchunk, chunk1, *rot_b.shape[-2:])))
         e2_0_g = e2_0_chunks.reshape(-1)[:nchol]
 
         # ---- proposal, head/tail split ----
@@ -1698,22 +1713,33 @@ class upt2ccsd_sto_chol(upt2ccsd_bar):
             n_head = min(max(int(round(self.head_chol_ratio * nchol)), 0), nchol)
         n_samples = self.n_chol_samples
 
+        # The head is a contiguous prefix by default, NOT ranked per walker.  That
+        # matters for memory, not just tidiness: under vmap a walker-dependent index
+        # array turns chol_a[idx] into a *batched* gather, so one head chunk costs
+        # n_walkers * n_head * norb^2 instead of n_head * norb^2 shared.  A prefix is
+        # a plain slice, shared across the batch.  Cholesky vectors come out of the
+        # decomposition in decreasing importance, so the prefix is already a sensible
+        # head.  head_from_guide=True restores per-walker ranking at that memory cost.
+        head_prefix = None
         if n_head >= nchol:
-            head = jnp.arange(nchol, dtype=jnp.int32)
+            head_prefix = nchol
             tail = jnp.zeros((0,), dtype=jnp.int32)
             tail_prob = jnp.zeros((0,))
         else:
             pi_g = self._prop_chol_in_place(e2_0_g)
-            order = jnp.argsort(-pi_g)
-            head = jnp.sort(order[:n_head])
-            tail = jnp.sort(order[n_head:])
+            if self.head_from_guide:
+                order = jnp.argsort(-pi_g)
+                head_idx = jnp.sort(order[:n_head])
+                tail = jnp.sort(order[n_head:])
+            else:
+                head_prefix = n_head
+                tail = jnp.arange(n_head, nchol, dtype=jnp.int32)
             tail_prob = pi_g[tail]
             tail_prob = tail_prob / jnp.sum(tail_prob)
 
         # ======== pass 2: only the e2_2 terms that contract with T2 ========
         def scan_chol_chunk_e2_2(carry, x):
-            idx_c, w_c = x
-            chol_a_c, chol_b_c = chol_a[idx_c], chol_b[idx_c]
+            chol_a_c, chol_b_c, w_c = x
             w_c = w_c.astype(ctype)
 
             gl_a = oe.contract("ir,gpr->gip", green_a.astype(jnp.complex128),
@@ -1759,26 +1785,49 @@ class upt2ccsd_sto_chol(upt2ccsd_bar):
             carry[2] += jnp.sum(w_c * (l2t2_aa + l2t2_bb + l2t2_ab).astype(ctype))
             return carry, 0.0
 
-        def accumulate_e2_2(indices, weights):
-            n = indices.shape[0]
+        def _run(chol_a_s, chol_b_s, weights):
+            n = weights.shape[0]
             z = jnp.zeros((), dtype=ctype)
             if n == 0:
                 return z, z, z
             nch2, chunk2, npad2 = _chol_chunking(n, nchol_chunk)
-            idx = jnp.concatenate([indices, jnp.zeros(npad2, dtype=indices.dtype)])
-            wts = jnp.concatenate([weights, jnp.zeros(npad2, dtype=weights.dtype)])
-            out, _ = lax.scan(scan_chol_chunk_e2_2, [z, z, z],
-                              (idx.reshape(nch2, chunk2), wts.reshape(nch2, chunk2)))
+            if npad2:
+                chol_a_s = jnp.concatenate(
+                    [chol_a_s, jnp.zeros((npad2, *chol_a_s.shape[-2:]), chol_a_s.dtype)])
+                chol_b_s = jnp.concatenate(
+                    [chol_b_s, jnp.zeros((npad2, *chol_b_s.shape[-2:]), chol_b_s.dtype)])
+                weights = jnp.concatenate([weights, jnp.zeros(npad2, weights.dtype)])
+            out, _ = lax.scan(
+                scan_chol_chunk_e2_2, [z, z, z],
+                (chol_a_s.reshape(nch2, chunk2, *chol_a_s.shape[-2:]),
+                 chol_b_s.reshape(nch2, chunk2, *chol_b_s.shape[-2:]),
+                 weights.reshape(nch2, chunk2)))
             return out[0], out[1], out[2]
 
-        b_h, c_h, d_h = accumulate_e2_2(head, jnp.ones(head.shape[0], dtype=ctype))
+        def accumulate_prefix(n):
+            # contiguous slice -- no gather, so this is shared across the vmap batch
+            return _run(chol_a[:n], chol_b[:n], jnp.ones(n, dtype=ctype))
+
+        def accumulate_gather(indices, weights):
+            # Walker-dependent indices, so these Cholesky vectors cannot be shared
+            # across the vmap batch -- each walker holds its own copy.  That cost is
+            # unavoidable once the sample is drawn; scanning the gathered vectors in
+            # chunks is what we do with them.
+            return _run(chol_a[indices], chol_b[indices], weights)
+
+        if head_prefix is not None:
+            b_h, c_h, d_h = accumulate_prefix(head_prefix)
+        else:
+            b_h, c_h, d_h = accumulate_gather(
+                head_idx, jnp.ones(head_idx.shape[0], dtype=ctype))
+
         if tail.shape[0] == 0:
             b_t = c_t = d_t = jnp.zeros((), dtype=ctype)
         else:
             sel = random.choice(key, tail.shape[0], shape=(n_samples,),
                                 replace=True, p=tail_prob)
             samp_w = (1.0 / (n_samples * tail_prob[sel])).astype(ctype)
-            b_t, c_t, d_t = accumulate_e2_2(tail[sel], samp_w)
+            b_t, c_t, d_t = accumulate_gather(tail[sel], samp_w)
 
         # e2_2_1 = e2_0 * gt2g is exact, since e2_0 is exact
         e2_2 = e2_0 * gt2g + (b_h + b_t) + (c_h + c_t) + (d_h + d_t)
