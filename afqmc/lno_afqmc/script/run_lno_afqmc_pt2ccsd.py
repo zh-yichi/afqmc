@@ -18,6 +18,9 @@ init_time = time.time()
 
 ham_data, prop, trial, wave_data, sampler, options = (prep.init_afqmc())
 
+print(f"Trial:   {trial}")
+print(f"Sampler: {sampler}")
+
 wave_data["rdm1"] = trial.get_rdm1(wave_data)    
 ham_data = trial._build_measurement_intermediates(ham_data, wave_data)
 ham_data = prop._build_propagation_intermediates(ham_data, trial, wave_data)

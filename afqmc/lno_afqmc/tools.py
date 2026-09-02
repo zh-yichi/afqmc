@@ -898,6 +898,8 @@ def split_lno(mlno, lno_coeff, lno_frozen):
 # where LAS SIZE is either a bare int (restricted) or the numpy repr of the
 # (alpha, beta) pair, e.g. "[62 61]" (unrestricted).
 _LNO_ROW = re.compile(r'^\s*(\d+)\s+(\S+)\s+(\[[^\]]*\]|\d+)\s+(-?\d+\.\d+)')
+# table header, used to find a column by name rather than by position
+_LNO_HEADER = re.compile(r'^\s*Frag\b.*?\bLAS_SIZE\b\s+(.*\S)\s*$')
 
 def read_lno_size(filename='lno_result.out'):
     """Parse the LAS sizes out of an LNO-AFQMC result file.
@@ -926,38 +928,99 @@ def read_lno_size(filename='lno_result.out'):
     return (np.asarray(frag_idx, dtype=np.int32), frag_name,
             np.asarray(las_size, dtype=np.int32))
 
-def sort_frag_by_size(filename='lno_result.out', key='max', reverse=False,
-                      return_size=False):
-    """Fragment indices ordered from the smallest to the largest LAS.
+def read_lno_column(filename='lno_result.out', column='t(AFQMC)'):
+    """Parse one per-fragment column out of an LNO-AFQMC result file.
 
+    The column is located by NAME in the table header, so this keeps working if
+    the printed columns change -- e.g. run_mp=False drops E(MP2) and would shift
+    every position-based index.  Falls back to the last numeric field on each row
+    if no header is found.
+
+    Returns (frag_idx, values), frag_idx being 0-based as in read_lno_size.
+    """
+    header_fields = None
+    frag_idx, values = [], []
+    with open(filename, 'r') as f:
+        for line in f:
+            h = _LNO_HEADER.match(line)
+            if h is not None:
+                header_fields = h.group(1).split()
+                continue
+            m = _LNO_ROW.match(line)
+            if m is None:
+                continue
+            rest = line[m.end(3):].split()   # numeric fields after LAS_SIZE
+            if header_fields is None:
+                if not rest:
+                    raise ValueError(f'no numeric fields in row: {line!r}')
+                values.append(float(rest[-1]))
+            else:
+                if column not in header_fields:
+                    raise ValueError(
+                        f'column {column!r} not in {filename} header '
+                        f'{header_fields}')
+                j = header_fields.index(column)
+                if j >= len(rest):
+                    raise ValueError(
+                        f'row has {len(rest)} fields, need {j + 1} for '
+                        f'{column!r}: {line!r}')
+                values.append(float(rest[j]))
+            frag_idx.append(int(m.group(1)) - 1)
+
+    if not frag_idx:
+        raise ValueError(f'no fragment rows found in {filename}')
+
+    return np.asarray(frag_idx, dtype=np.int32), np.asarray(values, dtype=np.float64)
+
+
+def sort_fragment(filename='lno_result.out', by='time', key='max', reverse=False,
+                  column='t(AFQMC)'):
+    """Fragment indices ordered from the cheapest to the most expensive.
+
+    by : what to sort on.
+         'time' (default) -- the measured AFQMC wall time of a previous run,
+                   read from `column` of `filename`.  This is the faithful
+                   ordering: the largest fragment is not necessarily the
+                   slowest, because the number of blocks also depends on how
+                   noisy that fragment's energy is, so a small noisy fragment
+                   can easily cost more than a large clean one.  Needs a
+                   reference output file that actually has the timing column.
+         'size' -- the LAS dimension only, a proxy for cost.  Use this when no
+                   timed reference run is available yet.
     key : how to collapse the spin channels of an unrestricted calculation
           into one number -- 'max' (default, matches the cost-determining
-          dimension), 'sum', 'alpha' or 'beta'. Ignored if restricted.
-    reverse : largest to smallest instead.
-    return_size : also return the collapsed sizes in the same order.
+          dimension), 'sum', 'alpha' or 'beta'. Ignored if restricted, and
+          ignored entirely when by='time'.
+    column : which header column to read when by='time'.  Use 't(CCSD)' to
+             order by the CPU stage instead.
+    reverse : most expensive to cheapest instead.
     """
-    frag_idx, frag_name, las_size = read_lno_size(filename)
+    if by == 'time':
+        frag_idx, size = read_lno_column(filename, column)
+    elif by == 'size':
+        frag_idx, frag_name, las_size = read_lno_size(filename)
 
-    if las_size.shape[1] == 1:
-        size = las_size[:, 0]
-    elif key == 'max':
-        size = las_size.max(axis=1)
-    elif key == 'sum':
-        size = las_size.sum(axis=1)
-    elif key == 'alpha':
-        size = las_size[:, 0]
-    elif key == 'beta':
-        size = las_size[:, 1]
+        if las_size.shape[1] == 1:
+            size = las_size[:, 0]
+        elif key == 'max':
+            size = las_size.max(axis=1)
+        elif key == 'sum':
+            size = las_size.sum(axis=1)
+        elif key == 'alpha':
+            size = las_size[:, 0]
+        elif key == 'beta':
+            size = las_size[:, 1]
+        else:
+            raise ValueError(f'unknown key {key}')
     else:
-        raise ValueError(f'unknown key {key}')
+        raise ValueError(f"unknown by={by!r}, expected 'size' or 'time'")
 
-    # stable sort so equally sized fragments keep their printed order
+    # stable sort so equally sized/timed fragments keep their printed order
     order = np.argsort(size, kind='stable')
     if reverse:
         order = order[::-1]
 
-    idx = frag_idx[order].tolist()
-    return (idx, size[order].tolist()) if return_size else idx
+    return frag_idx[order].tolist()
 
 
 
@@ -1088,7 +1151,7 @@ def collect_lno_result(pattern='fragment.out*', outfile='lno_result.out',
     """Rebuild an `lno_result.out` table from the per-fragment output files.
 
     Same layout as the file `run_afqmc` writes at the end of a complete run,
-    so `read_lno_size` / `sort_frag_by_size` work on it unchanged. Use it when
+    so `read_lno_size` / `sort_fragment` work on it unchanged. Use it when
     the fragments were spread over several jobs, or when a job died before
     reaching the final summary.
 

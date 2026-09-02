@@ -41,14 +41,17 @@ nocc_sp = trial.nelec if isinstance(trial.nelec, (tuple, list)) else (trial.nele
 nvir_sp = tuple(no - ne for no, ne in zip(norb_sp, nocc_sp))
 
 # a third of the virtuals is frozen by default; alpha and beta spaces differ for
-# an unrestricted trial, so the count is taken from their average
+# an unrestricted trial, so the count is taken from their average.  For a
+# restricted trial norb/nelec are scalars and nvir_sp is just (nvir, nvir).
 frozen_rate = options.get("frozen_vir_rate",  3)
 frozen_vir = int(options.get("frozen_vir", sum(nvir_sp) / len(nvir_sp) / frozen_rate))
 n_corr_blocks = int(options.get("n_corr_blocks", min(200, sampler.n_blocks // 5)))
 delta_error = float(options.get("delta_error", 0.25 * options["max_error"]))
 
-if "u" not in options["trial"]:
-    raise ValueError("frozen virtual sampling needs an unrestricted trial "
+# Both the restricted and the unrestricted lno pt2ccsd trials (and their
+# sto_chol variants) accept frozen_vir; anything else does not.
+if "pt2ccsd" not in options["trial"]:
+    raise ValueError("frozen virtual sampling needs an lno pt2ccsd trial "
                      f"(calc_ept2_frag of {options['trial']!r} takes no frozen_vir)")
 if frozen_vir >= min(nvir_sp):
     raise ValueError(f"frozen_vir = {frozen_vir} exceeds the number of virtuals {nvir_sp}")

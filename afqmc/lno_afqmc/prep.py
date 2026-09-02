@@ -153,7 +153,19 @@ def get_wavefunction(options, nocc, norb, prjlo, amp_file):
             trial = lno_wavefunctions.ptccsd(norb, nelec_sp,
                                              n_batch=options["n_batch"])
         elif "pt2ccsd" in options["trial"]:
-            if options["trial"] == "pt2ccsd":
+            if "sto_chol" in options["trial"]:
+                trial = lno_wavefunctions.pt2ccsd_sto_chol(
+                    norb, nelec_sp,
+                    n_batch=options["n_batch"],
+                    nchol_chunk=options["nchol_chunk"],
+                    mix_precision=options["mix_precision"],
+                    n_chol_head=options.get("n_chol_head", 0),
+                    head_chol_ratio=options.get("head_chol_ratio", None),
+                    n_chol_samples=options.get("n_chol_samples", None),
+                    chol_cost_ratio=options.get("chol_cost_ratio", None),
+                    head_sample_ratio=options.get("head_sample_ratio", 3.0),
+                )
+            elif options["trial"] == "pt2ccsd":
                 trial = lno_wavefunctions.pt2ccsd(
                     norb, nelec_sp,
                     n_batch=options["n_batch"],

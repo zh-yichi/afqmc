@@ -590,9 +590,10 @@ class sampler_pt2(sampler):
 
         prop_data["key"], subkey_chol = random.split(prop_data["key"]) # match with sto for test
 
-        # self is a static argument, so this branch is resolved at trace time;
-        # keeping the plain call for frozen_vir = 0 leaves restricted trials
-        # (whose calc_ept2_frag takes no frozen_vir) working unchanged.
+        # self is a static argument, so this branch is resolved at trace time.
+        # The plain call for frozen_vir = 0 keeps trials whose calc_ept2_frag
+        # takes no frozen_vir (uhf, uptccsd, ...) working unchanged; both the
+        # restricted and unrestricted lno pt2ccsd trials do accept it.
         if self.frozen_vir:
             eg_sp, t1_sp, t2frg_sp, e0frg_sp, e1frg_sp, e0_sp \
                 = trial.calc_ept2_frag(prop_data["walkers"],ham_data,wave_data,
@@ -664,9 +665,10 @@ class sampler_pt2_sto_chol(sampler_pt2):
         prop_data, _ = lax.scan(_step_scan_wrapper, prop_data, fields)
         prop_data = prop.orthonormalize_walkers(prop_data)
 
-        # self is a static argument, so this branch is resolved at trace time;
-        # keeping the plain call for frozen_vir = 0 leaves restricted trials
-        # (whose calc_ept2_frag takes no frozen_vir) working unchanged.
+        # self is a static argument, so this branch is resolved at trace time.
+        # The plain call for frozen_vir = 0 keeps trials whose calc_ept2_frag
+        # takes no frozen_vir (uhf, uptccsd, ...) working unchanged; both the
+        # restricted and unrestricted lno pt2ccsd trials do accept it.
         # fresh Cholesky-sampling key for this block, handed to the trial through
         # wave_data; without it the trial would reuse one fixed key forever and
         # its sampling noise would never average down over the run
